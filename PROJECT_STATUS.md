@@ -3,17 +3,18 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M0 — Repository, GitHub, and compatibility preflight** |
-| Status | **READY_FOR_REVIEW**: checks pass, branches pushed; owner opens the PR manually (`gh` not installed) |
+| Status | **READY_FOR_REVIEW**: checks pass; fast-forwarded into `main` and pushed; awaiting `APPROVE MILESTONE 0` |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
-| Current branch | `chore/m00-project-setup`, pushed to https://github.com/luphone04/knowbase-ai/tree/chore/m00-project-setup |
-| Pull request | not created. Owner opens it manually: https://github.com/luphone04/knowbase-ai/pull/new/chore/m00-project-setup |
+| Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
+| Current branch | `main` |
+| Pull requests | Not used from M1 on. M0's PR #1 (opened by owner) has its head `bd61934` contained in `main`. `chore/m00-project-setup` is kept on the remote |
 | Last verified checkpoint | 2026-11-01 |
 
 ## Milestones
 
-| Milestone | Scope | Status | Branch / PR | Approval |
+| Milestone | Scope | Status | Commit on `main` | Approval |
 |---|---|---|---|---|
-| M0 | Repository and compatibility preflight | READY_FOR_REVIEW | `chore/m00-project-setup` / not created (owner) | Pending: `APPROVE MILESTONE 0` + merge |
+| M0 | Repository and compatibility preflight | READY_FOR_REVIEW | head of `main` (see Commits) | Pending: `APPROVE MILESTONE 0` |
 | M1 | Database and service foundation | NOT_STARTED | — | — |
 | M2 | Authentication and workspace isolation | NOT_STARTED | — | — |
 | M3 | Gemini provider and embeddings | NOT_STARTED | — | — |
@@ -50,7 +51,7 @@
 | Git status clean apart from intended setup files | `git status --short` | PASS: clean before push |
 | No `.env` or key anywhere in history | `git log --all --name-only`; `git grep` for the key literal and `AIza…`/`AQ.…` patterns over `git rev-list --all` | PASS: 0 hits; only the 13 intended files were ever committed |
 | Setup committed and pushed | `git push -u origin main`; `git push -u origin chore/m00-project-setup`; `git ls-remote origin` | PASS: both refs on origin, remote HEAD → `main` |
-| CI on GitHub | runs when the PR to `main` is opened | **Not run yet** (no PR) |
+| CI on GitHub | runs on push to `main` and on PR #1 | Result not checked from here (`gh` not installed); see the repo's Actions tab |
 | No secrets or local data tracked/staged | `bash scripts/check_repo_hygiene.sh` | PASS (`OK: no secrets or local data tracked or staged.`) |
 | Hygiene check negative tests | stage, in turn, a dummy `.env`, a file with a fake `AIza…` key, and a file declaring a `NEXT_PUBLIC_*` variable for the Gemini key; run check; unstage | PASS (each exits 1 with a FAIL message). The first run exposed a bug: the content checks never set a failing status because `xargs` exits 123. Fixed and re-tested |
 | CI workflow is valid | `actionlint` (Docker image `rhysd/actionlint`) | PASS (no findings) |
@@ -63,12 +64,12 @@
 
 | Step | Result |
 |---|---|
-| Review README, `.gitignore`, `.env.example`, CI workflow, PR template | not yet checked |
+| Review README, `.gitignore`, `.env.example`, CI workflow | not yet checked |
 | Read the compatibility report and decide D1–D4 | Done by owner 2026-11-01 (see Decisions) |
 | Confirm GitHub remote URL and **private** visibility | Confirmed by owner 2026-11-01 |
 | Confirm in AI Studio that billing is **not** enabled for the key's project | not yet checked |
 | Optionally re-run the smoke test yourself (README) | not yet checked |
-| Review the SPEC.md v1.1 → v1.2 diff in the PR | not yet checked |
+| Review the SPEC.md changes since v1.1: `git diff e2b2a9f main -- SPEC.md` | not yet checked |
 
 ## Commits
 
@@ -80,20 +81,24 @@
 | `chore/m00-project-setup` | `4466b34` | fix(hygiene): detect AQ.-format Google API keys | yes |
 | `chore/m00-project-setup` | `c07acd3` | docs: record live Gemini preflight results | yes |
 | `chore/m00-project-setup` | `c20092c` | docs: apply Milestone 0 decisions to spec and project docs | yes |
-| `chore/m00-project-setup` | branch head | docs: record Milestone 0 push in project status (this file) | yes |
+| `chore/m00-project-setup` | `bd61934` | docs: record Milestone 0 push in project status | yes |
 
-Merge commit: none (owner merges after review).
+Merge: `main` fast-forwarded from `e2b2a9f` to `bd61934` (no merge commit), then the workflow commit below.
+
+| Branch | SHA | Message | Pushed |
+|---|---|---|---|
+| `main` | branch head | docs: switch to main-branch workflow (ADR 0002) | yes |
 
 ## Blockers
 
-None for M0. Next step is the owner's: open the PR, review, then reply `APPROVE MILESTONE 0` and merge.
+None for M0. Next step is the owner's review, then `APPROVE MILESTONE 0`.
 
 ## Decisions (owner, 2026-11-01)
 
 Recorded in [docs/decisions/0001-m0-preflight-decisions.md](docs/decisions/0001-m0-preflight-decisions.md) and applied in SPEC.md v1.2.
 
 - **D1:** configurable `GEMINI_THINKING_LEVEL`, default `low` (implemented in M3; added to `.env.example`).
-- **D2:** remote `luphone04/knowbase-ai` (private). Push `main` and `chore/m00-project-setup`; owner opens the PR manually; no merge by Claude Code.
+- **D2:** remote `luphone04/knowbase-ai` (private). Superseded on 2026-11-01 by ADR 0002: work on `main`, push after each milestone, no PRs.
 - **D3:** Node 24 LTS.
 - **D4:** `uv` with a committed `uv.lock` (`uv` must be installed before M1).
 - **C2:** Gemini 3.6 Flash retirement statement corrected in SPEC.md §2.1 and §20.

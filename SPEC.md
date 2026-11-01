@@ -2,8 +2,9 @@
 
 **Document type:** Product + engineering build specification\
 **Project name:** Knowbase AI\
-**Version:** 1.2 (Milestone 0 decisions applied; see
-`docs/decisions/0001-m0-preflight-decisions.md`)\
+**Version:** 1.3 (Milestone 0 decisions and main-branch workflow; see
+`docs/decisions/0001-m0-preflight-decisions.md` and
+`docs/decisions/0002-main-branch-workflow.md`)\
 **Prepared:** 1 November 2026\
 **Primary goal:** Build a working, demonstrable, zero-subscription-cost
 website and document knowledge assistant using Gemini's free API tier
@@ -65,14 +66,13 @@ Treat this document as the source of truth.
     verification steps, known limitations, and any risks. The user must
     be able to run and inspect the work without guessing.
 
-13. **GitHub checkpoint per milestone:** Use a separate feature branch
-    and meaningful commits for each milestone. After all checks pass,
-    push that branch and open a pull request (PR) against `main`, then
-    stop for user review. Do not merge the PR or start the next
-    milestone without explicit user approval. If GitHub authentication,
-    `gh`, or a remote is unavailable, explain the exact blocker and
-    provide the commands for the user; never claim a push or PR
-    succeeded if it did not.
+13. **GitHub checkpoint per milestone:** Work directly on `main` with
+    meaningful commits. After a milestone's checks pass, push `main`,
+    then stop for user review. Do not start the next milestone without
+    explicit user approval. No feature branches or pull requests (see
+    §17, "Workflow amendment"). If GitHub authentication or the remote
+    is unavailable, explain the exact blocker and provide the commands
+    for the user; never claim a push succeeded if it did not.
 
 14. **Never fabricate GitHub activity:** Do not create empty commits,
     artificial contribution activity, fake screenshots, fake CI results,
@@ -1433,6 +1433,20 @@ when it was not.
 **This section controls how Claude Code must work. It overrides any
 instruction elsewhere that could be interpreted as permission to build
 multiple milestones in one run.**
+
+> **Workflow amendment (v1.3, 1 November 2026).** This is a solo
+> project, so the owner replaced the branch-and-PR workflow with:
+> work on `main`; complete one milestone at a time; run the tests and
+> fix failures; commit and push `main` after each completed milestone;
+> report what was built, the tests, problems, and the commit SHA; then
+> STOP until the owner replies `APPROVE MILESTONE N`. Approval no
+> longer depends on a PR merge. Wherever the rest of §17 mentions
+> feature branches, pull requests, PR templates, or merging, read it as
+> "commit to and push `main`". Everything else in §17 still applies:
+> the milestone gate, the review package (§17.4) with "GitHub" meaning
+> commit SHA and push status, PROJECT_STATUS.md, CI on pushes to
+> `main`, and the rule against artificial commits. See
+> `docs/decisions/0002-main-branch-workflow.md`.
 
 ### 17.1 The golden rule: one milestone, then STOP
 
