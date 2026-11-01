@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M0 — Repository, GitHub, and compatibility preflight** |
-| Status | **BLOCKED**: M0 work is done locally; waiting on user input (see Blockers) |
+| Status | **BLOCKED**: M0 work and live Gemini check are done locally; waiting on push confirmation and PR route (see Blockers) |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: believed **private**, not yet confirmed by user |
 | Current branch | `chore/m00-project-setup` (local only, not pushed) |
 | Pull request | not created |
@@ -29,13 +29,13 @@
 - [x] Inspect folder, files, Git status, branches, remotes, and commits
 - [x] Inspect Python, Node, npm, Docker, and Docker Compose versions
 - [x] Docker is running and the pinned pgvector image can be pulled
-- [x] Selected Gemini models are listed in the official docs (3.8 Flash free tier confirmed in docs; embedding free tier **pending**)
-- [ ] Selected models are available **on the user's key**: **PENDING** (no API key)
+- [x] Selected Gemini models are listed in the official docs (3.8 Flash free tier confirmed in docs)
+- [x] Selected models are available on the user's key (live `models.get`, 2026-11-01)
 - [x] Installed stable `google-genai` (2.34.0) supports the exact spec call shapes (offline introspection)
-- [ ] `gemini-embedding-001` returns 768-dim vectors live: **PENDING** (no API key)
+- [x] `gemini-embedding-001` returns 768-dim vectors live (document batch of 2 + query); raw norms ~0.59, so normalization is required
 - [x] Pinned pgvector image pulled and extension enabled (`vector` 0.8.7, `pg_trgm` 1.6, PG 18.6)
 - [x] Spec vs official docs mismatches identified (report §6, C1–C9). No architecture changes made
-- [ ] User has a Gemini API key: **awaiting user**
+- [x] User has a Gemini API key (stored only in git-ignored `.env`; user reports free tier)
 - [ ] GitHub repository URL and visibility confirmed: **awaiting user**
 - [x] `.gitignore`, `README.md`, `PROJECT_STATUS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, CI skeleton created
 - [x] `docs/architecture/overview.md` added
@@ -52,7 +52,9 @@
 | Hygiene check negative tests | stage, in turn, a dummy `.env`, a file with a fake `AIza…` key, and a file declaring a `NEXT_PUBLIC_*` variable for the Gemini key; run check; unstage | PASS (each exits 1 with a FAIL message). The first run exposed a bug: the content checks never set a failing status because `xargs` exits 123. Fixed and re-tested |
 | CI workflow is valid | `actionlint` (Docker image `rhysd/actionlint`) | PASS (no findings) |
 | pgvector image works | throwaway `docker run --rm` + `psql` checks | PASS |
-| Live Gemini smoke test | `.venv-preflight/bin/python scripts/preflight/gemini_smoke.py` | **PENDING**: no API key. Without a key the script exits 2 and makes no requests (verified) |
+| Live Gemini smoke test | `.venv-preflight/bin/python scripts/preflight/gemini_smoke.py` | PASS: all checks; `finish_reason=STOP`; thoughts 191 of 207 total tokens |
+| Live smoke test, low thinking | `... gemini_smoke.py --thinking-level low` | First attempt **FAILED** with `503 UNAVAILABLE` ("high demand"); immediate retry PASS, thoughts none, 16 total tokens |
+| Smoke test without a key | `env -u GEMINI_API_KEY ... gemini_smoke.py` (no `.env`) | PASS: exits 2, makes no requests |
 
 ## Manual review steps (user)
 
@@ -61,7 +63,8 @@
 | Review README, `.gitignore`, `.env.example`, CI workflow, PR template | not yet checked |
 | Read the compatibility report and decide D1–D4 (below) | not yet checked |
 | Confirm GitHub remote URL and **private** visibility | not yet checked |
-| Create an AI Studio key (no billing), put it in `.env`, run the smoke test (README) | not yet checked |
+| Confirm in AI Studio that billing is **not** enabled for the key's project | not yet checked |
+| Optionally re-run the smoke test yourself (README) | not yet checked |
 
 ## Commits
 
@@ -79,12 +82,12 @@ Merge commit: none.
    `main` (contains only SPEC.md), then push `chore/m00-project-setup`.
 2. **PR creation:** `gh` is not installed. Either `brew install gh && gh auth login`,
    or open the PR in the GitHub web UI after the push.
-3. **Live Gemini smoke test:** needs a free-tier AI Studio key in `.env`.
 
 ## Decisions requested
 
 - **D1 (needed before M3):** thinking tokens count toward `max_output_tokens=1200` (report C1).
-  Recommendation: add a configurable `GEMINI_THINKING_LEVEL` (default `low`), and confirm with the live smoke test.
+  Measured: default thinking used 191 of 207 tokens on a one-word reply; `low` used none.
+  Recommendation: add a configurable `GEMINI_THINKING_LEVEL` (default `low`) in M3.
 - **D2 (needed now):** GitHub push and PR route (Blockers 1–2).
 - **D3 (needed before M1 frontend placeholder):** Node 22 (spec; maintenance LTS until 2027-04-30) or Node 24 (matches host; maintenance until 2028-04-30). Recommendation: keep Node 22 as specified.
 - **D4 (needed before M1):** Python lock tool. Recommendation: `uv` with a committed `uv.lock` (`brew install uv`). Alternative: `pip-tools` with a compiled `requirements.lock`.
@@ -92,6 +95,7 @@ Merge commit: none.
 ## Risks and deferred work
 
 - Gemini free-tier quotas and model availability can change; RPM/RPD are only visible in AI Studio.
+- Gemini returned a transient `503 UNAVAILABLE` during M0, so the provider must retry 5xx with bounded backoff (spec §2.4).
 - `gemini-embedding-001` has an earliest shutdown of 2028-05-14 (replacement `gemini-embedding-2` would need a design change and a full re-index).
 - Spec §2.1 states a 3.6 Flash retirement date that the Gemini API deprecations page doesn't show (report C2). Informational only.
 - CI runs only repository hygiene for now; backend/frontend jobs come in M1/M8.

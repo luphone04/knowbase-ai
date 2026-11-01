@@ -72,22 +72,40 @@ pricing, embeddings, rate-limits, thinking, deprecations, whats-new-gemini-3.8
 | 768 dims + normalization | "you must manually normalize non-3072 dimensions" for `gemini-embedding-001` | Matches spec §2.2 |
 | Task types | `RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY` listed | OK |
 | Batch of texts | 001 "lets you generate individual embeddings for a list of strings" | OK |
-| Embedding free tier | Only in the truncated part of the pricing page; not confirmed verbatim | **PENDING**: confirm in AI Studio / live call |
+| Embedding free tier | Only in the truncated part of the pricing page; not confirmed verbatim | Calls succeed on the user's free-tier key (§5); user to confirm billing is off in AI Studio |
 | Free-tier rate limits | Not published per model in the docs; shown in AI Studio only | **PENDING**: user to check AI Studio |
 | Free-tier data use | Free: "Content used to improve our products" | Matches spec §2.4 |
 
-## 5. Live Gemini checks — PENDING
+## 5. Live Gemini checks: PASS
 
-No `GEMINI_API_KEY` is set in the environment and there is no `.env`.
-Nothing was sent to Gemini. These checklist items are **not verified**:
+Ran [scripts/preflight/gemini_smoke.py](../scripts/preflight/gemini_smoke.py)
+on 1 Nov 2026 with the user's AI Studio key, stored in the git-ignored
+`.env`. The user says it's a free-tier key; billing status wasn't checked
+by the script. Interpreter: Python 3.12.10, `google-genai` 2.34.0.
 
-- Both model IDs resolve with the user's key (`models.get`).
-- `embed_content` returns 768-dimensional vectors (`RETRIEVAL_DOCUMENT` batch of 2, plus `RETRIEVAL_QUERY`).
-- `generate_content` returns text with the spec config.
+| Check | Result |
+|---|---|
+| `models.get("gemini-3.8-flash")` | PASS: "Gemini 3.8 Flash", actions include `generateContent` |
+| `models.get("gemini-embedding-001")` | PASS: "Gemini Embedding 001", actions include `embedContent` |
+| `RETRIEVAL_DOCUMENT`, list of 2 texts, `output_dimensionality=768` | PASS: 2 embeddings, each 768-dim, finite |
+| `RETRIEVAL_QUERY`, 768 | PASS: 1 embedding, 768-dim, finite |
+| Normalization needed | Confirmed: raw norms 0.592, 0.589, 0.587 (not unit length); unit length after dividing by the L2 norm |
+| `generate_content` with spec §2.3 config | PASS: text returned, `finish_reason=STOP` |
 
-Run [scripts/preflight/gemini_smoke.py](../scripts/preflight/gemini_smoke.py)
-once a key exists (instructions in PROJECT_STATUS.md). It makes 5 requests
-and never prints the key.
+Generation token usage on a trivial prompt ("Reply with the word: ready"):
+
+| Run | Thinking level | Prompt | Output | Thoughts | Total |
+|---|---|---|---|---|---|
+| 1 | model default (medium) | 14 | 2 | **191** | 207 |
+| 2 | `low` via `ThinkingConfig` | 14 | 2 | none | 16 |
+
+The first attempt of run 2 failed with
+`code=503 status=UNAVAILABLE message=This model is currently experiencing high demand...`.
+An immediate retry succeeded. This is the retryable 5xx case that spec
+§2.4 requires bounded backoff for.
+
+Total live requests: 15 (3 runs × 5). Run 2's first attempt reached the
+generation call before the 503.
 
 ## 6. Spec compatibility findings
 
@@ -98,8 +116,9 @@ The thinking docs say `max_output_tokens` "applies to the combined total of
 thinking tokens and output tokens, setting a low limit can truncate
 responses" and can return "truncated or empty output". `gemini-3.8-flash`
 thinks at `medium` by default. With spec §2.3 as written, grounded answers
-could be cut off or come back empty. The smoke script prints
-`finish_reason` and `thoughts_token_count` to measure this.
+could be cut off or come back empty. **Measured (§5):** a one-word reply used
+191 thinking tokens at the default level and none at `low`. A grounded
+answer over 5 excerpts will likely think more than that.
 Options, all free-tier and without architecture change:
 (a) add a `GEMINI_THINKING_LEVEL` setting (for example `low`) passed through `ThinkingConfig`;
 (b) raise `max_output_tokens`;
@@ -122,8 +141,8 @@ full re-index on a model change.
 **C4 — Docs now lead with the Interactions API (info; verify live).**
 The 3.8 and thinking pages use `client.interactions.create(...)` in examples.
 The spec uses `client.models.generate_content`, which still exists in SDK
-2.34.0. Nothing read says `generate_content` is deprecated. The live smoke
-test confirms it works with 3.8 Flash.
+2.34.0. Nothing read says `generate_content` is deprecated. **Live test:
+`generate_content` works with `gemini-3.8-flash` (§5).**
 
 **C5 — Sampling parameters (consistent).** The 3.8 migration checklist says
 "Remove deprecated sampling parameters (`temperature`, `top_p`, `top_k`),
