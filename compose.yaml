@@ -1,0 +1,92 @@
+name: knowbase
+
+# Shared by migrate, api, and worker: one backend image, one configuration.
+x-backend: &backend
+  build:
+    context: ./backend
+  image: knowbase-backend:dev
+  env_file:
+    - path: .env
+      required: true
+  networks: [data, egress]
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      # PostgreSQL 18 images keep PGDATA at /var/lib/postgresql/18/docker,
+      # so the volume mounts the parent directory, not .../data.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # No published port and no route out of the stack.
+    networks: [data]
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    networks: [data]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      # Localhost only. Set API_HOST_PORT if 8000 is taken on the host.
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    volumes:
+      - uploads_data:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker.runner"]
+    volumes:
+      - uploads_data:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # frontend: added in Milestone 8 (Next.js on Node 24).
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+networks:
+  # Database traffic only. `internal` means no route to the internet.
+  data:
+    internal: true
+  # Outbound access for Gemini calls (api, worker) and crawling (worker),
+  # and the network that carries the API's published localhost port.
+  egress: {}
