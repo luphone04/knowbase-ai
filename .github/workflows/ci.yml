@@ -13,11 +13,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Skeleton (Milestone 0). Jobs are added as the code they check lands:
-#   M1: backend lint + unit tests (mocked Gemini), integration tests against a
-#       pgvector/pgvector:0.8.7-pg18-trixie service container.
-#   M8: frontend lint, TypeScript check, production build (Node 24).
 # No GEMINI_API_KEY is configured here; live Gemini tests never run in CI.
+# Frontend lint, TypeScript check, and build (Node 24) are added in M8.
 
 jobs:
   repo-hygiene:
@@ -34,8 +31,51 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Validate compose.yaml
-        # compose.yaml arrives in M1; until then this step is skipped.
-        if: hashFiles('compose.yaml') != ''
         run: |
           cp .env.example .env
           docker compose config --quiet
+
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:0.8.7-pg18-trixie
+        env:
+          POSTGRES_DB: knowbase
+          POSTGRES_USER: knowbase
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowbase -d knowbase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Throwaway CI-only values; nothing here is a real secret.
+      APP_ENV: test
+      APP_SECRET_KEY: ci-only-not-a-secret
+      JWT_SECRET: ci-only-not-a-secret
+      DATABASE_URL: postgresql+psycopg://knowbase:ci-only-password@localhost:5432/knowbase
+      UV_PYTHON: "3.12"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.13.6"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+      - name: Tests (unit + integration)
+        run: uv run pytest
