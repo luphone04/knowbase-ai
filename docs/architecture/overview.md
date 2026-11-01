@@ -2,12 +2,45 @@
 
 Status: design from [SPEC.md](../../SPEC.md) §4.
 
-**Implemented as of Milestone 1:**
-- `db`, `migrate`, `api` (`/health`, `/ready` only), and a `worker` placeholder that connects and idles.
+**Implemented as of Milestone 2:**
+- `db`, `migrate`, and `api`. The api serves `/health`, `/ready`, `/api/v1/auth/*`, and `/api/v1/workspaces/*`.
+- A `worker` placeholder that connects and idles.
 - The two networks and the volumes described below.
+- Authentication and workspace isolation, described in "Request flow" below.
 
 Everything else on this page is planned. See
-[ADR 0003](../decisions/0003-m1-service-foundation.md) for the M1 choices.
+[ADR 0003](../decisions/0003-m1-service-foundation.md) (M1) and
+[ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2).
+
+## Request flow (authenticated API call)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant TH as TrustedHost
+    participant C as CORS
+    participant O as Origin check
+    participant D as get_auth_context
+    participant S as DB session (tenancy guard)
+    participant R as Route handler
+    B->>TH: request + kb_session cookie
+    TH->>C: Host is allowed
+    C->>O: preflights answered here
+    O->>D: unsafe method: Origin must be FRONTEND_ORIGIN
+    D->>D: verify JWT (HS256, exp, iss, aud, required claims)
+    D->>S: jti not revoked?
+    D->>S: bind session to token's workspace
+    D->>S: user active AND member of that workspace?
+    S-->>D: row, or nothing (401)
+    D->>R: AuthContext(user, membership)
+    R->>S: queries (auto-filtered to bound workspace)
+    S-->>R: only this workspace's rows
+    R-->>B: JSON (404 for anything outside the workspace)
+```
+
+Login sets the cookie. Logout records the token's `jti` in `revoked_tokens`
+and clears it. Login and registration pass a PostgreSQL-backed rate limiter
+first.
 
 Knowbase AI runs locally as four long-running Docker Compose services plus a
 one-shot migration job. All services share one PostgreSQL database; the API
@@ -52,7 +85,9 @@ flowchart LR
   Never in a `NEXT_PUBLIC_*` variable, the browser bundle, or an API response.
 - **Tenant isolation:** the API derives `workspace_id` from the authenticated
   user. Every workspace-owned table carries `workspace_id`, and composite
-  foreign keys block cross-workspace references.
+  foreign keys block cross-workspace references. Workspace-owned models
+  inherit `WorkspaceScoped`; the session guard filters their ORM queries
+  automatically and fails closed when no workspace is bound.
 - **Untrusted inputs:** uploaded files, crawled HTML, and retrieved excerpts
   are data. The crawler enforces SSRF checks; the prompt treats excerpts as
   evidence, not instructions.

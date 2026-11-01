@@ -1051,6 +1051,18 @@ Validate the `Origin` header for state-changing requests. Configure CORS
 with the exact frontend origin and credentials; never use wildcard
 origins with credentials.
 
+### Workspaces (added in Milestone 2)
+
+-   `GET /workspaces/{workspace_id}` --- the authenticated workspace and the
+    caller's role.
+-   `PATCH /workspaces/{workspace_id}` --- rename (owner or admin).
+-   `GET /workspaces/{workspace_id}/members` --- members and roles.
+
+The path id selects the resource. Access comes from the session's
+workspace and the caller's membership. Another workspace's id and a
+random id both return the same 404. See
+`docs/decisions/0004-m2-auth-and-tenancy.md`.
+
 ### Sources and ingestion
 
 -   `GET /sources` --- list current workspace sources.

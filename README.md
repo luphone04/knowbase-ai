@@ -8,9 +8,10 @@ answer, it says so.
 
 This is a well-engineered prototype for local demos, not production software.
 
-> **Status:** Milestone 1 (database and service foundation). The stack starts
-> and the database is ready. No user-facing features exist yet. See
-> [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
+> **Status:** Milestone 2 (authentication and workspace isolation). You can
+> register, sign in, and manage your workspace through the API. Sources and
+> chat come in later milestones. See [PROJECT_STATUS.md](PROJECT_STATUS.md)
+> for progress.
 
 ## Documents
 
@@ -41,7 +42,8 @@ Requires no paid services.
 ```bash
 # 1. Create your local configuration (git-ignored)
 cp .env.example .env
-#    Replace APP_SECRET_KEY and JWT_SECRET with random values:
+#    Replace APP_SECRET_KEY and JWT_SECRET with random values (required:
+#    the backend refuses the placeholder and anything under 32 characters):
 #    python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 #    Optionally set GEMINI_API_KEY (backend only).
 
@@ -78,6 +80,32 @@ If port 8000 is already in use on your machine, set `API_HOST_PORT` in `.env`
 publishes no host port. Use `docker compose exec db psql ...` to reach it.
 
 The web UI (`http://localhost:3000`) arrives in Milestone 8.
+
+## Try authentication and workspace isolation (curl)
+
+The session is an HttpOnly cookie, so each user needs their own cookie jar.
+Requests that change data must send the frontend's `Origin` (the CSRF check).
+
+```bash
+API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
+O='Origin: http://localhost:3000'; J='Content-Type: application/json'
+
+# Two users, each with their own workspace
+curl -s -c alice.jar -H "$O" -H "$J" -X POST $API/auth/register \
+  -d '{"email":"alice@example.com","password":"alice-password-123","workspace_name":"Alice Co"}'
+curl -s -c bob.jar -H "$O" -H "$J" -X POST $API/auth/register \
+  -d '{"email":"bob@example.com","password":"bob-password-1234","workspace_name":"Bob Ltd"}'
+
+curl -s -b alice.jar $API/auth/me                # Alice's user + workspace
+BOB_WS=$(curl -s -b bob.jar $API/auth/me | python3 -c 'import json,sys;print(json.load(sys.stdin)["workspace"]["id"])')
+curl -s -b alice.jar $API/workspaces/$BOB_WS     # 404: Alice can't see Bob's workspace
+curl -s -b alice.jar -H "$O" -H "$J" -X PATCH $API/workspaces/$BOB_WS -d '{"name":"x"}'  # 404
+curl -s -b alice.jar -H 'Origin: http://localhost:5173' -H "$J" -X POST $API/auth/logout  # 403 CSRF
+curl -s -b alice.jar -c alice.jar -H "$O" -X POST $API/auth/logout -o /dev/null -w '%{http_code}\n'  # 204
+```
+
+Interactive docs at `/docs` work too: log in with `POST /api/v1/auth/login`,
+and the browser keeps the cookie for later calls.
 
 ## Backend development without Docker (optional)
 
