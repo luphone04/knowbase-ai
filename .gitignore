@@ -1,0 +1,51 @@
+# --- Secrets and local environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# --- Python ---
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+
+# --- Build output ---
+build/
+dist/
+
+# --- Local data: uploads, database files, volumes ---
+/data/
+uploads/
+postgres_data/
+uploads_data/
+*.sqlite3
+*.dump
+
+# --- Logs ---
+logs/
+*.log
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+*.swp

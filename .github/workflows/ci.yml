@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Skeleton (Milestone 0). Jobs are added as the code they check lands:
+#   M1: backend lint + unit tests (mocked Gemini), integration tests against a
+#       pgvector/pgvector:0.8.7-pg18-trixie service container.
+#   M8: frontend lint, TypeScript check, production build (Node 22).
+# No GEMINI_API_KEY is configured here; live Gemini tests never run in CI.
+
+jobs:
+  repo-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check for tracked secrets and local data
+        run: bash scripts/check_repo_hygiene.sh
+
+  compose-config:
+    name: Docker Compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate compose.yaml
+        # compose.yaml arrives in M1; until then this step is skipped.
+        if: hashFiles('compose.yaml') != ''
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

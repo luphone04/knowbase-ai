@@ -1,0 +1,3 @@
+# Milestone 0 preflight only. The backend gets its own pinned lockfile in M1.
+google-genai==2.34.0
+numpy==2.5.4
