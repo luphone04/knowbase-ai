@@ -1,22 +1,103 @@
+"""Integration tests run against a dedicated, freshly migrated database.
+
+For each test session, a new database is created next to DATABASE_URL and
+brought to head with `alembic upgrade head`, so every run also proves the
+migrations work on a clean database. The test points the app at it and drops
+it afterwards. The application's own database is never written to. Tables
+are emptied after every test.
+"""
+
+import os
+import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
+from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, make_url, pool, text
+from fastapi.testclient import TestClient
+from sqlalchemy import URL, Engine, create_engine, make_url, pool, text
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db.session import get_engine, get_sessionmaker
+from app.main import app
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+APP_TABLES = ("users", "workspaces", "workspace_members", "revoked_tokens", "rate_limit_counters")
+TEST_PASSWORD = "integration-test-password-1"
+
+
+def _clear_caches() -> None:
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_sessionmaker.cache_clear()
+
+
+def _create_database(base: URL, name: str) -> None:
+    admin = create_engine(base, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool)
+    with admin.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{name}"'))
+    admin.dispose()
+
+
+def _drop_database(base: URL, name: str) -> None:
+    admin = create_engine(base, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool)
+    with admin.connect() as connection:
+        connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+    admin.dispose()
+
+
+def upgrade_to_head(engine: Engine) -> None:
+    with engine.begin() as connection:
+        config = Config(str(ALEMBIC_INI))
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_database_url() -> Iterator[URL]:
+    original = os.environ["DATABASE_URL"]
+    base = make_url(original)
+    name = f"knowbase_test_{uuid.uuid4().hex[:12]}"
+    _create_database(base, name)
+    url = base.set(database=name)
+    engine = create_engine(url, poolclass=pool.NullPool)
+    upgrade_to_head(engine)
+    engine.dispose()
+
+    os.environ["DATABASE_URL"] = url.render_as_string(hide_password=False)
+    _clear_caches()
+    try:
+        yield url
+    finally:
+        get_engine().dispose()
+        os.environ["DATABASE_URL"] = original
+        _clear_caches()
+        _drop_database(base, name)
+
+
+@pytest.fixture(autouse=True)
+def _empty_tables(test_database_url: URL) -> Iterator[None]:
+    yield
+    with get_engine().begin() as connection:
+        connection.execute(text(f"TRUNCATE {', '.join(APP_TABLES)} CASCADE"))
 
 
 @pytest.fixture(scope="session")
-def engine() -> Iterator[Engine]:
-    """The application database, already migrated by `alembic upgrade head`."""
-    engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+def engine(test_database_url: URL) -> Iterator[Engine]:
+    """The migrated test database."""
+    engine = create_engine(test_database_url, poolclass=pool.NullPool)
     yield engine
     engine.dispose()
+
+
+@pytest.fixture
+def db() -> Iterator[Session]:
+    """An unbound session for arranging and inspecting test data."""
+    with get_sessionmaker()() as session:
+        yield session
 
 
 @pytest.fixture
@@ -25,18 +106,63 @@ def alembic_config() -> Config:
 
 
 @pytest.fixture
-def scratch_engine() -> Iterator[Engine]:
+def scratch_engine(test_database_url: URL) -> Iterator[Engine]:
     """An empty, throwaway database, dropped after the test."""
-    url = make_url(get_settings().database_url)
-    name = f"knowbase_test_{uuid4().hex[:12]}"
-    admin = create_engine(url, isolation_level="AUTOCOMMIT", poolclass=pool.NullPool)
-    with admin.connect() as connection:
-        connection.execute(text(f'CREATE DATABASE "{name}"'))
-    scratch = create_engine(url.set(database=name), poolclass=pool.NullPool)
+    name = f"knowbase_scratch_{uuid.uuid4().hex[:12]}"
+    _create_database(test_database_url, name)
+    scratch = create_engine(test_database_url.set(database=name), poolclass=pool.NullPool)
     try:
         yield scratch
     finally:
         scratch.dispose()
-        with admin.connect() as connection:
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        admin.dispose()
+        _drop_database(test_database_url, name)
+
+
+# --- tenants -----------------------------------------------------------------
+
+
+def new_client(ip: str = "198.51.100.200") -> TestClient:
+    """A browser stand-in: its own cookie jar and client address."""
+    return TestClient(app, base_url="http://localhost", client=(ip, 50000))
+
+
+@dataclass
+class Tenant:
+    """A registered user with their own workspace and a signed-in client."""
+
+    client: TestClient
+    email: str
+    password: str
+    user_id: uuid.UUID
+    workspace_id: uuid.UUID
+    workspace_name: str
+
+
+def register_tenant(label: str, ip: str) -> Tenant:
+    client = new_client(ip)
+    email = f"{label}-{uuid.uuid4().hex[:8]}@example.com"
+    workspace_name = f"{label.title()} Workspace"
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": TEST_PASSWORD, "workspace_name": workspace_name},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    return Tenant(
+        client=client,
+        email=email,
+        password=TEST_PASSWORD,
+        user_id=uuid.UUID(body["user"]["id"]),
+        workspace_id=uuid.UUID(body["workspace"]["id"]),
+        workspace_name=workspace_name,
+    )
+
+
+@pytest.fixture
+def tenant_a() -> Tenant:
+    return register_tenant("alice", "198.51.100.1")
+
+
+@pytest.fixture
+def tenant_b() -> Tenant:
+    return register_tenant("bob", "198.51.100.2")

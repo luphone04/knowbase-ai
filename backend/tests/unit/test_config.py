@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import PLACEHOLDER_SECRET, Settings
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[3] / ".env.example"
 # Variables in .env.example that belong to other services, not the backend Settings.
@@ -15,9 +15,11 @@ NON_BACKEND_VARIABLES = {
     "NEXT_PUBLIC_API_BASE_URL",
 }
 
+APP_SECRET = "unit-app-secret-0123456789abcdef0123"
+JWT_SECRET = "unit-jwt-secret-0123456789abcdef0123"
 REQUIRED = {
-    "app_secret_key": "test-app-secret",
-    "jwt_secret": "test-jwt-secret",
+    "app_secret_key": APP_SECRET,
+    "jwt_secret": JWT_SECRET,
     "database_url": "postgresql+psycopg://user:pass@localhost:5432/db",
 }
 
@@ -33,6 +35,15 @@ def make_settings(**overrides: object) -> Settings:
     return Settings(**{**REQUIRED, **overrides})  # type: ignore[arg-type]
 
 
+def env_example_values() -> dict[str, str]:
+    values = {}
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            name, value = line.split("=", 1)
+            values[name.strip()] = value.strip()
+    return values
+
+
 def test_defaults_match_spec() -> None:
     settings = make_settings()
     assert settings.gemini_chat_model == "gemini-3.8-flash"
@@ -43,6 +54,8 @@ def test_defaults_match_spec() -> None:
     assert settings.max_upload_mb == 10
     assert settings.max_crawl_pages == 20
     assert settings.daily_chat_request_limit == 30
+    assert settings.cookie_secure is False
+    assert settings.allowed_host_list == ["localhost", "127.0.0.1"]
 
 
 def test_required_settings_are_enforced() -> None:
@@ -58,21 +71,36 @@ def test_reads_upper_case_environment_variables(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("GEMINI_THINKING_LEVEL", "high")
     monkeypatch.setenv("EMBEDDING_DIMENSIONS", "768")
     monkeypatch.setenv("CRAWL_DELAY_SECONDS", "1")
+    monkeypatch.setenv("COOKIE_SECURE", "true")
     settings = Settings()
     assert settings.gemini_thinking_level == "high"
     assert settings.embedding_dimensions == 768
     assert settings.crawl_delay_seconds == 1.0
+    assert settings.cookie_secure is True
 
 
-def test_every_env_example_value_parses(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The committed template must load as-is (environment values are strings)."""
+def test_env_example_parses_once_secrets_are_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
     if not ENV_EXAMPLE.is_file():
         pytest.skip(".env.example is outside the image")
-    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
-        if line.strip() and not line.lstrip().startswith("#"):
-            name, value = line.split("=", 1)
-            monkeypatch.setenv(name.strip(), value.strip())
+    for name, value in env_example_values().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("APP_SECRET_KEY", APP_SECRET)
+    monkeypatch.setenv("JWT_SECRET", JWT_SECRET)
     Settings()
+
+
+def test_env_example_placeholders_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Copying .env.example without replacing the secrets must not start the app."""
+    if not ENV_EXAMPLE.is_file():
+        pytest.skip(".env.example is outside the image")
+    for name, value in env_example_values().items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError) as excinfo:
+        Settings()
+    assert {error["loc"][0] for error in excinfo.value.errors()} == {
+        "app_secret_key",
+        "jwt_secret",
+    }
 
 
 def test_app_starts_without_gemini_key() -> None:
@@ -87,6 +115,13 @@ def test_app_starts_without_gemini_key() -> None:
         ("embedding_dimensions", 1536),  # schema is vector(768)
         ("crawl_delay_seconds", 0.5),  # SPEC.md §7.3: at least 1 second
         ("max_upload_mb", 0),
+        ("jwt_secret", PLACEHOLDER_SECRET),
+        ("jwt_secret", "too-short-secret"),
+        ("app_secret_key", PLACEHOLDER_SECRET),
+        ("frontend_origin", "http://localhost:3000/app"),  # path, not an origin
+        ("frontend_origin", "localhost:3000"),  # no scheme
+        ("frontend_origin", "ftp://localhost"),
+        ("login_failure_limit_per_email", 0),
     ],
 )
 def test_rejects_invalid_values(field: str, value: object) -> None:
@@ -94,20 +129,27 @@ def test_rejects_invalid_values(field: str, value: object) -> None:
         make_settings(**{field: value})
 
 
+def test_production_requires_secure_cookies() -> None:
+    with pytest.raises(ValidationError, match="COOKIE_SECURE"):
+        make_settings(app_env="production", cookie_secure=False)
+    assert make_settings(app_env="production", cookie_secure=True).cookie_secure is True
+
+
+def test_frontend_origin_is_normalised() -> None:
+    settings = make_settings(frontend_origin="HTTP://LocalHost:3000/")
+    assert settings.frontend_origin == "http://localhost:3000"
+
+
 def test_secrets_are_masked() -> None:
     settings = make_settings(gemini_api_key="super-secret-key")
     rendered = repr(settings) + settings.model_dump_json()
-    for secret in ("super-secret-key", "test-app-secret", "test-jwt-secret"):
+    for secret in ("super-secret-key", APP_SECRET, JWT_SECRET):
         assert secret not in rendered
 
 
 @pytest.mark.skipif(not ENV_EXAMPLE.is_file(), reason=".env.example is outside the image")
 def test_env_example_matches_settings() -> None:
-    names = {
-        line.split("=", 1)[0].strip()
-        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
+    names = set(env_example_values())
     fields = {name.upper() for name in Settings.model_fields}
     assert names - NON_BACKEND_VARIABLES - fields == set(), "unknown variables in .env.example"
     assert fields - names == set(), "settings missing from .env.example"
