@@ -1,7 +1,13 @@
 # Architecture overview
 
-Status: planned design from [SPEC.md](../../SPEC.md) §4. Nothing below is
-implemented yet (Milestone 0 sets up the repository only).
+Status: design from [SPEC.md](../../SPEC.md) §4.
+
+**Implemented as of Milestone 1:**
+- `db`, `migrate`, `api` (`/health`, `/ready` only), and a `worker` placeholder that connects and idles.
+- The two networks and the volumes described below.
+
+Everything else on this page is planned. See
+[ADR 0003](../decisions/0003-m1-service-foundation.md) for the M1 choices.
 
 Knowbase AI runs locally as four long-running Docker Compose services plus a
 one-shot migration job. All services share one PostgreSQL database; the API
@@ -30,6 +36,15 @@ flowchart LR
 | `worker` | Claims `ingestion_jobs` with `FOR UPDATE SKIP LOCKED`; crawls, parses, cleans, chunks, embeds, and indexes; stale-lock recovery | Serve HTTP |
 | `db` | Relational data, `vector(768)` embeddings (HNSW), full-text `tsvector` (GIN), the job queue | Expose a public port (localhost-only if bound) |
 | `migrate` | Applies Alembic migrations once, then exits | Run at request time |
+
+## Networks and volumes (Compose)
+
+| Name | Members | Purpose |
+|---|---|---|
+| `data` network (`internal: true`) | db, migrate, api, worker | Database traffic. No route to the internet |
+| `egress` network | api, worker | Outbound calls to Gemini and, for the worker, public websites. Carries the API's port, published on `127.0.0.1` only |
+| `postgres_data` volume | db, at `/var/lib/postgresql` (PG18 layout) | Database files. Kept by `docker compose down`, deleted by `down -v` |
+| `uploads_data` volume | api and worker, both at `/app/data/uploads` | Uploaded files. A single shared location |
 
 ## Boundaries that matter for security and cost
 

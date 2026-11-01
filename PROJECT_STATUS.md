@@ -2,20 +2,19 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M0 — Repository, GitHub, and compatibility preflight** |
-| Status | **READY_FOR_REVIEW**: checks pass; fast-forwarded into `main` and pushed; awaiting `APPROVE MILESTONE 0` |
+| Current milestone | **M1 — Database and service foundation** |
+| Status | **READY_FOR_REVIEW**: checks pass, committed and pushed to `main`; awaiting `APPROVE MILESTONE 1` |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Pull requests | Not used from M1 on. M0's PR #1 (opened by owner) has its head `bd61934` contained in `main`. `chore/m00-project-setup` is kept on the remote |
 | Last verified checkpoint | 2026-11-01 |
 
 ## Milestones
 
 | Milestone | Scope | Status | Commit on `main` | Approval |
 |---|---|---|---|---|
-| M0 | Repository and compatibility preflight | READY_FOR_REVIEW | head of `main` (see Commits) | Pending: `APPROVE MILESTONE 0` |
-| M1 | Database and service foundation | NOT_STARTED | — | — |
+| M0 | Repository and compatibility preflight | APPROVED_AND_MERGED | `47b96a4` | `APPROVE MILESTONE 0`, 2026-11-01 |
+| M1 | Database and service foundation | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 1` |
 | M2 | Authentication and workspace isolation | NOT_STARTED | — | — |
 | M3 | Gemini provider and embeddings | NOT_STARTED | — | — |
 | M4 | File ingestion and durable worker | NOT_STARTED | — | — |
@@ -25,89 +24,98 @@
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
-## M0 checklist
+## M1 checklist (SPEC.md §17.6)
 
-- [x] Inspect folder, files, Git status, branches, remotes, and commits
-- [x] Inspect Python, Node, npm, Docker, and Docker Compose versions
-- [x] Docker is running and the pinned pgvector image can be pulled
-- [x] Selected Gemini models are listed in the official docs (3.8 Flash free tier confirmed in docs)
-- [x] Selected models are available on the user's key (live `models.get`, 2026-11-01)
-- [x] Installed stable `google-genai` (2.34.0) supports the exact spec call shapes (offline introspection)
-- [x] `gemini-embedding-001` returns 768-dim vectors live (document batch of 2 + query); raw norms ~0.59, so normalization is required
-- [x] Pinned pgvector image pulled and extension enabled (`vector` 0.8.7, `pg_trgm` 1.6, PG 18.6)
-- [x] Spec vs official docs mismatches identified (report §6, C1–C9) and owner decisions applied to SPEC.md v1.2 ([ADR 0001](docs/decisions/0001-m0-preflight-decisions.md)). No architecture changes
-- [x] User has a Gemini API key (stored only in git-ignored `.env`; user reports free tier)
-- [x] GitHub repository URL and visibility confirmed (private; owner, 2026-11-01)
-- [x] `.gitignore`, `README.md`, `PROJECT_STATUS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, CI skeleton created
-- [x] `docs/architecture/overview.md` added
-- [x] No secrets or local data staged (`scripts/check_repo_hygiene.sh`)
+- [x] Compose services: `db` (pgvector 0.8.7 / PG 18), `migrate`, `api`, `worker` placeholder. Frontend deferred to M8, since startup doesn't need it ([ADR 0003](docs/decisions/0003-m1-service-foundation.md))
+- [x] Healthchecks (`pg_isready`; API `/ready`) and startup order (`service_healthy`, `service_completed_successfully`)
+- [x] FastAPI `/health` and `/ready`
+- [x] SQLAlchemy engine/session setup (sync, psycopg 3)
+- [x] Alembic configuration; URL from `DATABASE_URL` via `app.config`
+- [x] Migration `0001_enable_extensions` enables `vector` and `pg_trgm`
+- [x] `SELECT extversion FROM pg_extension WHERE extname='vector'` → `0.8.7`
+- [x] Database connection and migration tests
+- [x] API reads the database (`/ready` reports live extension versions)
+- [x] `docker compose down` preserves named volumes
+- [x] Startup and shutdown commands documented in README
 
-## M0 acceptance criteria and test commands
+## M1 acceptance evidence (2026-11-01)
 
 | Criterion | Command | Result |
 |---|---|---|
-| Written environment and compatibility report | see [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md) | Done |
-| `docker compose config` | No `compose.yaml` yet; deferred to M1 per spec §17.5 | Deferred |
-| Git status clean apart from intended setup files | `git status --short` | PASS: clean before push |
-| No `.env` or key anywhere in history | `git log --all --name-only`; `git grep` for the key literal and `AIza…`/`AQ.…` patterns over `git rev-list --all` | PASS: 0 hits; only the 13 intended files were ever committed |
-| Setup committed and pushed | `git push -u origin main`; `git push -u origin chore/m00-project-setup`; `git ls-remote origin` | PASS: both refs on origin, remote HEAD → `main` |
-| CI on GitHub | runs on push to `main` and on PR #1 | Result not checked from here (`gh` not installed); see the repo's Actions tab |
-| No secrets or local data tracked/staged | `bash scripts/check_repo_hygiene.sh` | PASS (`OK: no secrets or local data tracked or staged.`) |
-| Hygiene check negative tests | stage, in turn, a dummy `.env`, a file with a fake `AIza…` key, and a file declaring a `NEXT_PUBLIC_*` variable for the Gemini key; run check; unstage | PASS (each exits 1 with a FAIL message). The first run exposed a bug: the content checks never set a failing status because `xargs` exits 123. Fixed and re-tested |
-| CI workflow is valid | `actionlint` (Docker image `rhysd/actionlint`) | PASS (no findings) |
-| pgvector image works | throwaway `docker run --rm` + `psql` checks | PASS |
-| Live Gemini smoke test | `.venv-preflight/bin/python scripts/preflight/gemini_smoke.py` | PASS: all checks; `finish_reason=STOP`; thoughts 191 of 207 total tokens |
-| Live smoke test, low thinking | `... gemini_smoke.py --thinking-level low` | First attempt **FAILED** with `503 UNAVAILABLE` ("high demand"); immediate retry PASS, thoughts none, 16 total tokens |
-| Smoke test without a key | `env -u GEMINI_API_KEY ... gemini_smoke.py` (no `.env`) | PASS: exits 2, makes no requests |
+| Compose file valid | `docker compose config --quiet` | PASS |
+| Stack starts | `docker compose up --build -d`; `docker compose ps -a` | PASS: db healthy, migrate `Exited (0)`, api healthy, worker up |
+| Liveness | `curl http://localhost:8000/health` | PASS: `{"status":"ok"}`, HTTP 200 |
+| Readiness | `curl http://localhost:8000/ready` | PASS: HTTP 200, `{"vector":"0.8.7","pg_trgm":"1.6"}` |
+| API docs | `GET /docs` | PASS: HTTP 200 |
+| Migration ran | `migrate` logs; `SELECT version_num FROM alembic_version` | PASS: `0001_enable_extensions`; second `up` is a no-op |
+| pgvector present | spec query (README step 5) | PASS: `0.8.7` |
+| Tests in container | `docker compose exec api pytest -q` | PASS: 22 passed, 2 skipped (`.env.example` is not in the image; both run on host and CI), 0 warnings |
+| CI job reproduced locally | throwaway pgvector container + `uv sync --locked`, ruff, format, mypy, `alembic upgrade head`, `uv run pytest` | PASS: 24 passed, 0 skipped; no leftover test databases |
+| Lint / format / types | `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy` (strict, app + tests) | PASS |
+| Lockfile current | `uv lock --check` | PASS |
+| Volumes survive `down` | compare `pg_control_system().system_identifier` and an uploads marker file across `down` / `up` | PASS: identifier unchanged; marker read back by worker; marker removed |
+| Restart | `docker compose restart` | PASS: all services back; `/ready` 200 |
+| Worker stops cleanly | `docker compose stop worker` | PASS: logs SIGTERM, exit code 0, under 1 s |
+| Network isolation | TCP from db to `1.1.1.1:443`; from api/worker to `generativelanguage.googleapis.com:443` | PASS: db "Network is unreachable"; api and worker reachable |
+| No secrets leaked | `docker compose logs` grep for the key; hygiene script | PASS: 0 hits |
+| CI workflow valid | `actionlint` | PASS. CI run on GitHub: not checked from here (`gh` not installed) |
 
-## Manual review steps (user)
+Verification ran with `API_HOST_PORT=8001` (see problem 4). The URLs above use the default port.
 
-| Step | Result |
-|---|---|
-| Review README, `.gitignore`, `.env.example`, CI workflow | not yet checked |
-| Read the compatibility report and decide D1–D4 | Done by owner 2026-11-01 (see Decisions) |
-| Confirm GitHub remote URL and **private** visibility | Confirmed by owner 2026-11-01 |
-| Confirm in AI Studio that billing is **not** enabled for the key's project | not yet checked |
-| Optionally re-run the smoke test yourself (README) | not yet checked |
-| Review the SPEC.md changes since v1.1: `git diff e2b2a9f main -- SPEC.md` | not yet checked |
+Problems found and fixed during M1:
+1. **`EMBEDDING_DIMENSIONS=768` from the environment was rejected.** `Literal[768]` doesn't coerce the string `"768"`, so `migrate` exited with code 1 on the first real startup. Unit tests had only passed integers. Fixed with an `int` and a validator. Added a test that loads `.env.example` exactly as committed.
+2. **SQLAlchemy 2.1 deprecation:** `Result.tuples()` produced warnings in 4 tests. Fixed. pytest now treats warnings as errors.
+3. **Starlette 1.10 deprecates `httpx` for its TestClient.** Dev dependency switched to `httpx2`.
+4. **Port 8000 is taken on the development machine** by another local project, so verification used `API_HOST_PORT=8001`. The port is now configurable; the default stays 8000.
+
+## Manual review steps (owner)
+
+| Step | Expected | Result |
+|---|---|---|
+| `cp .env.example .env` if needed. Set random `APP_SECRET_KEY`/`JWT_SECRET`. If 8000 is busy, set `API_HOST_PORT=8001` | — | not yet checked |
+| `docker compose up --build -d` then `docker compose ps -a` | db/api healthy, migrate Exited (0), worker Up | not yet checked |
+| Open `http://localhost:<port>/docs`; call `/health` and `/ready` | 200 responses; `/ready` lists vector 0.8.7 | not yet checked |
+| Run README step 5 (extension query) | `0.8.7` | not yet checked |
+| `docker compose exec api pytest -q` | 22 passed, 2 skipped | not yet checked |
+| `docker compose restart`, then `/ready` again | 200 | not yet checked |
+| `docker compose down` then `up -d` | data kept (volumes listed by `docker volume ls`) | not yet checked |
+| Confirm in AI Studio that billing is **not** enabled (from M0) | — | not yet checked |
 
 ## Commits
 
-| Branch | SHA | Message | Pushed |
-|---|---|---|---|
-| `main` | `e2b2a9f28edb655b8507281a8b352069e0b12f86` | docs: add Knowbase AI implementation specification | yes |
-| `chore/m00-project-setup` | `76d46ab` | chore: add repository hygiene, env template, and CI skeleton | yes |
-| `chore/m00-project-setup` | `3b1d37e` | docs: add README, architecture overview, compatibility report, and status tracker | yes |
-| `chore/m00-project-setup` | `4466b34` | fix(hygiene): detect AQ.-format Google API keys | yes |
-| `chore/m00-project-setup` | `c07acd3` | docs: record live Gemini preflight results | yes |
-| `chore/m00-project-setup` | `c20092c` | docs: apply Milestone 0 decisions to spec and project docs | yes |
-| `chore/m00-project-setup` | `bd61934` | docs: record Milestone 0 push in project status | yes |
-
-Merge: `main` fast-forwarded from `e2b2a9f` to `bd61934` (no merge commit), then the workflow commit below.
-
-| Branch | SHA | Message | Pushed |
-|---|---|---|---|
-| `main` | branch head | docs: switch to main-branch workflow (ADR 0002) | yes |
+| Milestone | SHA | Message |
+|---|---|---|
+| M0 | `e2b2a9f` | docs: add Knowbase AI implementation specification |
+| M0 | `76d46ab` | chore: add repository hygiene, env template, and CI skeleton |
+| M0 | `3b1d37e` | docs: add README, architecture overview, compatibility report, and status tracker |
+| M0 | `4466b34` | fix(hygiene): detect AQ.-format Google API keys |
+| M0 | `c07acd3` | docs: record live Gemini preflight results |
+| M0 | `c20092c` | docs: apply Milestone 0 decisions to spec and project docs |
+| M0 | `bd61934` | docs: record Milestone 0 push in project status |
+| M0 | `47b96a4` | docs: switch to main-branch workflow (ADR 0002) |
+| M1 | see `git log` | M1 commits; SHAs in the M1 report, recorded here at the start of M2 |
 
 ## Blockers
 
-None for M0. Next step is the owner's review, then `APPROVE MILESTONE 0`.
+None.
 
 ## Decisions (owner, 2026-11-01)
 
-Recorded in [docs/decisions/0001-m0-preflight-decisions.md](docs/decisions/0001-m0-preflight-decisions.md) and applied in SPEC.md v1.2.
-
-- **D1:** configurable `GEMINI_THINKING_LEVEL`, default `low` (implemented in M3; added to `.env.example`).
-- **D2:** remote `luphone04/knowbase-ai` (private). Superseded on 2026-11-01 by ADR 0002: work on `main`, push after each milestone, no PRs.
-- **D3:** Node 24 LTS.
-- **D4:** `uv` with a committed `uv.lock` (`uv` must be installed before M1).
-- **C2:** Gemini 3.6 Flash retirement statement corrected in SPEC.md §2.1 and §20.
-- **C3:** keep `gemini-embedding-001` for the MVP.
+Recorded in [ADR 0001](docs/decisions/0001-m0-preflight-decisions.md) and [ADR 0002](docs/decisions/0002-main-branch-workflow.md):
+`GEMINI_THINKING_LEVEL` default `low` (D1) · Node 24 LTS (D3) · `uv` + `uv.lock` (D4) ·
+3.6 Flash retirement statement corrected (C2) · keep `gemini-embedding-001` (C3) · main-branch workflow, no PRs.
 
 ## Risks and deferred work
 
 - Gemini free-tier quotas and model availability can change; RPM/RPD are only visible in AI Studio.
-- Gemini returned a transient `503 UNAVAILABLE` during M0, so the provider must retry 5xx with bounded backoff (spec §2.4).
-- `gemini-embedding-001` has an earliest shutdown of 2028-05-14 (replacement `gemini-embedding-2` would need a design change and a full re-index).
-- CI runs only repository hygiene for now; backend/frontend jobs come in M1/M8.
-- `uv` is not installed on the development machine yet; needed at the start of M1.
+- Gemini returned a transient `503 UNAVAILABLE` during M0, so the M3 provider must retry 5xx with bounded backoff.
+- `gemini-embedding-001` earliest shutdown is 2028-05-14.
+- Frontend service and CI frontend job: M8.
+- `uv` is not installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6. For host development, `brew install uv`.
+- The backend image includes dev dependencies, which is fine for local use. A slimmer production target is out of scope.
+- A host-native PostgreSQL listens on `127.0.0.1:5432` on the development machine. The stack doesn't publish the db port, so nothing conflicts.
+
+## M0 summary
+
+Environment, Gemini, SDK, and pgvector compatibility were verified (live Gemini smoke test PASS), along with repository hygiene and the CI skeleton.
+Full details: [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md).
