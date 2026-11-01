@@ -18,10 +18,12 @@ This is a well-engineered prototype for local demos, not production software.
 - [PROJECT_STATUS.md](PROJECT_STATUS.md): milestone tracker, test results, blockers
 - [docs/architecture/overview.md](docs/architecture/overview.md): service boundaries
 - [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md): environment and compatibility findings
+- [docs/decisions/](docs/decisions/): decision records
 
 ## Planned stack
 
-Next.js (App Router, TypeScript) · FastAPI (Python 3.12) · SQLAlchemy 2 +
+Next.js (App Router, TypeScript, Node 24 LTS) · FastAPI (Python 3.12,
+dependencies locked with `uv`) · SQLAlchemy 2 +
 Alembic · PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai` SDK
 (`gemini-3.8-flash`, `gemini-embedding-001` at 768 dims) · Docker Compose.
 Requires no paid services.

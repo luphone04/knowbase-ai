@@ -9,8 +9,8 @@ official pages actually read. Items not verified are marked **PENDING**.
 | Tool | Found | Spec expects | Result |
 |---|---|---|---|
 | Python | `python3` → 3.14.0; `python3.12` → 3.12.10 | 3.12 | OK. Use `python3.12` on the host; the backend image will pin 3.12 |
-| uv / pyenv | not installed | — | Note: pin tool is undecided (see decision D4) |
-| Node | v24.21.0 | Node 22 LTS | Mismatch on host (see C7 / D3) |
+| uv / pyenv | not installed | `uv` (decision D4) | Install `uv` before M1 |
+| Node | v24.21.0 | Node 22 LTS in spec v1.1; Node 24 LTS from v1.2 (D3) | OK under the new decision |
 | npm | 11.19.0 | — | OK |
 | Docker Engine | 29.8.1 (Docker Desktop, aarch64) | — | OK. Daemon was stopped; started Docker Desktop during the check |
 | Docker Compose | v5.5.1 | `service_healthy`, `service_completed_successfully` | OK (supported) |
@@ -109,9 +109,11 @@ generation call before the 503.
 
 ## 6. Spec compatibility findings
 
-Nothing below has been changed in SPEC.md or the architecture.
+The owner's decisions on these findings are recorded in
+[docs/decisions/0001-m0-preflight-decisions.md](decisions/0001-m0-preflight-decisions.md)
+and applied in SPEC.md v1.2. The architecture is unchanged.
 
-**C1 — `max_output_tokens=1200` includes thinking tokens (risk; decision D1).**
+**C1 — `max_output_tokens=1200` includes thinking tokens. Decided (D1): configurable `GEMINI_THINKING_LEVEL`, default `low`.**
 The thinking docs say `max_output_tokens` "applies to the combined total of
 thinking tokens and output tokens, setting a low limit can truncate
 responses" and can return "truncated or empty output". `gemini-3.8-flash`
@@ -125,13 +127,13 @@ Options, all free-tier and without architecture change:
 (c) keep the spec as written and decide after the live test.
 Note: `minimal` is in the SDK enum but "is not supported for Gemini 3.8 Flash and will return an error".
 
-**C2 — Gemini 3.6 Flash retirement date differs by source (info).**
+**C2 — Gemini 3.6 Flash retirement date differs by source. Decided: statement corrected in SPEC.md v1.2.**
 Spec §2.1 says 19 Nov 2026, citing Google Cloud model docs. The Gemini API
 deprecations page lists `gemini-3.6-flash` with "No shutdown date announced".
 This doesn't change anything because the spec selects 3.8 Flash. The
 wording in §2.1 could be corrected.
 
-**C3 — `gemini-embedding-001` has a scheduled shutdown (info).**
+**C3 — `gemini-embedding-001` has a scheduled shutdown. Decided: keep `gemini-embedding-001` for the MVP.**
 Deprecations page: earliest shutdown 14 May 2028, replacement
 `gemini-embedding-2`. Spec selection stays valid. `gemini-embedding-2` would
 not fit the current design: it does not accept `task_type`, and it returns
@@ -154,7 +156,7 @@ The spec uses `client.models.generate_content`, which still exists in SDK
 limit. The docs give no per-call batch limit, so the spec's batch of 8 is
 conservative.
 
-**C7 — Node version (decision D3).** Node 22 has been in *maintenance* LTS
+**C7 — Node version. Decided (D3): Node 24 LTS.** Node 22 has been in *maintenance* LTS
 since 2025-10-21, with EOL 2027-04-30. Node 24 entered maintenance
 2026-10-20. Node 26 has been Active LTS since 2026-10-28. Latest Next.js is
 16.4.3 (`engines.node >=20.9.0`), so Node 22 works. The host has Node 24.21.0.

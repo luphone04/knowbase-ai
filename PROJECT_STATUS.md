@@ -4,7 +4,7 @@
 |---|---|
 | Current milestone | **M0 — Repository, GitHub, and compatibility preflight** |
 | Status | **BLOCKED**: M0 work and live Gemini check are done locally; waiting on push confirmation and PR route (see Blockers) |
-| GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: believed **private**, not yet confirmed by user |
+| GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Current branch | `chore/m00-project-setup` (local only, not pushed) |
 | Pull request | not created |
 | Last verified checkpoint | 2026-11-01 |
@@ -34,9 +34,9 @@
 - [x] Installed stable `google-genai` (2.34.0) supports the exact spec call shapes (offline introspection)
 - [x] `gemini-embedding-001` returns 768-dim vectors live (document batch of 2 + query); raw norms ~0.59, so normalization is required
 - [x] Pinned pgvector image pulled and extension enabled (`vector` 0.8.7, `pg_trgm` 1.6, PG 18.6)
-- [x] Spec vs official docs mismatches identified (report §6, C1–C9). No architecture changes made
+- [x] Spec vs official docs mismatches identified (report §6, C1–C9) and owner decisions applied to SPEC.md v1.2 ([ADR 0001](docs/decisions/0001-m0-preflight-decisions.md)). No architecture changes
 - [x] User has a Gemini API key (stored only in git-ignored `.env`; user reports free tier)
-- [ ] GitHub repository URL and visibility confirmed: **awaiting user**
+- [x] GitHub repository URL and visibility confirmed (private; owner, 2026-11-01)
 - [x] `.gitignore`, `README.md`, `PROJECT_STATUS.md`, `.github/PULL_REQUEST_TEMPLATE.md`, CI skeleton created
 - [x] `docs/architecture/overview.md` added
 - [x] No secrets or local data staged (`scripts/check_repo_hygiene.sh`)
@@ -61,10 +61,11 @@
 | Step | Result |
 |---|---|
 | Review README, `.gitignore`, `.env.example`, CI workflow, PR template | not yet checked |
-| Read the compatibility report and decide D1–D4 (below) | not yet checked |
-| Confirm GitHub remote URL and **private** visibility | not yet checked |
+| Read the compatibility report and decide D1–D4 | Done by owner 2026-11-01 (see Decisions) |
+| Confirm GitHub remote URL and **private** visibility | Confirmed by owner 2026-11-01 |
 | Confirm in AI Studio that billing is **not** enabled for the key's project | not yet checked |
 | Optionally re-run the smoke test yourself (README) | not yet checked |
+| Review the SPEC.md v1.1 → v1.2 diff in the PR | not yet checked |
 
 ## Commits
 
@@ -83,19 +84,21 @@ Merge commit: none.
 2. **PR creation:** `gh` is not installed. Either `brew install gh && gh auth login`,
    or open the PR in the GitHub web UI after the push.
 
-## Decisions requested
+## Decisions (owner, 2026-11-01)
 
-- **D1 (needed before M3):** thinking tokens count toward `max_output_tokens=1200` (report C1).
-  Measured: default thinking used 191 of 207 tokens on a one-word reply; `low` used none.
-  Recommendation: add a configurable `GEMINI_THINKING_LEVEL` (default `low`) in M3.
-- **D2 (needed now):** GitHub push and PR route (Blockers 1–2).
-- **D3 (needed before M1 frontend placeholder):** Node 22 (spec; maintenance LTS until 2027-04-30) or Node 24 (matches host; maintenance until 2028-04-30). Recommendation: keep Node 22 as specified.
-- **D4 (needed before M1):** Python lock tool. Recommendation: `uv` with a committed `uv.lock` (`brew install uv`). Alternative: `pip-tools` with a compiled `requirements.lock`.
+Recorded in [docs/decisions/0001-m0-preflight-decisions.md](docs/decisions/0001-m0-preflight-decisions.md) and applied in SPEC.md v1.2.
+
+- **D1:** configurable `GEMINI_THINKING_LEVEL`, default `low` (implemented in M3; added to `.env.example`).
+- **D2:** remote `luphone04/knowbase-ai` (private). Push `main` and `chore/m00-project-setup`; owner opens the PR manually; no merge by Claude Code.
+- **D3:** Node 24 LTS.
+- **D4:** `uv` with a committed `uv.lock` (`uv` must be installed before M1).
+- **C2:** Gemini 3.6 Flash retirement statement corrected in SPEC.md §2.1 and §20.
+- **C3:** keep `gemini-embedding-001` for the MVP.
 
 ## Risks and deferred work
 
 - Gemini free-tier quotas and model availability can change; RPM/RPD are only visible in AI Studio.
 - Gemini returned a transient `503 UNAVAILABLE` during M0, so the provider must retry 5xx with bounded backoff (spec §2.4).
 - `gemini-embedding-001` has an earliest shutdown of 2028-05-14 (replacement `gemini-embedding-2` would need a design change and a full re-index).
-- Spec §2.1 states a 3.6 Flash retirement date that the Gemini API deprecations page doesn't show (report C2). Informational only.
 - CI runs only repository hygiene for now; backend/frontend jobs come in M1/M8.
+- `uv` is not installed on the development machine yet; needed at the start of M1.

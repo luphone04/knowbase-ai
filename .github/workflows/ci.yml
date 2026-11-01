@@ -16,7 +16,7 @@ concurrency:
 # Skeleton (Milestone 0). Jobs are added as the code they check lands:
 #   M1: backend lint + unit tests (mocked Gemini), integration tests against a
 #       pgvector/pgvector:0.8.7-pg18-trixie service container.
-#   M8: frontend lint, TypeScript check, production build (Node 22).
+#   M8: frontend lint, TypeScript check, production build (Node 24).
 # No GEMINI_API_KEY is configured here; live Gemini tests never run in CI.
 
 jobs:
