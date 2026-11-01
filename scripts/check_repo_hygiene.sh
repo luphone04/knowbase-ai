@@ -18,14 +18,14 @@ if [ -n "$forbidden" ]; then
   status=1
 fi
 
-# 2. Secret-looking content (Google API keys, GitHub tokens, private keys).
+# 2. Secret-looking content (Google API keys in AIza… and AQ.… formats, GitHub tokens, private keys).
 # Match output is checked rather than exit status: xargs exits non-zero whenever
 # any single file has no match.
 scan() {
   printf '%s\n' "$files" | grep -v '^$' | xargs -I{} grep -IEnH -e "$1" -- "{}" 2>/dev/null || true
 }
 
-secret_regex='AIza[0-9A-Za-z_-]{35}|gh[pousr]_[A-Za-z0-9]{36,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+secret_regex='AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{40,}|gh[pousr]_[A-Za-z0-9]{36,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
 matches=$(scan "$secret_regex")
 if [ -n "$matches" ]; then
   echo "FAIL: secret-looking content found:"
