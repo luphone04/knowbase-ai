@@ -5,12 +5,15 @@ the two in sync.
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SCHEMA_EMBEDDING_DIMENSIONS = 768
+PLACEHOLDER_SECRET = "replace-with-random-secret"
+MIN_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -21,6 +24,16 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr
     access_token_expire_minutes: int = Field(default=480, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # Send the auth cookie only over HTTPS. Required in production; off for local HTTP.
+    cookie_secure: bool = False
+    # Host header allowlist (comma-separated) against DNS-rebinding and Host spoofing.
+    allowed_hosts: str = "localhost,127.0.0.1"
+
+    auth_rate_limit_window_seconds: int = Field(default=900, gt=0)
+    login_rate_limit_per_ip: int = Field(default=20, gt=0)
+    login_failure_limit_per_email: int = Field(default=5, gt=0)
+    register_rate_limit_per_ip: int = Field(default=5, gt=0)
 
     database_url: str
 
@@ -46,6 +59,17 @@ class Settings(BaseSettings):
 
     worker_poll_seconds: float = Field(default=5, gt=0)
 
+    @field_validator("app_secret_key", "jwt_secret")
+    @classmethod
+    def _random_secret(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value()
+        if secret == PLACEHOLDER_SECRET or len(secret) < MIN_SECRET_LENGTH:
+            raise ValueError(
+                f"must be a random value of at least {MIN_SECRET_LENGTH} characters, "
+                "not the .env.example placeholder"
+            )
+        return value
+
     @field_validator("embedding_dimensions")
     @classmethod
     def _matches_schema(cls, value: int) -> int:
@@ -57,9 +81,30 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("frontend_origin")
+    @classmethod
+    def _origin_format(cls, value: str) -> str:
+        # Browsers send Origin as scheme://host[:port]; compare against that exact form.
+        parts = urlsplit(value.strip())
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("must be an http(s) origin such as http://localhost:3000")
+        if parts.path not in ("", "/") or parts.query or parts.fragment:
+            raise ValueError("must be an origin only, without a path, query, or fragment")
+        return f"{parts.scheme}://{parts.netloc}".lower()
+
+    @model_validator(mode="after")
+    def _production_requires_secure_cookies(self) -> Self:
+        if self.app_env == "production" and not self.cookie_secure:
+            raise ValueError("COOKIE_SECURE must be true when APP_ENV=production")
+        return self
+
     @property
     def gemini_configured(self) -> bool:
         return bool(self.gemini_api_key.get_secret_value())
+
+    @property
+    def allowed_host_list(self) -> list[str]:
+        return [host.strip() for host in self.allowed_hosts.split(",") if host.strip()]
 
 
 @lru_cache

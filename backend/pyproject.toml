@@ -5,10 +5,13 @@ description = "Knowbase AI backend: REST API and ingestion worker"
 requires-python = "==3.12.*"
 dependencies = [
     "alembic>=1.20",
+    "email-validator>=2",
     "fastapi>=0.162",
     "psycopg[binary]>=3.3",
+    "pwdlib[argon2]>=0.3",
     "pydantic>=2.14",
     "pydantic-settings>=2.16",
+    "pyjwt>=2.15",
     "sqlalchemy>=2.1",
     "uvicorn>=0.54",
 ]
