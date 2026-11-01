@@ -16,7 +16,6 @@ from app.api.dependencies import (
 from app.api.v1.schemas import LoginRequest, RegisterRequest, SessionOut, UserOut, WorkspaceOut
 from app.auth.rate_limit import AuthRateLimits
 from app.auth.service import (
-    InvalidCredentials,
     authenticate,
     normalize_email,
     primary_membership,
@@ -86,12 +85,12 @@ def login(
     limits = AuthRateLimits.from_settings(settings)
     email = normalize_email(body.email)
     limiter.hit(limits.login_per_ip, client_ip(request))
-    limiter.check(limits.login_failures_per_email, email)
-    try:
-        user = authenticate(db, email=email, password=body.password)
-    except InvalidCredentials:
-        limiter.record(limits.login_failures_per_email, email)
-        raise
+    # Take a failure slot before verifying, not after. The reservation is atomic,
+    # so concurrent requests can't all pass a stale count: at most `limit`
+    # attempts per email reach password verification in a window. A failure
+    # keeps its slot; a success clears the counter.
+    limiter.reserve(limits.login_failures_per_email, email)
+    user = authenticate(db, email=email, password=body.password)
     limiter.reset(limits.login_failures_per_email, email)
 
     membership = primary_membership(db, user.id)

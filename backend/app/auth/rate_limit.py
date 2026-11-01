@@ -8,6 +8,11 @@ counted even though the request then fails.
 Bucket keys are HMAC-SHA256 digests of the identifier, keyed with
 APP_SECRET_KEY, so the table never stores raw emails or IP addresses.
 
+Every decision is a single atomic upsert, never a read followed by a separate
+write. A read-then-write lets concurrent requests all see the same count and
+all get through. `reserve()` takes a slot before the protected work starts, so
+`limit` is a hard ceiling even under concurrency.
+
 Fixed windows allow up to twice the limit across a window boundary. That's
 acceptable for slowing password guessing in a local prototype.
 """
@@ -18,14 +23,12 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import Settings
 from app.core.errors import AppError
 from app.db.models import RateLimitCounter
-
-_RETENTION = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -71,26 +74,27 @@ class RateLimiter:
         self._key_secret = key_secret.encode()
 
     def hit(self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None) -> None:
-        """Count this attempt, and reject it if it goes over the limit."""
+        """Count this attempt, and reject it if it goes over the limit.
+
+        Rejected attempts are counted too.
+        """
         now = now or datetime.now(UTC)
-        if self._increment(rule, identifier, now) > rule.limit:
+        count = self._upsert(rule, identifier, now, capped=False)
+        if count is None or count > rule.limit:
             raise RateLimitExceeded(self._retry_after(rule, now))
 
-    def check(self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None) -> None:
-        """Reject if the limit is already reached, without counting this attempt."""
-        now = now or datetime.now(UTC)
-        with self._engine.connect() as connection:
-            count = connection.execute(
-                select(RateLimitCounter.count).where(
-                    RateLimitCounter.bucket_key == self._key(rule, identifier),
-                    RateLimitCounter.window_start == self._window_start(rule, now),
-                )
-            ).scalar_one_or_none()
-        if count is not None and count >= rule.limit:
-            raise RateLimitExceeded(self._retry_after(rule, now))
+    def reserve(self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None) -> None:
+        """Atomically take one of the window's `limit` slots, or reject.
 
-    def record(self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None) -> None:
-        self._increment(rule, identifier, now or datetime.now(UTC))
+        Concurrency-safe: during INSERT ... ON CONFLICT DO UPDATE, PostgreSQL
+        locks the counter row and evaluates `WHERE count < limit` against the
+        latest committed value, so concurrent callers can never take more than
+        `limit` slots between them. A rejected attempt takes no slot, so the
+        counter is exactly the number of attempts let through.
+        """
+        now = now or datetime.now(UTC)
+        if self._upsert(rule, identifier, now, capped=True) is None:
+            raise RateLimitExceeded(self._retry_after(rule, now))
 
     def reset(self, rule: RateLimitRule, identifier: str) -> None:
         with self._engine.begin() as connection:
@@ -100,24 +104,35 @@ class RateLimiter:
                 )
             )
 
-    def _increment(self, rule: RateLimitRule, identifier: str, now: datetime) -> int:
+    def _upsert(
+        self, rule: RateLimitRule, identifier: str, now: datetime, *, capped: bool
+    ) -> int | None:
+        """Increment the window's counter in one statement and return the new count.
+
+        With `capped`, the increment only happens while count < limit; otherwise
+        no row comes back and None is returned. (The first insert creates
+        count=1, which every limit of at least 1 allows.)
+        """
+        window_start = self._window_start(rule, now)
         statement = (
             insert(RateLimitCounter)
-            .values(
-                bucket_key=self._key(rule, identifier),
-                window_start=self._window_start(rule, now),
-                count=1,
-            )
+            .values(bucket_key=self._key(rule, identifier), window_start=window_start, count=1)
             .on_conflict_do_update(
                 index_elements=["bucket_key", "window_start"],
                 set_={"count": RateLimitCounter.count + 1},
+                where=(RateLimitCounter.count < rule.limit) if capped else None,
             )
             .returning(RateLimitCounter.count)
         )
         with self._engine.begin() as connection:
-            count: int = connection.execute(statement).scalar_one()
+            count: int | None = connection.execute(statement).scalar_one_or_none()
+            # Drop this rule's finished windows. Pruning is per rule and relative to
+            # the rule's own window, so it can't delete a live window of any length.
             connection.execute(
-                delete(RateLimitCounter).where(RateLimitCounter.window_start < now - _RETENTION)
+                delete(RateLimitCounter).where(
+                    RateLimitCounter.bucket_key.startswith(f"{rule.name}:", autoescape=True),
+                    RateLimitCounter.window_start < window_start,
+                )
             )
         return count
 

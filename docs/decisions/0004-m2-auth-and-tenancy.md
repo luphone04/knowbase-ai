@@ -27,6 +27,12 @@
 
 - PostgreSQL fixed-window counters (no Redis, per SPEC.md §3.1). An atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` makes concurrent attempts count exactly. Each operation runs in its own transaction, so a failed login stays counted.
 - Login: 20 attempts per IP per 15 minutes; 5 **failed** attempts per email per 15 minutes (reset on success). The email limit blocks even the correct password while active, so guessing can't continue. Register: 5 per IP per 15 minutes. `429` with `Retry-After`.
+- **The per-email limit takes a slot before verifying the password (fix after M2 review).** The first version used a read-only `check()` before verification and `record()` after a failure. Concurrent requests all read the same stale count and all got through: 12 of 12 reached Argon2 in the regression test. Now `reserve()` is one statement:
+  `INSERT … ON CONFLICT DO UPDATE SET count = count + 1 WHERE count < :limit RETURNING count`.
+  PostgreSQL locks the counter row and re-checks the `WHERE` against the latest committed value, so concurrent callers can take at most `limit` slots. No row back means no slot: `429`, and Argon2 never runs. A failure keeps its slot. A success clears the counter. A rejected attempt takes no slot, so the counter equals the number of attempts that reached verification.
+  - **Conservative while a success is in flight:** the successful attempt holds a slot until it clears the counter. If 4 failures are recorded and a correct login is mid-verification, a fifth concurrent wrong attempt is refused. That fails closed.
+  - **In-flight failures can go uncounted:** failures already past the gate when a success clears the counter aren't counted. Only the real user's own concurrent successful login can cause that.
+- **Pruning is per rule (fix after M2 review).** Each upsert used to delete *every* counter older than one day. With a window over a day, that deleted the live window too, which silently disabled the limit. It could also delete other rules' windows. Now each call deletes only its own rule's finished windows.
 - Bucket keys are HMAC-SHA256 digests (keyed with `APP_SECRET_KEY`), so the table stores no raw emails or IPs.
 - The client address is the direct peer. `X-Forwarded-For` is ignored, because nothing in this stack sets it and clients could forge it.
 
@@ -56,4 +62,4 @@ Plus database constraints: the `workspace_members` composite primary key, cascad
 - PostgreSQL's own unique-violation DETAIL can name the conflicting email in an unexpected error's log line. Bound parameters are hidden.
 - Behind Docker Desktop's port forwarding, all browser traffic shares one peer address, so the per-IP limits act globally on a local machine.
 - No password reset, email verification, refresh tokens, MFA, or invitations (memberships beyond the owner are only created in tests).
-- Fixed windows allow up to twice the limit across a boundary.
+- **Fixed windows are clock-aligned** (every 15 minutes). Attempts just before and just after a rollover land in different windows, so up to 2 × limit (10) can be verified within moments. `test_fixed_window_rollover_grants_a_fresh_allowance` records this behaviour. The sustained rate is still 5 per 15 minutes. A strict "at most 5 in any rolling 15 minutes" would need a sliding-log limiter (one row per attempt, with a per-key lock), which means a schema change.
