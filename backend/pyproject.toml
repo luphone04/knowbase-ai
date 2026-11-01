@@ -1,0 +1,55 @@
+[project]
+name = "knowbase-backend"
+version = "0.1.0"
+description = "Knowbase AI backend: REST API and ingestion worker"
+requires-python = "==3.12.*"
+dependencies = [
+    "alembic>=1.20",
+    "fastapi>=0.162",
+    "psycopg[binary]>=3.3",
+    "pydantic>=2.14",
+    "pydantic-settings>=2.16",
+    "sqlalchemy>=2.1",
+    "uvicorn>=0.54",
+]
+
+[dependency-groups]
+dev = [
+    # Starlette 1.10 TestClient prefers httpx2 and deprecates httpx.
+    "httpx2>=2.16",
+    "mypy>=2.4",
+    "pytest>=9.2",
+    "ruff>=0.17",
+]
+
+[tool.uv]
+# An application, not a distributable package: install dependencies only.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs a reachable PostgreSQL + pgvector database (DATABASE_URL)",
+]
+# Surface deprecations as failures instead of letting them accumulate.
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+# backend/alembic/ holds migrations; the import is the third-party package.
+known-third-party = ["alembic"]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+strict = true
+plugins = ["pydantic.mypy"]
