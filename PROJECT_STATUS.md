@@ -3,17 +3,17 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M0 — Repository, GitHub, and compatibility preflight** |
-| Status | **BLOCKED**: M0 work and live Gemini check are done locally; waiting on push confirmation and PR route (see Blockers) |
+| Status | **READY_FOR_REVIEW**: checks pass, branches pushed; owner opens the PR manually (`gh` not installed) |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
-| Current branch | `chore/m00-project-setup` (local only, not pushed) |
-| Pull request | not created |
+| Current branch | `chore/m00-project-setup`, pushed to https://github.com/luphone04/knowbase-ai/tree/chore/m00-project-setup |
+| Pull request | not created. Owner opens it manually: https://github.com/luphone04/knowbase-ai/pull/new/chore/m00-project-setup |
 | Last verified checkpoint | 2026-11-01 |
 
 ## Milestones
 
 | Milestone | Scope | Status | Branch / PR | Approval |
 |---|---|---|---|---|
-| M0 | Repository and compatibility preflight | BLOCKED | `chore/m00-project-setup` / not created | — |
+| M0 | Repository and compatibility preflight | READY_FOR_REVIEW | `chore/m00-project-setup` / not created (owner) | Pending: `APPROVE MILESTONE 0` + merge |
 | M1 | Database and service foundation | NOT_STARTED | — | — |
 | M2 | Authentication and workspace isolation | NOT_STARTED | — | — |
 | M3 | Gemini provider and embeddings | NOT_STARTED | — | — |
@@ -47,7 +47,10 @@
 |---|---|---|
 | Written environment and compatibility report | see [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md) | Done |
 | `docker compose config` | No `compose.yaml` yet; deferred to M1 per spec §17.5 | Deferred |
-| Git status clean apart from intended setup files | `git status --short` | Clean after commits |
+| Git status clean apart from intended setup files | `git status --short` | PASS: clean before push |
+| No `.env` or key anywhere in history | `git log --all --name-only`; `git grep` for the key literal and `AIza…`/`AQ.…` patterns over `git rev-list --all` | PASS: 0 hits; only the 13 intended files were ever committed |
+| Setup committed and pushed | `git push -u origin main`; `git push -u origin chore/m00-project-setup`; `git ls-remote origin` | PASS: both refs on origin, remote HEAD → `main` |
+| CI on GitHub | runs when the PR to `main` is opened | **Not run yet** (no PR) |
 | No secrets or local data tracked/staged | `bash scripts/check_repo_hygiene.sh` | PASS (`OK: no secrets or local data tracked or staged.`) |
 | Hygiene check negative tests | stage, in turn, a dummy `.env`, a file with a fake `AIza…` key, and a file declaring a `NEXT_PUBLIC_*` variable for the Gemini key; run check; unstage | PASS (each exits 1 with a FAIL message). The first run exposed a bug: the content checks never set a failing status because `xargs` exits 123. Fixed and re-tested |
 | CI workflow is valid | `actionlint` (Docker image `rhysd/actionlint`) | PASS (no findings) |
@@ -69,20 +72,21 @@
 
 ## Commits
 
-| Branch | SHA | Message |
-|---|---|---|
-| `main` (local) | `e2b2a9f` | docs: add Knowbase AI implementation specification |
-| `chore/m00-project-setup` | see `git log`; recorded in the PR | chore: add repository hygiene, env template, and CI skeleton |
-| `chore/m00-project-setup` | see `git log`; recorded in the PR | docs: add README, architecture overview, compatibility report, and status tracker |
+| Branch | SHA | Message | Pushed |
+|---|---|---|---|
+| `main` | `e2b2a9f28edb655b8507281a8b352069e0b12f86` | docs: add Knowbase AI implementation specification | yes |
+| `chore/m00-project-setup` | `76d46ab` | chore: add repository hygiene, env template, and CI skeleton | yes |
+| `chore/m00-project-setup` | `3b1d37e` | docs: add README, architecture overview, compatibility report, and status tracker | yes |
+| `chore/m00-project-setup` | `4466b34` | fix(hygiene): detect AQ.-format Google API keys | yes |
+| `chore/m00-project-setup` | `c07acd3` | docs: record live Gemini preflight results | yes |
+| `chore/m00-project-setup` | `c20092c` | docs: apply Milestone 0 decisions to spec and project docs | yes |
+| `chore/m00-project-setup` | branch head | docs: record Milestone 0 push in project status (this file) | yes |
 
-Merge commit: none.
+Merge commit: none (owner merges after review).
 
 ## Blockers
 
-1. **Push confirmation:** confirm the remote and visibility. Plan: push
-   `main` (contains only SPEC.md), then push `chore/m00-project-setup`.
-2. **PR creation:** `gh` is not installed. Either `brew install gh && gh auth login`,
-   or open the PR in the GitHub web UI after the push.
+None for M0. Next step is the owner's: open the PR, review, then reply `APPROVE MILESTONE 0` and merge.
 
 ## Decisions (owner, 2026-11-01)
 
