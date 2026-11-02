@@ -8,12 +8,17 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.health import router as health_router
 from app.api.v1 import router as api_v1_router
+from app.api.v1.sources import max_upload_bytes
 from app.config import get_settings
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.errors import install_error_handlers
 from app.core.logging import configure_logging
 from app.core.origin import OriginCheckMiddleware
 
 logger = logging.getLogger(__name__)
+
+JSON_BODY_LIMIT = 1024 * 1024
+MULTIPART_OVERHEAD = 64 * 1024
 
 
 @asynccontextmanager
@@ -42,7 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router)
 
     # Starlette runs the last-added middleware first:
-    # TrustedHost -> CORS (answers preflights) -> Origin check -> routes.
+    # TrustedHost -> body size limit -> CORS (answers preflights) -> Origin check -> routes.
     app.add_middleware(OriginCheckMiddleware, allowed_origins=[settings.frontend_origin])
     app.add_middleware(
         CORSMiddleware,
@@ -51,6 +56,12 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type"],
         max_age=600,
+    )
+    # Uploads get the file limit plus room for multipart framing; JSON bodies 1 MiB.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        default_limit=JSON_BODY_LIMIT,
+        path_limits={"/api/v1/sources/files": max_upload_bytes(settings) + MULTIPART_OVERHEAD},
     )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_host_list)
     return app

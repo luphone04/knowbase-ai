@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
@@ -68,3 +68,67 @@ class MemberOut(BaseModel):
     email: str
     role: str
     joined_at: datetime
+
+
+# --- sources and jobs (M4) -----------------------------------------------------------
+# Storage keys and filesystem paths are deliberately absent from every response.
+
+
+class JobOut(BaseModel):
+    id: uuid.UUID
+    source_id: uuid.UUID
+    job_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    next_run_at: datetime
+    last_error: str | None
+    result: dict[str, Any]
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class JobSummaryOut(BaseModel):
+    id: uuid.UUID
+    job_type: str
+    status: str
+    last_error: str | None
+
+
+class SourceOut(BaseModel):
+    id: uuid.UUID
+    kind: str
+    display_name: str
+    original_filename: str | None
+    file_type: str | None
+    file_size: int | None
+    status: str
+    error_message: str | None
+    last_indexed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    document_count: int
+    chunk_count: int
+    latest_job: JobSummaryOut | None
+
+
+class DocumentOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    content_hash: str
+    chunk_count: int
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SourceDetailOut(SourceOut):
+    documents: list[DocumentOut]
+    jobs: list[JobOut]
+
+
+class UploadOut(BaseModel):
+    source: SourceOut
+    job: JobOut | None
+    unchanged: bool
