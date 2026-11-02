@@ -23,7 +23,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Engine, delete
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import Settings
@@ -92,9 +92,33 @@ class RateLimiter:
         `limit` slots between them. A rejected attempt takes no slot, so the
         counter is exactly the number of attempts let through.
         """
+        self.reserve_many(rule, identifier, 1, now=now)
+
+    def reserve_many(
+        self, rule: RateLimitRule, identifier: str, amount: int, *, now: datetime | None = None
+    ) -> None:
+        """Atomically take `amount` slots at once, or none of them (same guarantees as reserve)."""
+        if amount < 1:
+            raise ValueError("amount must be at least 1")
         now = now or datetime.now(UTC)
-        if self._upsert(rule, identifier, now, capped=True) is None:
+        if (
+            amount > rule.limit
+            or self._upsert(rule, identifier, now, amount=amount, capped=True) is None
+        ):
             raise RateLimitExceeded(self._retry_after(rule, now))
+
+    def remaining(
+        self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None
+    ) -> int:
+        now = now or datetime.now(UTC)
+        with self._engine.connect() as connection:
+            used = connection.execute(
+                select(RateLimitCounter.count).where(
+                    RateLimitCounter.bucket_key == self._key(rule, identifier),
+                    RateLimitCounter.window_start == self._window_start(rule, now),
+                )
+            ).scalar_one_or_none()
+        return max(0, rule.limit - (used or 0))
 
     def reset(self, rule: RateLimitRule, identifier: str) -> None:
         with self._engine.begin() as connection:
@@ -105,22 +129,28 @@ class RateLimiter:
             )
 
     def _upsert(
-        self, rule: RateLimitRule, identifier: str, now: datetime, *, capped: bool
+        self,
+        rule: RateLimitRule,
+        identifier: str,
+        now: datetime,
+        *,
+        capped: bool,
+        amount: int = 1,
     ) -> int | None:
-        """Increment the window's counter in one statement and return the new count.
+        """Add `amount` to the window's counter in one statement; return the new count.
 
-        With `capped`, the increment only happens while count < limit; otherwise
-        no row comes back and None is returned. (The first insert creates
-        count=1, which every limit of at least 1 allows.)
+        With `capped`, the addition only happens while count + amount <= limit;
+        otherwise no row comes back and None is returned. (Callers make sure
+        amount <= limit, so the first insert is always allowed.)
         """
         window_start = self._window_start(rule, now)
         statement = (
             insert(RateLimitCounter)
-            .values(bucket_key=self._key(rule, identifier), window_start=window_start, count=1)
+            .values(bucket_key=self._key(rule, identifier), window_start=window_start, count=amount)
             .on_conflict_do_update(
                 index_elements=["bucket_key", "window_start"],
-                set_={"count": RateLimitCounter.count + 1},
-                where=(RateLimitCounter.count < rule.limit) if capped else None,
+                set_={"count": RateLimitCounter.count + amount},
+                where=(RateLimitCounter.count + amount <= rule.limit) if capped else None,
             )
             .returning(RateLimitCounter.count)
         )

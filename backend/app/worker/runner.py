@@ -1,21 +1,33 @@
 """Ingestion worker entry point: `python -m app.worker.runner`.
 
-Milestone 1 placeholder. It confirms database connectivity and then idles until
-stopped. Claiming and processing ingestion jobs arrives in Milestone 4.
+One process handling one job at a time (SPEC.md §4.2). The loop:
+1. Every lease period, recover jobs abandoned by a crashed worker.
+2. Claim the next due job (FOR UPDATE SKIP LOCKED) and process it.
+3. Sleep `WORKER_POLL_SECONDS` when the queue is empty.
+
+SIGTERM/SIGINT stop the loop after the current job. If the process is killed
+mid-job, the job's lease lapses and the next recovery pass requeues it.
 """
 
 import logging
+import os
 import signal
+import socket
 import sys
 import threading
+import time
+import uuid
 from types import FrameType
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.db.session import get_engine
+from app.db.session import get_engine, get_sessionmaker
+from app.ingestion.pipeline import IngestionWorker
+from app.ingestion.storage import FileStorage
+from app.providers.factory import get_embedding_provider
 
 logger = logging.getLogger("app.worker")
 
@@ -60,11 +72,38 @@ def main() -> int:
         logger.error("Database unreachable after %d attempts; exiting", DB_CONNECT_ATTEMPTS)
         return 1
 
-    logger.info("Worker ready; job processing is not implemented yet (Milestone 4)")
-    while not stop.wait(settings.worker_poll_seconds):
-        pass
+    worker = build_worker(settings)
+    if not settings.gemini_configured:
+        logger.warning("GEMINI_API_KEY is not set: jobs that need new embeddings will fail clearly")
+    logger.info("Worker %s ready", worker.worker_id)
+    run_loop(worker, stop, settings)
     logger.info("Worker stopped")
     return 0
+
+
+def build_worker(settings: Settings) -> IngestionWorker:
+    return IngestionWorker(
+        settings=settings,
+        session_factory=get_sessionmaker(),
+        engine=get_engine(),
+        storage=FileStorage(settings.upload_dir),
+        embedding_provider_factory=get_embedding_provider,
+        worker_id=f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}",
+    )
+
+
+def run_loop(worker: IngestionWorker, stop: threading.Event, settings: Settings) -> None:
+    next_recovery = 0.0
+    while not stop.is_set():
+        try:
+            if time.monotonic() >= next_recovery:
+                worker.recover()
+                next_recovery = time.monotonic() + settings.job_lease_seconds / 2
+            if worker.run_once():
+                continue  # more work may be waiting
+        except SQLAlchemyError as exc:
+            logger.warning("Worker loop database error (%s); backing off", type(exc).__name__)
+        stop.wait(settings.worker_poll_seconds)
 
 
 if __name__ == "__main__":
