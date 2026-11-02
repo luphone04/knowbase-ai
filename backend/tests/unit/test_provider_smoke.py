@@ -11,6 +11,7 @@ from tests.fakes.gemini import (
     Harness,
     api_error,
     daily_quota_error,
+    deadline_error,
     embedding_response,
     generation_response,
     invalid_key_error,
@@ -64,11 +65,12 @@ def test_output_never_includes_vectors_or_generated_text() -> None:
     [
         (daily_quota_error(), 3),
         (unavailable_error(), 4),
+        (deadline_error(), 4),
         (invalid_key_error(), 5),
         (api_error(404, "NOT_FOUND"), 5),
         (api_error(400, "INVALID_ARGUMENT"), 1),
     ],
-    ids=["daily-quota", "unavailable", "bad-key", "unknown-model", "bad-request"],
+    ids=["daily-quota", "unavailable", "timeout", "bad-key", "unknown-model", "bad-request"],
 )
 def test_failures_map_to_distinct_exit_codes(error: Exception, code: int) -> None:
     exit_code, output, _ = run(generate=[error, error])
@@ -87,3 +89,12 @@ def test_without_a_key_nothing_is_sent_and_verification_stays_pending() -> None:
     out = io.StringIO()
     assert smoke.main(out=out) == 2  # tests run with GEMINI_API_KEY=""
     assert "PENDING" in out.getvalue()
+
+
+def test_a_failing_step_does_not_hide_the_others() -> None:
+    code, output, h = run(generate=[deadline_error()])
+    assert code == 4
+    assert [c.method for c in h.calls].count("embed_content") == 2  # embeddings still checked
+    assert "[PASS] task type RETRIEVAL_DOCUMENT" in output
+    assert "[PASS] task type RETRIEVAL_QUERY" in output
+    assert "1 of 3 steps failed" in output

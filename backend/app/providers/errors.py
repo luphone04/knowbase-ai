@@ -70,10 +70,21 @@ class ProviderQuotaExhausted(ProviderError):
 
 
 class ProviderUnavailable(ProviderError):
-    """5xx, timeout, or network failure: probably temporary."""
+    """5xx or network failure: probably temporary."""
 
     category = "unavailable"
     retryable = True
+
+
+class ProviderTimeout(ProviderUnavailable):
+    """The request didn't finish within the deadline (504 DEADLINE_EXCEEDED or read timeout).
+
+    Not retried: re-sending with the same deadline restarts the same wait. Google's
+    guidance for 504 is to raise the client deadline rather than retry.
+    """
+
+    category = "timeout"
+    retryable = False
 
 
 class InvalidProviderResponse(ProviderError):

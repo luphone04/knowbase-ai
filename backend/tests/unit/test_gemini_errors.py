@@ -11,12 +11,14 @@ from app.providers.errors import (
     ProviderQuotaExhausted,
     ProviderRateLimited,
     ProviderRequestError,
+    ProviderTimeout,
     ProviderUnavailable,
 )
 from app.providers.retry import RetryPolicy, equal_jitter
 from tests.fakes.gemini import (
     api_error,
     daily_quota_error,
+    deadline_error,
     generation_response,
     invalid_key_error,
     make_harness,
@@ -42,8 +44,8 @@ def test_temporary_503_is_retried_with_exponential_backoff() -> None:
     assert h.sleeps == [1.0, 2.0]
 
 
-@pytest.mark.parametrize("code", [500, 502, 503, 504])
-def test_every_5xx_is_retryable(code: int) -> None:
+@pytest.mark.parametrize("code", [500, 502, 503])
+def test_overload_and_server_errors_are_retryable(code: int) -> None:
     h = make_harness()
     h.client.models.generate_script.extend([unavailable_error(code), generation_response("ok")])
     assert h.generation.generate(PROMPT).attempts == 2
@@ -63,12 +65,36 @@ def test_provider_retry_delay_is_respected_when_reasonable() -> None:
     assert h.sleeps == [7.0]
 
 
-def test_network_errors_and_timeouts_are_retried() -> None:
+def test_connection_failures_are_retried() -> None:
     h = make_harness()
     h.client.models.generate_script.extend(
-        [httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), generation_response("ok")]
+        [httpx.ConnectError("refused"), httpx.ConnectTimeout("no route"), generation_response("ok")]
     )
     assert h.generation.generate(PROMPT).attempts == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        deadline_error(),
+        unavailable_error(504),
+        httpx.ReadTimeout("slow"),
+        httpx.WriteTimeout("slow"),
+    ],
+    ids=["504-deadline-exceeded", "504-gateway-timeout", "read-timeout", "write-timeout"],
+)
+def test_deadline_exceeded_is_not_retried(error: Exception) -> None:
+    """Re-sending with the same deadline restarts the same wait (seen live in M3:
+    4 x 504 at 30 s, then the same request succeeded in 50.7 s without a deadline)."""
+    h = make_harness()
+    h.client.models.generate_script.extend([error, generation_response("ok")])
+    with pytest.raises(ProviderTimeout) as excinfo:
+        h.generation.generate(PROMPT)
+    assert len(h.calls) == 1 and h.sleeps == []
+    assert excinfo.value.category == "timeout"
+    assert "GEMINI_REQUEST_TIMEOUT_SECONDS" in excinfo.value.message
+    assert isinstance(excinfo.value, ProviderUnavailable)  # still an availability problem
+    assert h.health.snapshot().last_error_category == "timeout"
 
 
 def test_embedding_calls_are_retried_too() -> None:

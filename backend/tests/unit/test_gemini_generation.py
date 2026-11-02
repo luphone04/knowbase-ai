@@ -54,6 +54,8 @@ def test_request_has_no_paid_tools_or_deprecated_sampling_parameters() -> None:
     assert config.tools is None  # no Google Search grounding / File Search
     assert (config.temperature, config.top_p, config.top_k) == (None, None, None)
     assert config.candidate_count is None
+    assert config.automatic_function_calling is not None
+    assert config.automatic_function_calling.disable is True  # no hidden extra calls
 
 
 def test_per_call_token_limit_override() -> None:

@@ -92,11 +92,14 @@ def test_rate_limit_counts_as_a_quota_error(tenant_a: Tenant, gemini_key: str) -
     assert tenant_a.client.get(STATUS).json()["status"] == "quota_error"
 
 
-def test_outage_does_not_masquerade_as_quota(tenant_a: Tenant, gemini_key: str) -> None:
-    provider_health.record_failure("unavailable")
+@pytest.mark.parametrize("category", ["unavailable", "timeout"])
+def test_outage_does_not_masquerade_as_quota(
+    tenant_a: Tenant, gemini_key: str, category: str
+) -> None:
+    provider_health.record_failure(category)
     body = tenant_a.client.get(STATUS).json()
     assert body["status"] == "configured"
-    assert body["last_error"]["category"] == "unavailable"
+    assert body["last_error"]["category"] == category
 
 
 def test_no_response_ever_contains_a_secret(tenant_a: Tenant, gemini_key: str) -> None:

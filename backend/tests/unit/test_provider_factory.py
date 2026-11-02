@@ -66,6 +66,13 @@ def test_client_has_a_timeout_and_no_sdk_side_retries(settings_with: SettingsFac
     assert options.retry_options is not None and options.retry_options.attempts == 1
 
 
+def test_default_timeout_allows_for_slow_periods(settings_with: SettingsFactory) -> None:
+    settings = settings_with(GEMINI_API_KEY=FAKE_KEY)
+    assert settings.gemini_request_timeout_seconds == 90
+    client = factory.build_gemini_client(settings)
+    assert client._api_client._http_options.timeout == 90000
+
+
 def test_key_comes_from_backend_settings_only(
     settings_with: SettingsFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

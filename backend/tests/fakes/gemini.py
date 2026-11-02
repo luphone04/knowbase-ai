@@ -226,6 +226,10 @@ def unavailable_error(code: int = 503) -> errors.APIError:
     return api_error(code, "UNAVAILABLE", "The model is overloaded. Please try again later.")
 
 
+def deadline_error() -> errors.APIError:
+    return api_error(504, "DEADLINE_EXCEEDED", "Deadline expired before operation could complete.")
+
+
 def invalid_key_error() -> errors.APIError:
     return api_error(
         400,

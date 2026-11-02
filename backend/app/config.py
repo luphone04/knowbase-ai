@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     gemini_embedding_batch_size: int = Field(default=8, ge=1, le=100)
     # Includes thinking tokens (SPEC.md §2.3).
     gemini_max_output_tokens: int = Field(default=1200, ge=1, le=65536)
-    gemini_request_timeout_seconds: float = Field(default=30, gt=0, le=300)
+    # Sent to Gemini as the server deadline too (X-Server-Timeout). 90 s leaves room for
+    # slow periods: a one-token reply took 50.7 s during M3 live testing.
+    gemini_request_timeout_seconds: float = Field(default=90, gt=0, le=300)
     # Bounded retries for 429 rate limits and 5xx/network errors only.
     gemini_max_retries: int = Field(default=3, ge=0, le=5)
     gemini_retry_base_delay_seconds: float = Field(default=1, gt=0, le=10)

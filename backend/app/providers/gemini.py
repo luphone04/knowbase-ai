@@ -27,6 +27,7 @@ from app.providers.errors import (
     ProviderQuotaExhausted,
     ProviderRateLimited,
     ProviderRequestError,
+    ProviderTimeout,
     ProviderUnavailable,
 )
 from app.providers.health import ProviderHealth, provider_health
@@ -41,12 +42,24 @@ from app.providers.interfaces import (
 from app.providers.retry import RetryPolicy, call_with_retries, equal_jitter
 from app.providers.vectors import normalize_embedding
 
-try:  # The SDK can use either HTTP stack; network errors from both are retryable.
+try:  # The SDK can use either HTTP stack; handle errors from both.
     import httpx2
 
     _TRANSPORT_ERRORS: tuple[type[Exception], ...] = (httpx.TransportError, httpx2.TransportError)
+    _READ_TIMEOUTS: tuple[type[Exception], ...] = (
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+        httpx2.ReadTimeout,
+        httpx2.WriteTimeout,
+    )
 except ImportError:  # pragma: no cover - httpx2 is optional
     _TRANSPORT_ERRORS = (httpx.TransportError,)
+    _READ_TIMEOUTS = (httpx.ReadTimeout, httpx.WriteTimeout)
+
+_TIMEOUT_MESSAGE = (
+    "Gemini did not finish within the request timeout (GEMINI_REQUEST_TIMEOUT_SECONDS). "
+    "The service is slow right now; try again later, or raise the timeout."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +124,8 @@ def classify_gemini_error(exc: Exception) -> ProviderError | None:
                 quota_ids=quota_ids,
                 **common,
             )
+        if exc.code == 504 or exc.status == "DEADLINE_EXCEEDED":
+            return ProviderTimeout(_TIMEOUT_MESSAGE, **common)
         if exc.code >= 500:
             return ProviderUnavailable(
                 "Gemini is temporarily unavailable. Try again shortly.", **common
@@ -134,6 +149,8 @@ def classify_gemini_error(exc: Exception) -> ProviderError | None:
             )
         return ProviderRequestError("Gemini rejected the request as invalid.", **common)
 
+    if isinstance(exc, _READ_TIMEOUTS):
+        return ProviderTimeout(_TIMEOUT_MESSAGE)
     if isinstance(exc, _TRANSPORT_ERRORS):
         return ProviderUnavailable(
             "Gemini could not be reached (timeout or network error). Try again shortly."
@@ -255,6 +272,9 @@ class GeminiGenerationProvider:
             system_instruction=system_instruction,
             max_output_tokens=max_output_tokens or self._max_output_tokens,
             thinking_config=types.ThinkingConfig(thinking_level=self._thinking_level),
+            # One request per call: the SDK's automatic function calling could make
+            # extra model calls if tools were ever attached.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         started = time.perf_counter()
         response, attempts = self._calls.run(
