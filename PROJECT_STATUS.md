@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M2 — Authentication and workspace isolation** |
-| Status | **READY_FOR_REVIEW**: M2 plus the review fix for the login rate-limit race; checks pass, pushed to `main`; awaiting `APPROVE MILESTONE 2` |
+| Current milestone | **M3 — Gemini provider and embeddings** |
+| Status | **READY_FOR_REVIEW**: checks pass, live smoke test PASS, pushed to `main`; awaiting `APPROVE MILESTONE 3` |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-01 |
+| Last verified checkpoint | 2026-11-02 |
 
 ## Milestones
 
@@ -15,8 +15,8 @@
 |---|---|---|---|---|
 | M0 | Repository and compatibility preflight | APPROVED_AND_MERGED | `47b96a4` | `APPROVE MILESTONE 0`, 2026-11-01 |
 | M1 | Database and service foundation | APPROVED_AND_MERGED | `e8d667a` | `APPROVE MILESTONE 1`, 2026-11-01 |
-| M2 | Authentication and workspace isolation | READY_FOR_REVIEW (review fix applied) | see Commits | Pending: `APPROVE MILESTONE 2` |
-| M3 | Gemini provider and embeddings | NOT_STARTED | — | — |
+| M2 | Authentication and workspace isolation | APPROVED_AND_MERGED | `e488b7b` | `APPROVE MILESTONE 2`, 2026-11-02 |
+| M3 | Gemini provider and embeddings | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 3` |
 | M4 | File ingestion and durable worker | NOT_STARTED | — | — |
 | M5 | Website crawler and incremental indexing | NOT_STARTED | — | — |
 | M6 | Hybrid retrieval and RRF | NOT_STARTED | — | — |
@@ -24,125 +24,86 @@
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
-## M2 checklist (SPEC.md §17.7)
+## M3 checklist (SPEC.md §17.8)
 
-Design and rationale: [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md).
+Design and rationale: [ADR 0005](docs/decisions/0005-m3-gemini-provider.md).
 
-- [x] Registration with email validation (`email-validator`, lower-cased and checked by a DB constraint)
-- [x] Argon2id password hashing (64 MiB, t=3, p=4), with rehash on login
-- [x] Login, logout, and a JWT in an HttpOnly cookie (HS256; required claims; algorithm pinned); logout revokes the token server-side
-- [x] Workspace and owner membership created in the same transaction as the user
-- [x] Authenticated-user and workspace dependency (`get_auth_context`), re-checking membership per request
-- [x] Workspace membership and role checks (owner/admin can rename; member read-only)
-- [x] Tenant-safe query layer: session guard that auto-filters `WorkspaceScoped` models and fails closed (`app/db/tenancy.py`)
-- [x] Cross-workspace tests for read, write, and delete, plus UUID guessing, with two real tenants. Source, conversation, and message isolation tests are added in M4 and M7, when those tables exist; the fixtures and mechanism are ready.
-- [x] CSRF Origin check and exact CORS; Host allowlist
-- [x] Login and registration rate limiting (PostgreSQL counters)
-- [x] Tests that hashes are never plaintext and that cookies carry the expected flags
+- [x] Provider interfaces (`GenerationProvider`, `EmbeddingProvider`) and Gemini implementations (`app/providers/`)
+- [x] API key loaded only from backend settings (`GEMINI_API_KEY`); the SDK's own env lookup and Vertex AI are bypassed explicitly
+- [x] Model IDs re-verified in Google's docs on 2026-11-02 (`gemini-3.8-flash` stable, no shutdown date; `gemini-embedding-001` listed, earliest shutdown 2028-05-14) and by live requests
+- [x] One real generation request (live PASS)
+- [x] One real document-embedding and one real query-embedding request (live PASS)
+- [x] Task types, 768 dimensions, finite values, and normalised vectors verified (unit tests and live)
+- [x] Bounded retry for 429/5xx, with clear quota errors (an exhausted daily quota is not retried; deadline exceeded is not retried, see below)
+- [x] `GEMINI_THINKING_LEVEL` passed; a finish reason other than `STOP`, or an empty answer, is reported as incomplete
+- [x] Usage and latency logging without keys or prompts, plus log redaction of secrets
+- [x] Deterministic mocks for automated tests (`tests/fakes/`)
+- [x] Tests proving no paid fallback is attempted
+- [x] Configuration status endpoint that reveals no secrets (`GET /api/v1/ai/status`)
 
-## M2 acceptance evidence (2026-11-01)
+Deferred, with reasons (ADR 0005): the SPEC.md §2.5 daily caps (300 embedded texts per day, 30 chats per user) go into M4 and M7, where real usage is counted.
+
+## M3 acceptance evidence (2026-11-02)
 
 | Criterion | Command | Result |
 |---|---|---|
-| Register, login, `/auth/me`, logout work | README curl walkthrough; `curl` end-to-end against the Compose stack | PASS (16/16 checks, below) |
-| A cannot reach B's workspace, even by guessing UUIDs | `tests/integration/test_workspace_isolation.py`; curl steps 5–7 | PASS: 404, identical to a random id |
-| Full suite on host against throwaway pgvector (what CI runs) | `uv run pytest` | **PASS: 176 passed, 0 skipped** (83 unit, 93 integration), after the review fix |
-| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 173 passed, 3 skipped (`.env.example` isn't in the image; these run on host and CI) |
-| M1 regression | same runs (health, readiness, extensions, migrations, volumes) | PASS |
-| Lint / format / strict types | `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy` | PASS |
-| Lockfile current | `uv lock --check` | PASS |
-| Migrations from a clean database | every test session creates a new database and runs `alembic upgrade head`; scratch DBs test upgrade, idempotency, downgrade to base, and re-upgrade | PASS |
-| Models match migrations | `alembic check`; `test_models_match_migrations` (`compare_metadata` is empty) | PASS |
-| Compose stack | `docker compose up --build -d`; migrate applied `0002_users_workspaces` to the dev DB | PASS: all services healthy |
-| Tests can actually fail (mutation check) | Disable each control and re-run its tests: tenancy guard, revocation, origin check, failed-login counting, input echo, `is_active`, `hide_parameters` | PASS: every mutation caught (1–14 failing tests each); files restored byte-for-byte |
-| No secrets leaked | grep Compose logs for passwords, JWTs, Argon2 hashes, Gemini key; hygiene script | PASS: 0 hits |
+| Mocked tests pass | `uv run pytest` (host, throwaway pgvector; same as CI) | **PASS: 303 passed, 0 skipped** (202 unit, 101 integration; 127 of them new for M3) |
+| Same suite in the api container | `docker compose exec api pytest -q` | PASS: 300 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
+| Live generation + embeddings | `docker compose exec api python -m app.providers.smoke` | **PASS** on the final run (details below) |
+| No API response contains the key | `test_no_response_ever_contains_a_secret` (status, me, workspace, health, ready, openapi, docs); live: status and register responses compared against the real key inside the container | PASS: key and its 10-character prefix absent |
+| No logs contain the key | `RedactingFormatter` tests; live: 140 lines of Compose logs checked against the real key inside the container | PASS: absent |
+| Status endpoint never calls Gemini | integration tests replace `genai.Client` with a function that fails if called | PASS |
+| M2 auth and isolation still work | full suite; live: anonymous `/ai/status` → 401, A reading B's workspace → 404 | PASS |
+| Lint / format / strict types / lock | `ruff check`, `ruff format --check`, `mypy` (strict, app + tests), `uv lock --check` | PASS |
+| Compose config | `docker compose config --quiet` | PASS |
+| Tests catch regressions (mutation check) | 20 controls broken one at a time, then restored with `git checkout`: Vertex guard, SDK-retry guard, normalisation, finish-reason and empty checks, retry bound, daily-quota rule, long-wait rule, 400 handling, dimension/NaN/count checks, query task type, thinking level, prompt logging, status key leak, status quota state, log redaction, timeout retry, automatic function calling | PASS: every mutation caught (1–10 failing tests each); working tree clean |
 | CI workflow valid | `actionlint` | PASS. CI run on GitHub: not checked from here (`gh` not installed) |
 
-End-to-end curl checks against the Compose stack (port 8001):
-- Register (201, cookie `HttpOnly; Max-Age=28800; Path=/; SameSite=lax`).
-- `/me` (200).
-- Own workspace (200).
-- B's workspace: GET and PATCH both 404, and B's name unchanged.
-- Random UUID (404, same body).
-- Wrong password and unknown email return identical 401s.
-- Origin `localhost:5173` gets 403.
-- Bad Host gets 400.
-- CORS preflight grants exactly `http://localhost:3000` with credentials.
-- Logout 204, then replaying the old token gets 401.
-- `/ready` 200.
-- A 422 response does not echo the password.
+### Live Gemini results (real key, free tier, 2026-11-02 UTC)
 
-The test accounts were deleted afterwards; the dev DB has 0 users.
+| Run | Generation (`gemini-3.8-flash`) | Document embedding | Query embedding | Outcome |
+|---|---|---|---|---|
+| 1 (02:15) | 4 × `504 DEADLINE_EXCEEDED` at about 30 s | not run (the command stopped at step 1) | not run | exit 4: provider slow |
+| 2 (02:19) | 4 × `504 DEADLINE_EXCEEDED` | **PASS**: 2 texts, 1 request, 2 × 768, norm 1.000000000, 803 ms | **PASS**: 768, norm 1.000000000, 504 ms | exit 4; the key, project, and embeddings are fine |
+| Diagnostic (between runs 2 and 3) | **1** raw-SDK request with no deadline: **OK in 50.7 s**, `STOP`, 1 output token, 0 thinking tokens | — | — | the provider was slow; the request was correct |
+| 3, final (02:25) | 3 × `503` (overload) retried with backoff 0.6/1.5/2.8 s, then **200**: `STOP`, 5 chars, prompt 20 / output 1 / thinking 0 tokens, 41.6 s total | **PASS** (847 ms) | **PASS** (523 ms); query is closer to the returns text than the shipping text (cosine 0.715 vs 0.578) | **exit 0, RESULT: PASS** |
 
-Problems found and fixed during M2:
-1. **Bound SQL parameters could reach logs.** SQLAlchemy errors include bound values, so an unexpected failure could have put a password hash in the log. Fixed with `hide_parameters=True`; a test proves the hash no longer appears, and that it did before the fix. PostgreSQL's own unique-violation DETAIL can still name an email (recorded as a limitation).
-2. **A first draft of that test was wrong.** It asserted on the exception's in-memory `.params` rather than its rendered text, the part logs actually contain. Corrected.
-3. **CI secrets were too short.** CI's dummy secrets were 20 characters, and the new 32-character minimum would have failed the migration step. Lengthened.
-4. **Deprecated SQLAlchemy 2.1 APIs** (`Row.tuple()`, `Result.tuples()`) were replaced before they could trip warnings-as-errors.
-5. **Mutation testing refined the design.** The session guard alone keeps tenants apart, but explicit per-user filters are still needed for correct roles inside a shared workspace. Both layers are kept and tested.
+Total live requests today: 17 (13 generation, 4 embedding). No quota error was hit, and no paid feature was used.
 
-## Review fix: login rate-limit race (2026-11-01)
+### Problems found and fixed during M3
 
-**Finding (independent review):** `login` used a read-only `check()` before password verification and `record()` after a failure. Simultaneous attempts, for example from different IPs, all read the same stale count and all reached Argon2.
-
-**Reproduced before fixing:** 12 concurrent wrong-password logins for one email, from 12 IPs. **12 of 12** reached password verification against a limit of 5, for both registered and unregistered emails.
-
-**Fix:** `RateLimiter.reserve()` takes a slot *before* verification in one atomic statement:
-`INSERT … ON CONFLICT DO UPDATE SET count = count + 1 WHERE count < :limit RETURNING count`.
-- PostgreSQL row-locks the counter and re-checks the `WHERE` against the latest committed value, so at most `limit` concurrent callers get a slot.
-- No row back means `429` without touching Argon2.
-- A failure keeps its slot; a success clears the counter.
-- The per-IP limit (`hit()`, every attempt counted) is unchanged.
-- `check()` and `record()` were removed.
-
-**Second bug found while making the tests deterministic:** counter pruning deleted every row older than one day. Any `AUTH_RATE_LIMIT_WINDOW_SECONDS` over 86,400 therefore silently disabled rate limiting, because the live window was deleted on every attempt. Pruning is now per rule and only removes that rule's finished windows. The default of 900 s was never affected.
-
-**One flaky run, explained.** One of the first 15 repeated runs failed, and 110 further runs couldn't reproduce it. The cause is clock-aligned fixed windows: a burst that straddles a :00/:15/:30/:45 rollover gets two allowances. That was demonstrated with an injected clock: 14 attempts within 50 ms got 10 slots. It isn't a race; it's the documented fixed-window trade-off. The API-level rate-limit tests now run inside a 10-year window, so they can't straddle a rollover by chance. A dedicated test pins down the rollover behaviour.
-
-| Check | Result |
-|---|---|
-| New concurrency test (HTTP, 12 parallel, distinct IPs; registered and unregistered email) | 5 verifications, 5 × 401 + 7 × 429; the right password is then refused, with 0 further verifications |
-| Same test against the pre-fix code | FAILS: `assert 12 == 5` |
-| Limiter level: 40 threads `reserve()` with limit 5 | exactly 5 granted; counter = 5 |
-| Success resets the counter | counter row deleted; then a full 5 more verified failures, then 429 |
-| Rejected attempts take no slot | counter stays at 5 after extra attempts |
-| Windows longer than a day; pruning isolated per rule | PASS. Both fail against the old pruning |
-| Stability | 40 consecutive runs of the 4 concurrency tests: 40 passed |
-| Live stack: 12 parallel `curl` logins for one email | 5 × 401, 7 × 429; right password 429; DB counter 5 |
-| Full suite host / container | 176 passed / 173 passed + 3 skipped |
-| ruff, format, strict mypy, `uv lock --check`, hygiene | PASS |
+1. **The 30 s timeout turned provider slowness into failure.** The SDK sends the client timeout to Gemini as `X-Server-Timeout`, so slow requests came back as `504 DEADLINE_EXCEEDED`, and each retry restarted the same 50 s wait (8 of 8 failed). Google's API-errors reference says for 504: "Remove or increase client deadline setting to use the server default." **Fix:** the default timeout is now 90 s, and deadline-exceeded (504, read or write timeout) is a `ProviderTimeout` that isn't retried. 500/502/503, 429 rate limits, and connection failures still back off.
+2. **The smoke command stopped at the first failing step**, which hid the embedding results. Each step now runs and reports independently.
+3. **Automatic function calling was on by default in the SDK.** It was inert, because no tools are attached, but it's now disabled explicitly so each call is exactly one request.
+4. **A dependency side effect:** `google-genai` pulls in `cryptography`, which tightens PyJWT's key types. One M2 `alg: none` test was updated to pass an empty key, which PyJWT expects; the behaviour tested is the same.
+5. **A test fake looked like a real key.** It matched the `AQ.` format and was caught by the hygiene check. Renamed rather than weakening the check.
+6. **My first mutation run damaged the working tree.** zsh didn't split the file list, so the backups failed silently and mutations accumulated in files not yet committed. Each mutation was reversed exactly, verified by the full suite (296 passed) and a read-through. The work was then committed, and the mutation tests were rerun as a bash script that restores with `git checkout` and checks the tree is clean.
 
 ## Manual review steps (owner)
 
 | Step | Expected | Result |
 |---|---|---|
-| `docker compose up --build -d` (set `API_HOST_PORT=8001` in `.env` if 8000 is busy) | migrate applies `0002`; api healthy | not yet checked |
-| Run the README "Try authentication and workspace isolation" block | 201, 201, 200, 404, 404, 403, 204 | not yet checked |
-| Open `/docs`, `POST /api/v1/auth/login`, then `GET /api/v1/auth/me` | 200 with your user and workspace | not yet checked |
-| Register two accounts in two browser profiles; try the other's workspace id at `/api/v1/workspaces/{id}` | 404 | not yet checked |
-| Six wrong passwords for one email, then the right one | 401 ×5, then 429 with `Retry-After` | not yet checked |
-| Fire 12 wrong-password logins for one email in parallel (`for i in $(seq 12); do curl … & done; wait`) | 5 × 401, 7 × 429 | not yet checked |
-| `docker compose exec api pytest -q` | 173 passed, 3 skipped | not yet checked |
-| Confirm in AI Studio that billing is **not** enabled (from M0) | — | not yet checked |
+| `docker compose up --build -d` (keep `API_HOST_PORT=8001` if 8000 is busy) | all services healthy | not yet checked |
+| `docker compose exec api python -m app.providers.smoke` | `RESULT: PASS`, exit 0; or exit 3/4 with a clear message if Gemini is busy or out of quota | not yet checked |
+| Sign in (README curl block), then `curl -b alice.jar …/api/v1/ai/status` | `"status": "configured"`, models listed, `"paid_fallback": false`, no key anywhere | not yet checked |
+| Temporarily set `GEMINI_API_KEY=` in `.env`, restart api, check status and smoke | status `missing_key`; smoke exit 2 "PENDING"; the rest of the app still works | not yet checked |
+| AI Studio: the key's project is on the **Free** tier with no billing account linked | Free tier | not yet checked |
+| `docker compose exec api pytest -q` | 300 passed, 3 skipped | not yet checked |
 
 ## Commits
 
 | Milestone | SHA | Message |
 |---|---|---|
 | M0 | `e2b2a9f` … `47b96a4` | 8 commits; see [M0 summary](#m0-summary) |
-| M1 | `2412552` | feat(backend): add FastAPI service with settings, database session, and health probes |
-| M1 | `b1520cc` | feat(db): add Alembic migrations enabling vector and pg_trgm |
-| M1 | `55b4748` | feat(infra): add Docker Compose stack with healthchecks and worker placeholder |
-| M1 | `fa98e47` | test: cover settings, health probes, database, and migrations |
-| M1 | `8cfd07f` | ci: run backend lint, type checks, and tests against pgvector |
-| M1 | `e8d667a` | docs: document the local stack and record Milestone 1 results |
-| M2 | `33199da` | feat(db): add users, workspaces, memberships, and auth tables |
-| M2 | `82de428` | feat(db): enforce workspace isolation in the ORM session |
-| M2 | `3302a12` | feat(auth): add password hashing, signed tokens, and rate limiting |
-| M2 | `e0dc457` | feat(api): add auth and workspace endpoints with CSRF, CORS, and host checks |
-| M2 | `1c747ff` | test: cover authentication, rate limits, and cross-workspace isolation |
-| M2 | `8541c30` | docs: document auth and tenancy design and record Milestone 2 results |
-| M2 review fix | see `git log` | fix(auth): reserve per-email login slots atomically before verifying |
+| M1 | `2412552` … `e8d667a` | 6 commits: backend skeleton, migrations, Compose, tests, CI, docs |
+| M2 | `33199da` … `8541c30` | 6 commits: auth schema, tenancy guard, auth, API, tests, docs |
+| M2 review fix | `e488b7b` | fix(auth): reserve per-email login slots atomically before verifying |
+| M3 | `b9f32a2` | feat(providers): add provider interfaces with Gemini generation and embeddings |
+| M3 | `1a86982` | feat(api): add AI configuration status endpoint and secret redaction in logs |
+| M3 | `45defa1` | feat(providers): add a minimal live Gemini smoke test command |
+| M3 | `2f6450d` | test: cover Gemini provider, retries, quota handling, and AI status |
+| M3 | `f6741de` | fix(providers): stop retrying deadline-exceeded requests and raise the timeout |
+| M3 | see `git log` | docs: document the Gemini provider and record Milestone 3 results |
 
 ## Blockers
 
@@ -150,21 +111,27 @@ None.
 
 ## Decisions
 
-- Owner (2026-11-01): [ADR 0001](docs/decisions/0001-m0-preflight-decisions.md) (thinking level `low`, Node 24, `uv`, 3.6 Flash correction, keep `gemini-embedding-001`) and [ADR 0002](docs/decisions/0002-main-branch-workflow.md) (main-branch workflow).
-- Implementation: [ADR 0003](docs/decisions/0003-m1-service-foundation.md) (M1) and [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md) (M2: workspace endpoints added to SPEC.md §11; source/conversation/message isolation tests move to M4/M7 with their tables).
+- Owner: [ADR 0001](docs/decisions/0001-m0-preflight-decisions.md) (thinking level `low`, Node 24, `uv`, 3.6 Flash correction, keep `gemini-embedding-001`) and [ADR 0002](docs/decisions/0002-main-branch-workflow.md) (main-branch workflow).
+- Implementation: [ADR 0003](docs/decisions/0003-m1-service-foundation.md) (M1), [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md) (M2), and [ADR 0005](docs/decisions/0005-m3-gemini-provider.md) (M3: interfaces, normalisation, retry policy, deadline-exceeded handling, the status endpoint, and §2.5 caps moved to M4/M7).
 
 ## Risks, limitations, and deferred work
 
-- **Registration enumeration:** `409` reveals a registered email (no email-verification flow). Rate-limited per IP.
-- **No full auth lifecycle yet:** no refresh tokens, password reset, email verification, MFA, or invitations. Tokens last 480 minutes (spec value); logout revokes server-side.
-- **Per-IP limits are effectively global locally:** behind Docker Desktop's port forwarding all browser traffic shares one peer address.
-- **Fixed windows are clock-aligned:** up to 2 × limit (10) attempts can be verified across a rollover; the sustained rate is still 5 per 15 minutes. A strict rolling bound needs a sliding-log limiter (schema change), and is a decision for the owner.
-- **Guard coverage:** the session guard covers ORM statements only. Raw SQL in later milestones (pgvector retrieval in M6) must filter `workspace_id` explicitly and be tested for it. PostgreSQL RLS is possible future hardening.
-- Gemini free-tier quotas can change; transient `503`s seen in M0, so M3 needs bounded retries.
+- **Gemini latency and availability vary a lot on the free tier.** Today one generation took 41–51 s, with 503s and 504s along the way. Chat (M7) must show a clear loading state and a clean error. Worst case per call is about 90 s for a timeout, or up to 4 attempts for overload errors.
+- **The status endpoint is process-local:** `last_error` reflects only what this API process saw (not the worker), and resets on restart. By design it never calls Gemini.
+- **Daily caps (§2.5) not yet enforced:** 300 embedded texts and 30 chats per day arrive with their callers in M4 and M7.
+- **Free-tier data use:** Google may use free-tier content to improve its products. Use only synthetic or public data.
+- Registration enumeration (409); no refresh tokens, password reset, or MFA; per-IP limits are global behind Docker Desktop; fixed windows can allow 2 × limit across a rollover (M2; see ADR 0004).
+- The session guard covers ORM statements only. M6's raw pgvector SQL must filter `workspace_id` explicitly.
 - `gemini-embedding-001` earliest shutdown 2028-05-14.
-- Frontend service and CI frontend job: M8.
+- Frontend and the CI frontend job: M8.
 - `uv` isn't installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6.
 - Port 8000 is used by another local project on the development machine; use `API_HOST_PORT`.
+
+## Earlier milestones
+
+- **M0:** environment, Gemini, SDK, and pgvector compatibility verified; repo hygiene and CI skeleton. See [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md).
+- **M1:** Compose stack (db, migrate, api, worker placeholder), `/health` and `/ready`, Alembic, an internal data network, and persistent volumes. See [ADR 0003](docs/decisions/0003-m1-service-foundation.md).
+- **M2:** Argon2id, HS256 cookie sessions with server-side revocation, Origin/CORS/Host checks, PostgreSQL rate limits (with the concurrency fix), and a fail-closed workspace session guard. Proven by two-tenant tests and mutation checks. See [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md) and the M2 sections in git history (`e488b7b:PROJECT_STATUS.md`).
 
 ## M0 summary
 

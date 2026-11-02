@@ -2,15 +2,17 @@
 
 Status: design from [SPEC.md](../../SPEC.md) §4.
 
-**Implemented as of Milestone 2:**
-- `db`, `migrate`, and `api`. The api serves `/health`, `/ready`, `/api/v1/auth/*`, and `/api/v1/workspaces/*`.
+**Implemented as of Milestone 3:**
+- `db`, `migrate`, and `api`. The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, and `/api/v1/ai/status`.
 - A `worker` placeholder that connects and idles.
 - The two networks and the volumes described below.
 - Authentication and workspace isolation, described in "Request flow" below.
+- The Gemini provider layer (generation and embeddings), described in "AI provider layer" below. No endpoint calls it yet; ingestion (M4) and chat (M7) will.
 
 Everything else on this page is planned. See
-[ADR 0003](../decisions/0003-m1-service-foundation.md) (M1) and
-[ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2).
+[ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
+[ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2), and
+[ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3).
 
 ## Request flow (authenticated API call)
 
@@ -78,6 +80,28 @@ flowchart LR
 | `egress` network | api, worker | Outbound calls to Gemini and, for the worker, public websites. Carries the API's port, published on `127.0.0.1` only |
 | `postgres_data` volume | db, at `/var/lib/postgresql` (PG18 layout) | Database files. Kept by `docker compose down`, deleted by `down -v` |
 | `uploads_data` volume | api and worker, both at `/app/data/uploads` | Uploaded files. A single shared location |
+
+## AI provider layer (M3)
+
+```mermaid
+flowchart LR
+    APP["Ingestion (M4) / Chat (M7)"] -->|"GenerationProvider<br/>EmbeddingProvider"| IF["app/providers/interfaces.py"]
+    IF --> GEM["GeminiGenerationProvider<br/>GeminiEmbeddingProvider"]
+    GEM --> CALLS["GeminiCalls:<br/>classify, bounded retry, health"]
+    CALLS --> SDK["google-genai Client<br/>vertexai=False, SDK retries off,<br/>90 s timeout"]
+    SDK -->|"models.generate_content<br/>models.embed_content"| API["Gemini Developer API<br/>(AI Studio free tier)"]
+    GEM --> VEC["vectors.py: 768 dims, finite,<br/>non-zero, L2-normalised"]
+    STATUS["GET /api/v1/ai/status"] -.->|"reads, never calls"| HEALTH["provider_health"]
+    CALLS --> HEALTH
+```
+
+| Step | Generation | Document embedding | Query embedding |
+|---|---|---|---|
+| Model | `GEMINI_CHAT_MODEL` | `GEMINI_EMBEDDING_MODEL` | same as documents |
+| Settings | thinking level, max output tokens | `RETRIEVAL_DOCUMENT`, 768 dims, batches of 8 | `RETRIEVAL_QUERY`, 768 dims |
+| Result checks | finish reason `STOP` and non-empty text, else `IncompleteGeneration` | one vector per input; each 768, finite, non-zero; normalised | same |
+| Retries | 429 rate limit, 500/502/503, connection errors: up to 3, exponential backoff with jitter | same | same |
+| No retry | daily quota, 4xx, 504 deadline exceeded | same | same |
 
 ## Boundaries that matter for security and cost
 

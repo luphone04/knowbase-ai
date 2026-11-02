@@ -8,10 +8,10 @@ answer, it says so.
 
 This is a well-engineered prototype for local demos, not production software.
 
-> **Status:** Milestone 2 (authentication and workspace isolation). You can
-> register, sign in, and manage your workspace through the API. Sources and
-> chat come in later milestones. See [PROJECT_STATUS.md](PROJECT_STATUS.md)
-> for progress.
+> **Status:** Milestone 3 (Gemini provider and embeddings). You can register,
+> sign in, and manage your workspace through the API, and the Gemini
+> generation and embedding layer is verified live. Sources and chat come in
+> later milestones. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
 
@@ -106,6 +106,70 @@ curl -s -b alice.jar -c alice.jar -H "$O" -X POST $API/auth/logout -o /dev/null 
 
 Interactive docs at `/docs` work too: log in with `POST /api/v1/auth/login`,
 and the browser keeps the cookie for later calls.
+
+## Gemini (AI provider)
+
+The backend talks to Gemini only through `app/providers`:
+
+- **Generation** uses `GEMINI_CHAT_MODEL` with `GEMINI_THINKING_LEVEL` (default
+  `low`) and `GEMINI_MAX_OUTPUT_TOKENS`, which includes thinking tokens. An
+  answer counts only if Gemini finishes with `STOP` and returns text. Anything
+  else (`MAX_TOKENS`, `SAFETY`, an empty reply) is reported as incomplete,
+  never shown as a partial answer.
+- **Embeddings** use `gemini-embedding-001` at 768 dimensions. Documents use
+  task type `RETRIEVAL_DOCUMENT` and questions use `RETRIEVAL_QUERY`: the
+  model embeds them asymmetrically, so a question lands near the passage
+  that answers it.
+  - Each input gets its own vector. Every vector is checked (exactly 768
+    finite, non-zero values) and **normalised to length 1**. At 768
+    dimensions Gemini's raw vectors are not unit length (about 0.59), and
+    unit vectors make cosine similarity a simple dot product.
+- **Retries** apply only to temporary problems: per-minute rate limits (429),
+  500/502/503, and connection failures. There are up to 3 retries, with
+  exponential backoff and jitter.
+  - An exhausted daily quota fails at once with a clear message; it resets
+    at midnight Pacific.
+  - A request that misses its deadline (504) is not retried; raise
+    `GEMINI_REQUEST_TIMEOUT_SECONDS` (default 90) instead.
+  - Invalid requests are never retried, and **nothing ever falls back to
+    another model, a paid tier, or Vertex AI.**
+- The key is read only from the backend `.env`. It never appears in
+  responses or logs; log output masks it even inside tracebacks.
+
+Check the configuration (signed in; this does not call Gemini):
+
+```bash
+curl -s -b alice.jar http://localhost:8000/api/v1/ai/status
+# {"status":"configured" | "missing_key" | "quota_error", "chat_model": ..., "paid_fallback": false, ...}
+```
+
+Run the **minimal live smoke test**. It makes 3 requests (one generation, one
+document embedding of two texts, one query embedding) and prints measurements
+only, never the key, the vectors, or the generated text:
+
+```bash
+docker compose exec api python -m app.providers.smoke
+# Exit codes: 0 pass, 1 response/implementation problem, 2 no key,
+#             3 rate limit or daily quota, 4 Gemini slow or unavailable,
+#             5 key, model, or project rejected
+```
+
+Temporary 503s can add a few bounded retries; the attempt count is printed.
+
+**Confirm no billing is involved:**
+1. In [Google AI Studio](https://aistudio.google.com/), the key's project
+   should show the **Free** tier. Google requires you to set up billing
+   explicitly before a project can move to a paid tier.
+2. Don't link a billing account.
+3. The app only calls the Gemini Developer API with your AI Studio key
+   (`vertexai=False`). It uses no paid features: no Vertex AI, no batch API,
+   no grounding, and no File Search.
+
+Run the **mocked provider tests** (no network, no key needed):
+
+```bash
+docker compose exec api pytest -q tests/unit -k "gemini or provider or mock or redaction"
+```
 
 ## Backend development without Docker (optional)
 
