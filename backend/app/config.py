@@ -55,7 +55,12 @@ class Settings(BaseSettings):
     gemini_retry_max_delay_seconds: float = Field(default=20, gt=0, le=120)
 
     upload_dir: str = "/app/data/uploads"
-    max_upload_mb: int = Field(default=10, gt=0)
+    max_upload_mb: int = Field(default=10, gt=0, le=100)
+    # Extracted text below this length is rejected (e.g. scanned PDFs without OCR).
+    min_document_chars: int = Field(default=50, ge=1)
+    chunk_target_chars: int = Field(default=1800, ge=200)
+    chunk_max_chars: int = Field(default=2400, ge=200)
+    chunk_overlap_chars: int = Field(default=250, ge=0)
     max_crawl_pages: int = Field(default=20, gt=0)
     max_crawl_depth: int = Field(default=2, ge=0)
     crawl_delay_seconds: float = Field(default=1, ge=1)
@@ -67,6 +72,12 @@ class Settings(BaseSettings):
     daily_embedding_text_limit: int = Field(default=300, ge=0)
 
     worker_poll_seconds: float = Field(default=5, gt=0)
+    job_max_attempts: int = Field(default=3, ge=1, le=10)
+    # A running job's lock is renewed every heartbeat; a lock older than the lease
+    # belongs to a crashed worker and the job is recovered.
+    job_lease_seconds: int = Field(default=120, ge=30)
+    job_heartbeat_seconds: int = Field(default=30, ge=5)
+    job_retry_base_seconds: int = Field(default=30, ge=1)
 
     @field_validator("app_secret_key", "jwt_secret")
     @classmethod
@@ -105,6 +116,20 @@ class Settings(BaseSettings):
     def _production_requires_secure_cookies(self) -> Self:
         if self.app_env == "production" and not self.cookie_secure:
             raise ValueError("COOKIE_SECURE must be true when APP_ENV=production")
+        return self
+
+    @model_validator(mode="after")
+    def _chunk_sizes_are_consistent(self) -> Self:
+        if not self.chunk_overlap_chars < self.chunk_target_chars <= self.chunk_max_chars:
+            raise ValueError(
+                "chunk settings need CHUNK_OVERLAP_CHARS < CHUNK_TARGET_CHARS <= CHUNK_MAX_CHARS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _heartbeat_beats_the_lease(self) -> Self:
+        if self.job_heartbeat_seconds * 2 > self.job_lease_seconds:
+            raise ValueError("JOB_HEARTBEAT_SECONDS must be at most half of JOB_LEASE_SECONDS")
         return self
 
     @model_validator(mode="after")
