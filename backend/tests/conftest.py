@@ -6,7 +6,10 @@ Gemini key), and in CI. Integration tests derive their own throwaway database
 from DATABASE_URL; see tests/integration/conftest.py.
 """
 
+import atexit
 import os
+import shutil
+import tempfile
 
 TEST_SECRET = "test-only-secret-0123456789abcdef0123456789"
 
@@ -24,8 +27,25 @@ TEST_ENVIRONMENT = {
     "LOGIN_RATE_LIMIT_PER_IP": "20",
     "LOGIN_FAILURE_LIMIT_PER_EMAIL": "5",
     "REGISTER_RATE_LIMIT_PER_IP": "5",
+    "GEMINI_EMBEDDING_MODEL": "gemini-embedding-001",
+    "EMBEDDING_DIMENSIONS": "768",
+    "GEMINI_EMBEDDING_BATCH_SIZE": "8",
+    "MAX_UPLOAD_MB": "10",
+    "MIN_DOCUMENT_CHARS": "50",
+    "CHUNK_TARGET_CHARS": "1800",
+    "CHUNK_MAX_CHARS": "2400",
+    "CHUNK_OVERLAP_CHARS": "250",
+    "DAILY_EMBEDDING_TEXT_LIMIT": "300",
+    "JOB_MAX_ATTEMPTS": "3",
+    "JOB_LEASE_SECONDS": "120",
+    "JOB_HEARTBEAT_SECONDS": "30",
+    "JOB_RETRY_BASE_SECONDS": "30",
 }
 
 os.environ.update(TEST_ENVIRONMENT)
+# Uploads go to a private temporary directory, never the real uploads volume.
+TEST_UPLOAD_DIR = tempfile.mkdtemp(prefix="knowbase-test-uploads-")
+os.environ["UPLOAD_DIR"] = TEST_UPLOAD_DIR
+atexit.register(shutil.rmtree, TEST_UPLOAD_DIR, ignore_errors=True)
 # Unit tests never connect; integration tests need a real value from the environment.
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://unused:unused@127.0.0.1:1/unused")

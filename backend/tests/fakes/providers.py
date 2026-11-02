@@ -61,6 +61,12 @@ class MockEmbeddingProvider:
     model: str = "mock-embedding"
     dimensions: int = MOCK_DIMENSIONS
     calls: list[tuple[EmbeddingTask, list[str]]] = field(default_factory=list)
+    # Raised (in order) by the next calls, to simulate provider failures.
+    failures: list[Exception] = field(default_factory=list)
+
+    @property
+    def texts_embedded(self) -> int:
+        return sum(len(texts) for _, texts in self.calls)
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
         return self._embed(list(texts), DOCUMENT_TASK)
@@ -69,6 +75,8 @@ class MockEmbeddingProvider:
         return self._embed([text], QUERY_TASK)
 
     def _embed(self, texts: list[str], task: EmbeddingTask) -> EmbeddingResult:
+        if self.failures:
+            raise self.failures.pop(0)
         self.calls.append((task, texts))
         vectors = [
             normalize_embedding(raw_vector(t, self.dimensions), self.dimensions) for t in texts

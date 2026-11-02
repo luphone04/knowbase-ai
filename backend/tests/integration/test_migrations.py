@@ -7,7 +7,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 
 from app.db.migrations_support import installed_extensions
 from app.db.models import Base
@@ -70,6 +70,11 @@ def test_auth_schema_constraints(scratch_engine: Engine, alembic_config: Config)
             "workspace_members",
             "revoked_tokens",
             "rate_limit_counters",
+            "sources",
+            "documents",
+            "chunks",
+            "ingestion_jobs",
+            "embedding_cache",
         }
         assert schema.get_pk_constraint("workspace_members")["constrained_columns"] == [
             "workspace_id",
@@ -132,3 +137,151 @@ def test_database_rejects_invalid_rows(
     with scratch_engine.connect() as connection, pytest.raises(IntegrityError) as excinfo:
         connection.execute(text(statement))
     assert constraint in str(excinfo.value)
+
+
+def test_ingestion_schema_indexes_and_tenant_safe_keys(
+    scratch_engine: Engine, alembic_config: Config
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        indexes = {
+            row.indexname: row.indexdef
+            for row in connection.execute(
+                text("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'chunks'")
+            )
+        }
+        assert "USING hnsw (embedding vector_cosine_ops)" in indexes["ix_chunks_embedding_hnsw"]
+        assert "USING gin (search_tsv)" in indexes["ix_chunks_search_tsv"]
+        column = connection.execute(
+            text(
+                "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                "WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'"
+            )
+        ).scalar_one()
+        assert column == "vector(768)"
+        fks = {
+            fk["name"]: (fk["constrained_columns"], fk["referred_table"])
+            for table in ("documents", "chunks", "ingestion_jobs")
+            for fk in inspect(connection).get_foreign_keys(table)
+        }
+        assert fks["fk_chunks_document_same_workspace"] == (
+            ["workspace_id", "document_id"],
+            "documents",
+        )
+        assert fks["fk_documents_source_same_workspace"] == (
+            ["workspace_id", "source_id"],
+            "sources",
+        )
+        assert fks["fk_ingestion_jobs_source_same_workspace"] == (
+            ["workspace_id", "source_id"],
+            "sources",
+        )
+
+
+WS_A = "00000000-0000-0000-0000-00000000000a"
+WS_B = "00000000-0000-0000-0000-00000000000b"
+SOURCE_A = "00000000-0000-0000-0000-0000000000a1"
+DOC_A = "00000000-0000-0000-0000-0000000000a2"
+VECTOR = "[" + ",".join(["0.1"] * 768) + "]"
+
+
+def _seed(connection: Connection) -> None:
+    connection.execute(
+        text(
+            f"""
+            INSERT INTO users (id, email, password_hash) VALUES ('{USER_ID}', 'a@example.com', 'x');
+            INSERT INTO workspaces (id, name, owner_user_id) VALUES
+                ('{WS_A}', 'A', '{USER_ID}'), ('{WS_B}', 'B', '{USER_ID}');
+            INSERT INTO sources (id, workspace_id, kind, display_name) VALUES
+                ('{SOURCE_A}', '{WS_A}', 'file', 'a.md');
+            INSERT INTO documents (id, workspace_id, source_id, title, content_hash, text_content)
+                VALUES ('{DOC_A}', '{WS_A}', '{SOURCE_A}', 'A', 'h', 't');
+            INSERT INTO chunks (workspace_id, document_id, chunk_index, content, content_hash,
+                                embedding, embedding_model)
+                VALUES ('{WS_A}', '{DOC_A}', 0, 'c', 'h', '{VECTOR}', 'm');
+            INSERT INTO ingestion_jobs (workspace_id, source_id, job_type) VALUES
+                ('{WS_A}', '{SOURCE_A}', 'ingest');
+            """
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("statement", "constraint"),
+    [
+        (
+            # B's chunk pointing at A's document: the composite key refuses it.
+            f"INSERT INTO chunks (workspace_id, document_id, chunk_index, content, content_hash, "
+            f"embedding, embedding_model) "
+            f"VALUES ('{WS_B}', '{DOC_A}', 1, 'c', 'h', '{VECTOR}', 'm')",
+            "fk_chunks_document_same_workspace",
+        ),
+        (
+            # canonical_url set, so only the cross-workspace foreign key can object.
+            f"INSERT INTO documents (workspace_id, source_id, title, canonical_url, content_hash, "
+            f"text_content) VALUES ('{WS_B}', '{SOURCE_A}', 'x', 'https://example.com/', 'h', 't')",
+            "fk_documents_source_same_workspace",
+        ),
+        (
+            f"INSERT INTO ingestion_jobs (workspace_id, source_id, job_type, status) "
+            f"VALUES ('{WS_B}', '{SOURCE_A}', 'ingest', 'running')",
+            "fk_ingestion_jobs_source_same_workspace",
+        ),
+        (
+            f"INSERT INTO chunks (workspace_id, document_id, chunk_index, content, content_hash, "
+            f"embedding, embedding_model) "
+            f"VALUES ('{WS_A}', '{DOC_A}', 0, 'dup', 'h', '{VECTOR}', 'm')",
+            "uq_chunks_document_chunk_index",
+        ),
+        (
+            f"INSERT INTO documents (workspace_id, source_id, title, content_hash, text_content) "
+            f"VALUES ('{WS_A}', '{SOURCE_A}', 'second', 'h', 't')",
+            "uq_documents_one_per_file_source",
+        ),
+        (
+            f"INSERT INTO ingestion_jobs (workspace_id, source_id, job_type) "
+            f"VALUES ('{WS_A}', '{SOURCE_A}', 'reindex')",
+            "uq_ingestion_jobs_one_queued_per_source",
+        ),
+        (
+            f"INSERT INTO sources (workspace_id, kind, display_name, status) "
+            f"VALUES ('{WS_A}', 'file', 'x', 'exploded')",
+            "ck_sources_status",
+        ),
+    ],
+    ids=[
+        "chunk-into-other-workspace",
+        "document-into-other-workspace",
+        "job-into-other-workspace",
+        "duplicate-chunk-index",
+        "second-file-document",
+        "second-waiting-job",
+        "unknown-status",
+    ],
+)
+def test_database_enforces_ingestion_integrity(
+    scratch_engine: Engine, alembic_config: Config, statement: str, constraint: str
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed(connection)
+    with scratch_engine.connect() as connection, pytest.raises(IntegrityError) as excinfo:
+        connection.execute(text(statement))
+    assert constraint in str(excinfo.value)
+
+
+def test_vectors_must_have_768_dimensions(scratch_engine: Engine, alembic_config: Config) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed(connection)
+    with (
+        scratch_engine.connect() as connection,
+        pytest.raises(DataError, match="expected 768 dimensions"),
+    ):
+        connection.execute(
+            text(
+                "INSERT INTO chunks (workspace_id, document_id, chunk_index, content, "
+                "content_hash, embedding, embedding_model) "
+                f"VALUES ('{WS_A}', '{DOC_A}', 5, 'c', 'h', '[1,2,3]', 'm')"
+            )
+        )

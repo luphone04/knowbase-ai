@@ -8,6 +8,7 @@ are emptied after every test.
 """
 
 import os
+import shutil
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -22,10 +23,24 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.session import get_engine, get_sessionmaker
+from app.ingestion.pipeline import IngestionWorker
+from app.ingestion.storage import FileStorage
 from app.main import app
+from tests.fakes.providers import MockEmbeddingProvider
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
-APP_TABLES = ("users", "workspaces", "workspace_members", "revoked_tokens", "rate_limit_counters")
+APP_TABLES = (
+    "users",
+    "workspaces",
+    "workspace_members",
+    "revoked_tokens",
+    "rate_limit_counters",
+    "sources",
+    "documents",
+    "chunks",
+    "ingestion_jobs",
+    "embedding_cache",
+)
 TEST_PASSWORD = "integration-test-password-1"
 
 
@@ -83,6 +98,9 @@ def _empty_tables(test_database_url: URL) -> Iterator[None]:
     yield
     with get_engine().begin() as connection:
         connection.execute(text(f"TRUNCATE {', '.join(APP_TABLES)} CASCADE"))
+    upload_root = Path(get_settings().upload_dir)
+    for entry in upload_root.iterdir() if upload_root.is_dir() else []:
+        shutil.rmtree(entry, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -166,3 +184,45 @@ def tenant_a() -> Tenant:
 @pytest.fixture
 def tenant_b() -> Tenant:
     return register_tenant("bob", "198.51.100.2")
+
+
+# --- ingestion worker ----------------------------------------------------------------
+
+
+@dataclass
+class WorkerHarness:
+    worker: IngestionWorker
+    provider: MockEmbeddingProvider
+
+    def run_all(self, limit: int = 20) -> int:
+        """Process due jobs until the queue is empty; returns how many ran."""
+        ran = 0
+        while ran < limit and self.worker.run_once():
+            ran += 1
+        return ran
+
+
+def make_worker(
+    provider: MockEmbeddingProvider | None = None, env: dict[str, str] | None = None
+) -> WorkerHarness:
+    """A real IngestionWorker on the test database, with a deterministic embedding provider."""
+    for name, value in (env or {}).items():
+        os.environ[name] = value
+    get_settings.cache_clear()
+    settings = get_settings()
+    mock = provider or MockEmbeddingProvider(model=settings.gemini_embedding_model)
+    worker = IngestionWorker(
+        settings=settings,
+        session_factory=get_sessionmaker(),
+        engine=get_engine(),
+        storage=FileStorage(settings.upload_dir),
+        embedding_provider_factory=lambda: mock,
+        worker_id="test-worker",
+    )
+    return WorkerHarness(worker, mock)
+
+
+@pytest.fixture
+def worker(monkeypatch: pytest.MonkeyPatch) -> Iterator[WorkerHarness]:
+    yield make_worker()
+    get_settings.cache_clear()
