@@ -129,7 +129,7 @@ def test_tampered_payload_is_rejected() -> None:
 
 
 def test_unsigned_alg_none_token_is_rejected() -> None:
-    unsigned = jwt.encode(payload(), None, algorithm="none")
+    unsigned = jwt.encode(payload(), "", algorithm="none")  # PyJWT: empty key for "none"
     with pytest.raises(InvalidTokenError):
         decode_access_token(unsigned, secret=SECRET)
 

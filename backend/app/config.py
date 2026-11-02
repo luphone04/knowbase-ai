@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = SCHEMA_EMBEDDING_DIMENSIONS
     gemini_embedding_batch_size: int = Field(default=8, ge=1, le=100)
+    # Includes thinking tokens (SPEC.md §2.3).
+    gemini_max_output_tokens: int = Field(default=1200, ge=1, le=65536)
+    gemini_request_timeout_seconds: float = Field(default=30, gt=0, le=300)
+    # Bounded retries for 429 rate limits and 5xx/network errors only.
+    gemini_max_retries: int = Field(default=3, ge=0, le=5)
+    gemini_retry_base_delay_seconds: float = Field(default=1, gt=0, le=10)
+    gemini_retry_max_delay_seconds: float = Field(default=20, gt=0, le=120)
 
     upload_dir: str = "/app/data/uploads"
     max_upload_mb: int = Field(default=10, gt=0)
@@ -98,9 +105,23 @@ class Settings(BaseSettings):
             raise ValueError("COOKIE_SECURE must be true when APP_ENV=production")
         return self
 
+    @model_validator(mode="after")
+    def _retry_delays_are_ordered(self) -> Self:
+        if self.gemini_retry_max_delay_seconds < self.gemini_retry_base_delay_seconds:
+            raise ValueError(
+                "GEMINI_RETRY_MAX_DELAY_SECONDS must be at least GEMINI_RETRY_BASE_DELAY_SECONDS"
+            )
+        return self
+
     @property
     def gemini_configured(self) -> bool:
-        return bool(self.gemini_api_key.get_secret_value())
+        return bool(self.gemini_api_key.get_secret_value().strip())
+
+    @property
+    def secret_values(self) -> list[str]:
+        """Values that must never appear in logs (used by the log redaction filter)."""
+        candidates = (self.gemini_api_key, self.jwt_secret, self.app_secret_key)
+        return [s.get_secret_value() for s in candidates if s.get_secret_value().strip()]
 
     @property
     def allowed_host_list(self) -> list[str]:
