@@ -8,9 +8,9 @@ answer, it says so.
 
 This is a well-engineered prototype for local demos, not production software.
 
-> **Status:** Milestone 3 (Gemini provider and embeddings). You can register,
-> sign in, and manage your workspace through the API, and the Gemini
-> generation and embedding layer is verified live. Sources and chat come in
+> **Status:** Milestone 4 (file ingestion and durable worker). You can sign in,
+> upload PDF, DOCX, TXT, and Markdown files, and the worker indexes them into
+> pgvector with Gemini embeddings. Website crawling, retrieval, and chat come in
 > later milestones. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
@@ -106,6 +106,63 @@ curl -s -b alice.jar -c alice.jar -H "$O" -X POST $API/auth/logout -o /dev/null 
 
 Interactive docs at `/docs` work too: log in with `POST /api/v1/auth/login`,
 and the browser keeps the cookie for later calls.
+
+## Upload and index documents (curl)
+
+Sign in first (the curl block above writes `alice.jar`). Uploads return at
+once (`202`); the worker then parses, chunks, embeds, and stores them.
+
+```bash
+API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
+O='Origin: http://localhost:3000'
+
+# 1. Upload (PDF, DOCX, TXT, or .md; up to MAX_UPLOAD_MB)
+curl -s -b alice.jar -H "$O" -F "file=@returns-policy.pdf" $API/sources/files
+#    -> {"source": {"id": ..., "status": "pending"}, "job": {"id": ..., "status": "queued"}, "unchanged": false}
+
+# 2. Watch the job: queued -> running -> succeeded (or failed, with last_error)
+curl -s -b alice.jar $API/jobs/<job-id>
+#    result: {"outcome": "indexed", "chunks": N, "embedded_texts": N, "embedding_requests": ...}
+
+# 3. Source detail: document title, metadata (page_count, chunker, embedding model), chunk count
+curl -s -b alice.jar $API/sources/<source-id>
+curl -s -b alice.jar $API/sources                # all sources in your workspace
+
+# 4. A stored vector: 768 dimensions, unit length
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT d.title, c.chunk_index, vector_dims(c.embedding) AS dims,
+          round(vector_norm(c.embedding)::numeric, 6) AS norm, c.metadata->>'\''page_start'\'' AS page
+   FROM chunks c JOIN documents d ON d.id = c.document_id ORDER BY 1, 2"'
+
+# 5. Same file again: 200, "unchanged": true, no job, no Gemini calls
+curl -s -b alice.jar -H "$O" -F "file=@returns-policy.pdf" $API/sources/files
+
+# 6. Re-index: runs the pipeline, finds the content unchanged, embeds nothing
+curl -s -b alice.jar -H "$O" -X POST $API/sources/<source-id>/reindex
+
+# 7. Delete (owner/admin): removes chunks, cached vectors, and the file; then 404
+curl -s -b alice.jar -H "$O" -X DELETE $API/sources/<source-id>
+```
+
+What goes wrong, and how it shows:
+- **Unsupported type or fake content:** `415` / `422` immediately. Nothing is stored.
+- **Damaged, scanned (no text), or password-protected PDF:** the job fails once
+  with a clear `last_error`. It isn't retried, and no OCR is attempted.
+- **Gemini busy:** the job retries with backoff (shown in `last_error`).
+- **Daily limit reached** (`DAILY_EMBEDDING_TEXT_LIMIT`, 300 texts per UTC day,
+  all workspaces): the job waits until 00:00 UTC. Finished batches are kept,
+  and cached or unchanged text never counts.
+- **A failed new version never removes the old one:** the source shows
+  `failed` with "The previously indexed version is still available."
+
+Crash recovery, by hand:
+
+```bash
+docker compose stop worker      # upload a file now: the job stays queued
+docker compose start worker     # it is picked up; jobs left 'running' by a dead
+                                # worker are recovered once their 120 s lease lapses
+docker compose logs -f worker   # ids, counts, and timings only, never document text
+```
 
 ## Gemini (AI provider)
 

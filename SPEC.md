@@ -610,6 +610,12 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 For MVP, registration creates one workspace and makes the registering
 user its owner. Membership invitations can be deferred.
 
+> **Implemented in Milestone 4** (migration `0003_ingestion`). The tables
+> below are extended with a few operational columns (file hash and type,
+> `dedupe_key`, job fencing token, job result, per-chunk embedding model), a
+> `deleting` source status, and an `embedding_cache` table. See
+> `docs/decisions/0006-m4-file-ingestion.md`.
+
 #### `sources`
 
 Represents one uploaded file or one website root. -

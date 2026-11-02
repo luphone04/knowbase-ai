@@ -2,17 +2,19 @@
 
 Status: design from [SPEC.md](../../SPEC.md) §4.
 
-**Implemented as of Milestone 3:**
-- `db`, `migrate`, and `api`. The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, and `/api/v1/ai/status`.
-- A `worker` placeholder that connects and idles.
-- The two networks and the volumes described below.
-- Authentication and workspace isolation, described in "Request flow" below.
-- The Gemini provider layer (generation and embeddings), described in "AI provider layer" below. No endpoint calls it yet; ingestion (M4) and chat (M7) will.
+**Implemented as of Milestone 4:**
+- `db`, `migrate`, `api`, and `worker` (no frontend yet).
+- The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*`, and `/api/v1/jobs/{id}`.
+- The worker processes file ingestion and deletion jobs from the PostgreSQL queue.
+- Authentication and workspace isolation ("Request flow").
+- The Gemini provider layer ("AI provider layer"). Ingestion uses it for document embeddings.
+- File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
 
-Everything else on this page is planned. See
+**Planned:** website crawling (M5), retrieval and RRF (M6), chat (M7), frontend (M8), and evaluation (M9). See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
-[ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2), and
-[ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3).
+[ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
+[ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3), and
+[ADR 0006](../decisions/0006-m4-file-ingestion.md) (M4).
 
 ## Request flow (authenticated API call)
 
@@ -68,7 +70,7 @@ flowchart LR
 |---|---|---|
 | `frontend` | UI pages, calls to `/api/v1` with `credentials: "include"` | Hold any secret; call Gemini; compute metrics |
 | `api` | Auth, workspace scoping, source CRUD, enqueueing jobs, retrieval, chat, citation validation, evaluation endpoints, health | Long crawls or bulk embedding inside a request |
-| `worker` | Claims `ingestion_jobs` with `FOR UPDATE SKIP LOCKED`; crawls, parses, cleans, chunks, embeds, and indexes; stale-lock recovery | Serve HTTP |
+| `worker` | Claims `ingestion_jobs` with `FOR UPDATE SKIP LOCKED`; parses, cleans, chunks, embeds, and indexes files (crawling in M5); stale-lock recovery; deletes | Serve HTTP; hold DB locks while calling Gemini |
 | `db` | Relational data, `vector(768)` embeddings (HNSW), full-text `tsvector` (GIN), the job queue | Expose a public port (localhost-only if bound) |
 | `migrate` | Applies Alembic migrations once, then exits | Run at request time |
 
@@ -80,6 +82,48 @@ flowchart LR
 | `egress` network | api, worker | Outbound calls to Gemini and, for the worker, public websites. Carries the API's port, published on `127.0.0.1` only |
 | `postgres_data` volume | db, at `/var/lib/postgresql` (PG18 layout) | Database files. Kept by `docker compose down`, deleted by `down -v` |
 | `uploads_data` volume | api and worker, both at `/app/data/uploads` | Uploaded files. A single shared location |
+
+## File ingestion (M4)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser / client
+    participant A as api
+    participant V as uploads_data volume
+    participant P as PostgreSQL
+    participant W as worker
+    participant G as Gemini (embeddings)
+    B->>A: POST /sources/files (multipart, size-limited)
+    A->>A: validate type, signature, UTF-8, name
+    A->>V: write file under a UUID key (atomic)
+    A->>P: upsert source + enqueue job (one transaction)
+    A-->>B: 202 {source, job}   (no parsing, no Gemini)
+    W->>P: claim job: FOR UPDATE SKIP LOCKED, new lock_token, commit
+    W->>V: read file
+    W->>W: parse (pypdf / python-docx / text) → clean → hash
+    alt content unchanged
+        W->>P: mark ready (0 embeddings)
+    else changed or new
+        W->>W: chunk (paragraph-aware)
+        W->>P: look up embedding_cache
+        W->>P: reserve daily budget (atomic)
+        W->>G: embed uncached chunks (RETRIEVAL_DOCUMENT, 768, batches of 8)
+        W->>P: cache vectors per batch
+        W->>P: ONE transaction: replace chunks, mark source ready, finish job (token-fenced)
+    end
+    W-->>P: heartbeat every 30 s (lease 120 s)
+```
+
+| Concern | Mechanism |
+|---|---|
+| Two workers, one job | `FOR UPDATE SKIP LOCKED` claim, committed before slow work |
+| Worker crash | Lease lapses; recovery requeues the job (or fails it when out of attempts) |
+| Stale worker wakes up | Fencing `lock_token` on every write; its publish and heartbeat are refused |
+| Re-upload or reindex of unchanged content | Same hash, chunker, and model: no chunking, no Gemini calls |
+| Changed content | Chunks rebuilt; unchanged chunk texts reuse cached vectors |
+| Failed replacement | Old chunks untouched until a single publish transaction; any failure rolls back |
+| Free-tier protection | Installation-wide daily text budget, reserved atomically; cached texts never count |
+| Tenant isolation | Composite `(workspace_id, …)` foreign keys plus the session guard; claim and recovery are the only explicit cross-workspace statements |
 
 ## AI provider layer (M3)
 
