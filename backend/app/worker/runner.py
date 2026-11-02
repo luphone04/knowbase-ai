@@ -43,7 +43,7 @@ def wait_for_database(stop: threading.Event) -> bool:
 
 def main() -> int:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.secret_values)
 
     stop = threading.Event()
 

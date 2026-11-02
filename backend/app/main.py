@@ -19,12 +19,17 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.secret_values)
     logger.info(
         "API starting: env=%s gemini_configured=%s",
         settings.app_env,
         settings.gemini_configured,
     )
+    if not settings.gemini_configured:
+        logger.warning(
+            "GEMINI_API_KEY is not set: AI features are unavailable until it is added "
+            "to the backend .env. Everything else works."
+        )
     yield
 
 
