@@ -8,16 +8,18 @@ from fastapi.testclient import TestClient
 
 from app.core.body_limit import BodySizeLimitMiddleware
 
+STARTED: list[str] = []  # handlers that began running
+
 
 @pytest.fixture
 def client() -> TestClient:
+    STARTED.clear()
     app = FastAPI()
-    seen: dict[str, int] = {}
 
     @app.post("/upload")
     async def upload(request: Request) -> dict[str, int]:
+        STARTED.append("upload")
         body = await request.body()
-        seen["bytes"] = len(body)
         return {"bytes": len(body)}
 
     @app.post("/json")
@@ -36,6 +38,7 @@ def test_declared_oversized_body_is_refused_immediately(client: TestClient) -> N
     response = client.post("/upload", content=b"x" * 1001)
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "payload_too_large"
+    assert STARTED == []  # refused from Content-Length, before the app saw any of it
 
 
 def test_streamed_body_without_length_is_counted(client: TestClient) -> None:

@@ -2,6 +2,8 @@
 
 import math
 import uuid
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -16,7 +18,9 @@ from app.providers.errors import (
     ProviderQuotaExhausted,
     ProviderUnavailable,
 )
+from app.providers.interfaces import EmbeddingResult
 from tests.fakes.documents import RETURNS_POLICY, encrypt_pdf, make_docx, make_pdf
+from tests.fakes.providers import MockEmbeddingProvider
 from tests.integration.conftest import Tenant, WorkerHarness, make_worker
 
 pytestmark = pytest.mark.integration
@@ -429,3 +433,31 @@ def test_unknown_source_job_is_dropped_cleanly(tenant_a: Tenant, worker: WorkerH
     sql_exec("DELETE FROM sources WHERE id = :s", s=body["source"]["id"])  # job cascades away
     assert worker.run_all() == 0
     assert uuid.UUID(body["job"]["id"])
+
+
+class MisbehavingProvider(MockEmbeddingProvider):
+    """Breaks the provider contract, to prove the pipeline checks it independently."""
+
+    def __init__(self, mode: str) -> None:
+        super().__init__(model="gemini-embedding-001")
+        self.mode = mode
+
+    def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
+        result = super().embed_documents(texts)
+        if self.mode == "fewer-vectors":
+            return replace(result, vectors=result.vectors[:-1])
+        if self.mode == "wrong-model":
+            return replace(result, model="some-other-model")
+        return replace(result, task_type="RETRIEVAL_QUERY")
+
+
+@pytest.mark.parametrize("mode", ["fewer-vectors", "wrong-model", "wrong-task-type"])
+def test_a_provider_breaking_its_contract_publishes_nothing(tenant_a: Tenant, mode: str) -> None:
+    harness = make_worker(provider=MisbehavingProvider(mode))
+    body = upload(tenant_a, "handbook.md", long_markdown())
+    harness.run_all()
+    assert chunks_of(body["source"]["id"]) == []
+    waiting = job(body["job"]["id"])
+    assert waiting.status == "queued"  # retried as a provider problem, never published
+    assert "does not match the request" in waiting.last_error
+    assert sql("SELECT count(*) FROM embedding_cache")[0][0] == 0  # bad vectors never cached
