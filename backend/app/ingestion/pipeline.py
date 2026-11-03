@@ -70,9 +70,11 @@ from app.providers.errors import (
 )
 from app.providers.interfaces import EmbeddingProvider
 from app.worker.queue import (
+    SUPERSEDED_MESSAGE,
     ClaimedJob,
     claim_next_job,
     engine_heartbeat,
+    has_other_queued_job,
     lock_owned_job,
     recover_stale_jobs,
     requeue_or_supersede,
@@ -123,6 +125,10 @@ def _document_key(canonical_url: str | None) -> ColumnElement[bool]:
     if canonical_url is None:
         return Document.canonical_url.is_(None)
     return Document.canonical_url == canonical_url
+
+
+class JobSuperseded(Exception):
+    """A newer upload of this source arrived while the job ran."""
 
 
 class JobTimedOut(Exception):
@@ -284,6 +290,9 @@ class IngestionWorker:
         except JobLost:
             outcome = "lost"
             logger.warning("Job %s is no longer owned by this worker; dropping it", job.id)
+        except JobSuperseded:
+            outcome = "superseded"
+            self._supersede(job)
         except EmbeddingDeferred as exc:
             outcome = "deferred"
             self._defer(job, exc.run_at, exc.reason)
@@ -340,11 +349,14 @@ class IngestionWorker:
 
     def _ingest_file(self, job: ClaimedJob) -> _Outcome:
         with self.session(job) as db:
-            source = db.get(Source, job.source_id)
+            # Locked, so a delete committed a moment ago is seen, never overwritten.
+            source = db.get(Source, job.source_id, with_for_update=True)
             if source is None:
                 raise JobLost()
             if source.status == "deleting":
                 raise PermanentJobError("This source is being deleted.")
+            if job.storage_key is not None and source.storage_key != job.storage_key:
+                raise JobSuperseded()  # a newer upload replaced this file: don't read it
             key = job.storage_key or source.storage_key
             if key is None or source.file_type is None:
                 raise PermanentJobError("This source has no uploaded file to index.")
@@ -389,6 +401,8 @@ class IngestionWorker:
                 document_id=str(indexed.document_id),
             )
             self._mark_ready(source)
+            if has_other_queued_job(db, row):
+                source.status = "pending"  # a newer request for this source is waiting
             self._finish(row, result)
 
         self.index_document(
@@ -481,15 +495,26 @@ class IngestionWorker:
             on_publish=on_publish,
         )
 
-    def lock_for_publish(self, db: Session, job: ClaimedJob) -> tuple[IngestionJob, Source]:
-        row = lock_owned_job(db, job)  # fencing: only the current owner may publish
-        if row is None:
-            raise JobLost()
+    @staticmethod
+    def _lock(db: Session, job: ClaimedJob) -> tuple[IngestionJob | None, Source | None]:
+        """Lock the source, then the job if this worker still owns it (fencing).
+
+        Source before job everywhere (API, worker, recovery), so concurrent writers
+        can't deadlock.
+        """
         source = db.get(Source, job.source_id, with_for_update=True)
-        if source is None:
+        return lock_owned_job(db, job), source
+
+    def lock_for_publish(self, db: Session, job: ClaimedJob) -> tuple[IngestionJob, Source]:
+        row, source = self._lock(db, job)  # fencing: only the current owner may publish
+        if row is None or source is None:
             raise JobLost()
         if source.status == "deleting":
             raise PermanentJobError("This source is being deleted.")
+        if job.storage_key is not None and source.storage_key != job.storage_key:
+            # A newer upload replaced this file while it was processed: never publish
+            # older content over it (its own job will index the new file).
+            raise JobSuperseded()
         return row, source
 
     def _publish(
@@ -613,9 +638,9 @@ class IngestionWorker:
 
     def _delete(self, job: ClaimedJob) -> None:
         with self.session(job) as db:
-            if lock_owned_job(db, job) is None:
+            row, source = self._lock(db, job)
+            if row is None:
                 raise JobLost()
-            source = db.get(Source, job.source_id, with_for_update=True)
             if source is None:
                 return
             hashes = set(
@@ -638,7 +663,8 @@ class IngestionWorker:
                     )
                 )
             db.commit()
-        self._storage.delete_source(job.workspace_id, job.source_id)
+        if not self._storage.delete_source(job.workspace_id, job.source_id):
+            logger.error("Source %s deleted, but some stored files remain", job.source_id)
 
     # --- failure handling --------------------------------------------------------------------
 
@@ -655,23 +681,44 @@ class IngestionWorker:
 
     def _fail(self, job: ClaimedJob, message: str) -> None:
         with self.session(job) as db:
-            row = lock_owned_job(db, job)
+            row, source = self._lock(db, job)
             if row is None:
                 return
             row.status = "failed"
             row.last_error = message
             row.finished_at = datetime.now(UTC)
             row.locked_at = row.lock_token = row.locked_by = None
-            source = db.get(Source, job.source_id, with_for_update=True)
-            if source is not None and source.status != "deleting":
-                note = RETAINED_INDEX_NOTE if self._has_index(db, source.id) else ""
-                source.status = "failed"
-                source.error_message = message + note
+            if source is not None:
+                if job.job_type == "delete":
+                    # Don't strand the source in "deleting": an owner can delete it again.
+                    source.status = "failed"
+                    source.error_message = (
+                        f"Deleting this source failed: {message} Delete it again."
+                    )
+                elif source.status == "deleting":
+                    pass
+                elif has_other_queued_job(db, row):
+                    source.status = "pending"  # a newer request will run next
+                else:
+                    note = RETAINED_INDEX_NOTE if self._has_index(db, source.id) else ""
+                    source.status = "failed"
+                    source.error_message = message + note
+            db.commit()
+
+    def _supersede(self, job: ClaimedJob) -> None:
+        with self.session(job) as db:
+            row, _source = self._lock(db, job)
+            if row is None:
+                return
+            row.status = "failed"
+            row.last_error = SUPERSEDED_MESSAGE
+            row.finished_at = datetime.now(UTC)
+            row.locked_at = row.lock_token = row.locked_by = None
             db.commit()
 
     def _retry_or_fail(self, job: ClaimedJob, message: str) -> None:
         with self.session(job) as db:
-            row = lock_owned_job(db, job)
+            row, source = self._lock(db, job)
             if row is None:
                 return
             if row.attempts >= row.max_attempts:
@@ -689,7 +736,6 @@ class IngestionWorker:
             requeued = requeue_or_supersede(
                 db, row, run_at=datetime.now(UTC) + delay, message=note, count_attempt=True
             )
-            source = db.get(Source, job.source_id, with_for_update=True)
             if requeued and source is not None and source.status != "deleting":
                 source.status = "pending"
                 source.error_message = note
@@ -697,13 +743,12 @@ class IngestionWorker:
 
     def _defer(self, job: ClaimedJob, run_at: datetime, reason: str) -> None:
         with self.session(job) as db:
-            row = lock_owned_job(db, job)
+            row, source = self._lock(db, job)
             if row is None:
                 return
             requeued = requeue_or_supersede(
                 db, row, run_at=run_at, message=reason, count_attempt=False
             )
-            source = db.get(Source, job.source_id, with_for_update=True)
             if requeued and source is not None and source.status != "deleting":
                 source.status = "pending"
                 source.error_message = reason

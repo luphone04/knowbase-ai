@@ -62,6 +62,7 @@ def queue_jobs(db: Session, tenant: Tenant, count: int) -> list[uuid.UUID]:
             storage_key=None,
             max_attempts=3,
         )
+        assert job is not None
         ids.append(job.id)
     db.commit()
     return ids
@@ -115,11 +116,13 @@ def test_one_waiting_job_per_source(tenant_a: Tenant, db: Session) -> None:
     first = enqueue_job(db, job_type="ingest", **kwargs)
     again = enqueue_job(db, job_type="delete", **kwargs)
     db.commit()
+    assert first is not None and again is not None
     assert again.id == first.id and again.job_type == "delete"  # updated, not duplicated
 
     claim_next_job(get_sessionmaker(), "w1")  # now running
     newer = enqueue_job(db, job_type="ingest", **kwargs)
     db.commit()
+    assert newer is not None
     assert newer.id != first.id  # a running job doesn't block a new waiting one
 
 

@@ -136,8 +136,10 @@ def _source_outs(db: DbSession, sources: list[Source]) -> list[SourceOut]:
     return outs
 
 
-def _get_source(db: DbSession, source_id: uuid.UUID) -> Source:
-    source = db.get(Source, source_id)  # scoped to the caller's workspace by the session guard
+def _get_source(db: DbSession, source_id: uuid.UUID, *, lock: bool = False) -> Source:
+    # Scoped to the caller's workspace by the session guard. `lock` takes the row lock
+    # that serialises uploads, reindexes, deletes, and the worker for one source.
+    source = db.get(Source, source_id, with_for_update=lock)
     if source is None:
         raise SourceNotFound()
     return source
@@ -171,7 +173,10 @@ def upload_file(
     upload = validate_upload(file.filename, file.file.read(limit + 1), max_bytes=limit)
     dedupe_key = upload.original_filename.casefold()
 
-    source = db.scalars(select(Source).where(Source.dedupe_key == dedupe_key)).one_or_none()
+    # Locked until commit, so a concurrent DELETE (or the worker) waits for this upload
+    # instead of having its "deleting" status or queued delete job overwritten.
+    by_name = select(Source).where(Source.dedupe_key == dedupe_key).with_for_update()
+    source = db.scalars(by_name).one_or_none()
     if source is None:
         source = Source(
             workspace_id=auth.workspace_id,
@@ -186,10 +191,10 @@ def upload_file(
             with db.begin_nested():
                 db.add(source)
         except IntegrityError:  # the same name was just uploaded concurrently
-            source = db.scalars(select(Source).where(Source.dedupe_key == dedupe_key)).one()
-    elif source.status == "deleting":
+            source = db.scalars(by_name).one()
+    if source.status == "deleting":
         raise SourceBeingDeleted()
-    elif source.status == "ready" and source.file_sha256 == upload.sha256:
+    if source.status == "ready" and source.file_sha256 == upload.sha256:
         response.status_code = 200
         return UploadOut(source=_source_outs(db, [source])[0], job=None, unchanged=True)
 
@@ -215,6 +220,9 @@ def upload_file(
         storage_key=key,
         max_attempts=settings.job_max_attempts,
     )
+    if job is None:  # a delete is waiting for this source
+        storage.delete_keys({key})  # nothing references it
+        raise SourceBeingDeleted()
     db.commit()
     return UploadOut(source=_source_outs(db, [source])[0], job=job_out(job), unchanged=False)
 
@@ -258,7 +266,7 @@ def reindex_source(
     source_id: uuid.UUID, auth: CurrentAuth, db: DbSession, settings: SettingsDep
 ) -> JobOut:
     """Re-run indexing on the stored file. Unchanged content costs no embeddings."""
-    source = _get_source(db, source_id)
+    source = _get_source(db, source_id, lock=True)
     if source.status == "deleting":
         raise SourceBeingDeleted()
     if source.storage_key is None:
@@ -272,6 +280,8 @@ def reindex_source(
         storage_key=source.storage_key,
         max_attempts=settings.job_max_attempts,
     )
+    if job is None:
+        raise SourceBeingDeleted()
     db.commit()
     return job_out(job)
 
@@ -288,7 +298,7 @@ def delete_source(
     When the job completes the source (and its job history) are gone:
     GET /sources/{id} then returns 404.
     """
-    source = _get_source(db, source_id)  # 404 before 403: no existence leak
+    source = _get_source(db, source_id, lock=True)  # 404 before 403: no existence leak
     if auth.role not in MANAGER_ROLES:
         raise Forbidden()
     source.status = "deleting"
@@ -300,5 +310,6 @@ def delete_source(
         storage_key=None,
         max_attempts=settings.job_max_attempts,
     )
+    assert job is not None  # a delete always replaces whatever is waiting
     db.commit()
     return job_out(job)

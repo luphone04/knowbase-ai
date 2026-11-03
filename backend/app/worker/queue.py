@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import ColumnElement, Connection, Engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, aliased, sessionmaker
 
 from app.db.models import IngestionJob, Source
 from app.db.tenancy import SKIP_WORKSPACE_SCOPE
@@ -39,6 +39,9 @@ ABANDONED_MESSAGE = (
     "The worker stopped unexpectedly while processing this job, and no attempts are left."
 )
 SUPERSEDED_MESSAGE = "Superseded by a newer request for this source."
+DELETE_ABANDONED_MESSAGE = (
+    "Deleting this source did not finish (the worker stopped repeatedly). Delete it again."
+)
 
 
 @dataclass(frozen=True)
@@ -61,8 +64,12 @@ def enqueue_job(
     job_type: str,
     storage_key: str | None,
     max_attempts: int,
-) -> IngestionJob:
-    """Create the source's waiting job, or update the one already waiting. Caller commits."""
+) -> IngestionJob | None:
+    """Create the source's waiting job, or update the one already waiting. Caller commits.
+
+    A waiting `delete` job is never turned back into an ingest or reindex: then
+    nothing changes and None is returned (the caller reports "being deleted").
+    """
     statement = (
         insert(IngestionJob)
         .values(
@@ -85,19 +92,34 @@ def enqueue_job(
                 "last_error": None,
                 "result": {},
             },
+            where=None if job_type == "delete" else IngestionJob.job_type != "delete",
         )
         .returning(IngestionJob)
     )
-    job: IngestionJob = db.scalars(statement, execution_options={"populate_existing": True}).one()
+    job: IngestionJob | None = db.scalars(
+        statement, execution_options={"populate_existing": True}
+    ).one_or_none()
     return job
 
 
 def claim_next_job(session_factory: sessionmaker[Session], worker_id: str) -> ClaimedJob | None:
     """Atomically take the oldest due job, or return None. Commits before returning."""
     token = uuid.uuid4()
+    other = aliased(IngestionJob)
+    busy_source = (
+        select(other.id)
+        .where(other.source_id == IngestionJob.source_id, other.status == "running")
+        .exists()
+    )
     next_due = (
         select(IngestionJob.id)
-        .where(IngestionJob.status == "queued", IngestionJob.next_run_at <= func.now())
+        .where(
+            IngestionJob.status == "queued",
+            IngestionJob.next_run_at <= func.now(),
+            # One job per source at a time: a source with a running job waits, so two
+            # workers can never process (or publish) the same source concurrently.
+            ~busy_source,
+        )
         .order_by(IngestionJob.next_run_at, IngestionJob.created_at)
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -222,37 +244,65 @@ def recover_stale_jobs(session_factory: sessionmaker[Session], lease_seconds: in
     Both the staleness cutoff and the requeue time use the database clock, the
     one `claim_next_job` compares against. With the worker's clock, a skew of
     a few milliseconds could leave a recovered job "not yet due".
+
+    Each job is recovered in its own short transaction that locks the source
+    first and then the job, the same order as the API and the worker, so
+    recovery can't deadlock with an upload. Rows locked by someone else are
+    skipped and picked up on the next pass.
     """
     cutoff = func.now() - timedelta(seconds=lease_seconds)
-    recovered = 0
     with session_factory() as session:
-        stale = session.scalars(
-            select(IngestionJob)
+        candidates = session.execute(
+            select(IngestionJob.id, IngestionJob.source_id, IngestionJob.workspace_id)
             .where(IngestionJob.status == "running", IngestionJob.locked_at < cutoff)
-            .with_for_update(skip_locked=True)
             # Cross-workspace by design: recovery serves every workspace.
             .execution_options(**SKIP_WORKSPACE_SCOPE)
         ).all()
-        for row in stale:
+    recovered = 0
+    for job_id, source_id, workspace_id in candidates:
+        with session_factory() as session:
+            source = session.scalars(
+                select(Source)
+                .where(Source.id == source_id, Source.workspace_id == workspace_id)
+                .with_for_update(skip_locked=True)
+                .execution_options(**SKIP_WORKSPACE_SCOPE)
+            ).one_or_none()
+            row = session.scalars(
+                select(IngestionJob)
+                .where(
+                    IngestionJob.id == job_id,
+                    IngestionJob.status == "running",
+                    IngestionJob.locked_at < cutoff,
+                )
+                .with_for_update(skip_locked=True)
+                .execution_options(**SKIP_WORKSPACE_SCOPE)
+            ).one_or_none()
+            if row is None or source is None:
+                continue  # already handled, or locked by an API request right now
             if row.attempts >= row.max_attempts:
                 row.status = "failed"
                 row.last_error = ABANDONED_MESSAGE
                 row.finished_at = datetime.now(UTC)
                 row.locked_at = row.lock_token = row.locked_by = None
-                session.execute(
-                    update(Source)
-                    .where(Source.id == row.source_id, Source.workspace_id == row.workspace_id)
-                    .values(status="failed", error_message=ABANDONED_MESSAGE)
-                    .execution_options(**SKIP_WORKSPACE_SCOPE)
-                )
-            else:
+                if row.job_type == "delete":
+                    # Don't strand the source in "deleting": let an owner delete it again.
+                    source.status = "failed"
+                    source.error_message = DELETE_ABANDONED_MESSAGE
+                elif source.status == "deleting":
+                    pass
+                elif has_other_queued_job(session, row):
+                    source.status = "pending"  # a newer request will run next
+                else:
+                    source.status = "failed"
+                    source.error_message = ABANDONED_MESSAGE
+            elif (
                 requeue_or_supersede(
-                    session,
-                    row,
-                    run_at=func.now(),
-                    message=RECOVERED_MESSAGE,
-                    count_attempt=True,
+                    session, row, run_at=func.now(), message=RECOVERED_MESSAGE, count_attempt=True
                 )
+                and source.status != "deleting"
+            ):
+                source.status = "pending"
+            session.commit()
             recovered += 1
             logger.warning(
                 "Recovered stale job id=%s workspace=%s status=%s attempts=%d/%d",
@@ -262,7 +312,6 @@ def recover_stale_jobs(session_factory: sessionmaker[Session], lease_seconds: in
                 row.attempts,
                 row.max_attempts,
             )
-        session.commit()
     return recovered
 
 
