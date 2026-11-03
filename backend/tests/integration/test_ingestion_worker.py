@@ -461,3 +461,16 @@ def test_a_provider_breaking_its_contract_publishes_nothing(tenant_a: Tenant, mo
     assert waiting.status == "queued"  # retried as a provider problem, never published
     assert "does not match the request" in waiting.last_error
     assert sql("SELECT count(*) FROM embedding_cache")[0][0] == 0  # bad vectors never cached
+
+
+def test_a_source_kind_without_a_handler_fails_once_with_a_clear_message(
+    tenant_a: Tenant, worker: WorkerHarness
+) -> None:
+    """Ingestion is dispatched by source kind; an unknown kind is a permanent failure."""
+    body = upload(tenant_a, "returns.md", RETURNS_POLICY.encode())
+    worker.worker._handlers.pop("file")
+    worker.run_all()
+    failed = job(body["job"]["id"])
+    assert failed.status == "failed" and failed.attempts == 1
+    assert 'Sources of type "file" are not supported' in failed.last_error
+    assert chunks_of(body["source"]["id"]) == []

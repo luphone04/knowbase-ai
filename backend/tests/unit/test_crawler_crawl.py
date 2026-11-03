@@ -15,8 +15,6 @@ from app.crawler.crawl import (
     RobotsUnreachable,
 )
 from app.crawler.urls import origin_of
-from app.ingestion.parsers import Block
-from app.ingestion.website import repeated_blocks
 from tests.fakes.websites import SITE, FakeClock, FakeSite, make_fetcher
 
 ORIGIN = origin_of(SITE + "/")
@@ -397,13 +395,6 @@ def test_a_host_that_turns_private_mid_crawl_stops_it() -> None:
     report = crawler.crawl(SITE + "/")
     assert report.stopped_reason == "blocked_destination"
     assert report.pages[-1].reason == "blocked_destination"
-
-
-def test_repeated_blocks_are_site_boilerplate() -> None:
-    footer = Block("paragraph", "Free shipping over $50. Join our newsletter!")
-    pages = [[Block("paragraph", f"Unique page text {i}"), footer] for i in range(4)]
-    assert repeated_blocks(pages) == {footer.text}
-    assert repeated_blocks(pages[:2]) == set()  # too few pages to tell
 
 
 def test_sitemap_redirects_obey_robots_and_skip_rules() -> None:

@@ -1,7 +1,9 @@
 """Processing one claimed job: read -> parse -> clean -> chunk -> embed -> publish.
 
-Website sources take the same path page by page, after the crawl
-(app.ingestion.website): each page is one document, indexed by `index_document`.
+Ingestion is dispatched by source kind (`IngestionWorker._handlers`). Today the
+only kind is "file". A future ingestion method adds a handler that produces
+clean documents and indexes each with `index_document`, the shared path that
+owns unchanged detection, embedding, and the atomic swap.
 
 The previous good index is never at risk. Everything slow (parsing,
 Gemini) happens first, with the old chunks untouched. The swap from old chunks
@@ -37,9 +39,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.rate_limit import RateLimiter
 from app.config import Settings
-from app.crawler.fetcher import SafeFetcher
-from app.crawler.network import guarded_client
-from app.crawler.urls import Origin
 from app.db.models import Chunk, Document, EmbeddingCacheEntry, IngestionJob, Source
 from app.db.tenancy import bind_workspace
 from app.ingestion.chunker import ChunkDraft, ChunkerConfig, chunk_document
@@ -71,7 +70,6 @@ from app.worker.queue import (
     lock_owned_job,
     recover_stale_jobs,
     requeue_or_supersede,
-    update_progress,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,14 +89,6 @@ class JobLost(Exception):
 
 
 class PermanentJobError(Exception):
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
-
-
-class TransientJobError(Exception):
-    """Worth retrying later with backoff (e.g. the website's robots.txt was unreachable)."""
-
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
@@ -127,20 +117,6 @@ def _document_key(canonical_url: str | None) -> ColumnElement[bool]:
     if canonical_url is None:
         return Document.canonical_url.is_(None)
     return Document.canonical_url == canonical_url
-
-
-def default_fetcher_factory(settings: Settings) -> Callable[[Origin], SafeFetcher]:
-    """Real crawling: the guarded client (public addresses only), one per crawl."""
-
-    def build(origin: Origin) -> SafeFetcher:
-        return SafeFetcher(
-            origin=origin,
-            client=guarded_client(timeout=settings.crawl_timeout_seconds),
-            user_agent=settings.crawl_user_agent,
-            timeout=settings.crawl_timeout_seconds,
-        )
-
-    return build
 
 
 class _Heartbeat:
@@ -187,9 +163,6 @@ class IngestionWorker:
         storage: FileStorage,
         embedding_provider_factory: Callable[[], EmbeddingProvider],
         worker_id: str,
-        fetcher_factory: "Callable[[Origin], SafeFetcher] | None" = None,
-        crawl_clock: Callable[[], float] = time.monotonic,
-        crawl_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
@@ -197,10 +170,10 @@ class IngestionWorker:
         self._storage = storage
         self._provider_factory = embedding_provider_factory
         self.worker_id = worker_id
-        # Website crawling; tests swap in mocked HTTP and a fake clock.
-        self.fetcher_factory = fetcher_factory or default_fetcher_factory(settings)
-        self.crawl_clock = crawl_clock
-        self.crawl_sleep = crawl_sleep
+        # One handler per source kind (app.db.models.SOURCE_KINDS).
+        self._handlers: dict[str, Callable[[ClaimedJob], _Outcome]] = {
+            "file": self._ingest_file,
+        }
         self.budget = EmbeddingBudget(
             RateLimiter(engine, settings.app_secret_key.get_secret_value()),
             settings.daily_embedding_text_limit,
@@ -255,8 +228,6 @@ class IngestionWorker:
             self._defer(job, datetime.now(UTC) + PROVIDER_QUOTA_RETRY, exc.message)
         except (UnsupportedDocument, PermanentJobError) as exc:
             self._fail(job, exc.message)
-        except TransientJobError as exc:
-            self._retry_or_fail(job, exc.message)
         except EmbeddingDisabled as exc:
             self._fail(job, exc.message)
         except StoredFileMissing:
@@ -293,11 +264,12 @@ class IngestionWorker:
             if source is None:
                 raise JobLost()
             kind = source.kind
-        if kind == "website":
-            from app.ingestion.website import crawl_website
-
-            return _Outcome(crawl_website(self, job))
-        return self._ingest_file(job)
+        handler = self._handlers.get(kind)
+        if handler is None:
+            raise PermanentJobError(
+                f'Sources of type "{kind}" are not supported. Delete this source.'
+            )
+        return handler(job)
 
     def _ingest_file(self, job: ClaimedJob) -> _Outcome:
         with self.session(job) as db:
@@ -348,7 +320,6 @@ class IngestionWorker:
             clean,
             canonical_url=None,
             extra_meta={"file_type": file_type},
-            fetched_at=None,
             on_publish=finish,
         )
         self._remove_superseded_files(job)
@@ -361,13 +332,12 @@ class IngestionWorker:
         *,
         canonical_url: str | None,
         extra_meta: dict[str, Any],
-        fetched_at: datetime | None,
         on_publish: PublishHook,
     ) -> "IndexedDocument":
         """Make `clean` the indexed version of one document of the job's source.
 
-        Files have one document (`canonical_url` None); website pages have one
-        per canonical URL. Unchanged content (same text hash, title, chunker,
+        `canonical_url` is the document's key within its source. A file source
+        has exactly one document, keyed None. Unchanged content (same text hash, title, chunker,
         and model) keeps its chunks and costs no embeddings. Otherwise the
         chunks are rebuilt, embedded (cache, then budget, then Gemini), and
         swapped in by `_publish`. `on_publish` runs inside the publishing
@@ -400,11 +370,6 @@ class IngestionWorker:
             indexed = IndexedDocument(current.id, True, int(current_chunks or 0), 0, 0, 0)
             with self.session(job) as db:
                 row, source = self.lock_for_publish(db, job)
-                if fetched_at is not None:  # a re-crawled page: record the check, keep the chunks
-                    document = db.get(Document, current.id, with_for_update=True)
-                    if document is not None:
-                        document.fetched_at = fetched_at
-                        document.meta = {**document.meta, **extra_meta}
                 on_publish(db, row, source, indexed)
                 db.commit()
             return indexed
@@ -428,7 +393,6 @@ class IngestionWorker:
             embeddings,
             canonical_url=canonical_url,
             extra_meta=extra_meta,
-            fetched_at=fetched_at,
             on_publish=on_publish,
         )
 
@@ -452,7 +416,6 @@ class IngestionWorker:
         *,
         canonical_url: str | None,
         extra_meta: dict[str, Any],
-        fetched_at: datetime | None,
         on_publish: PublishHook,
     ) -> "IndexedDocument":
         """Swap in the new document and chunks atomically (all or nothing)."""
@@ -473,7 +436,6 @@ class IngestionWorker:
             document.title = clean.title
             document.content_hash = clean.content_hash
             document.text_content = clean.text
-            document.fetched_at = fetched_at
             document.meta = {
                 **clean.metadata,
                 **extra_meta,
@@ -522,11 +484,6 @@ class IngestionWorker:
             on_publish(db, row, source, indexed)
             db.commit()
             return indexed
-
-    def report_progress(self, job: ClaimedJob, progress: dict[str, Any]) -> None:
-        """Show progress in the job's `result` while it runs. JobLost if no longer ours."""
-        if not update_progress(self._engine, job, progress):
-            raise JobLost()
 
     @staticmethod
     def _mark_ready(source: Source) -> None:
