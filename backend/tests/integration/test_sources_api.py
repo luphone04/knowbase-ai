@@ -301,3 +301,31 @@ def test_plain_member_cannot_delete(tenant_a: Tenant, tenant_b: Tenant, db: Sess
     member.cookies.set(AUTH_COOKIE, token)
     assert member.get(f"/api/v1/sources/{source_id}").status_code == 200
     assert member.delete(f"/api/v1/sources/{source_id}").status_code == 403
+
+
+# --- file-upload-only scope (website crawling removed 2026-11-03) ------------------------
+
+
+def test_website_endpoints_no_longer_exist(tenant_a: Tenant) -> None:
+    body = upload(tenant_a.client, "returns.md", RETURNS_POLICY.encode()).json()
+    source_id = body["source"]["id"]
+    client = tenant_a.client
+    assert (
+        client.post("/api/v1/sources/websites", json={"url": "https://a.example/"}).status_code
+        == 404
+    )
+    assert client.get("/api/v1/sources/websites").status_code == 404
+    assert client.get(f"/api/v1/sources/{source_id}/pages").status_code == 404
+    assert client.get(f"/api/v1/sources/{source_id}/pages?status=failed").status_code == 404
+
+
+def test_responses_carry_no_website_fields(tenant_a: Tenant, worker: WorkerHarness) -> None:
+    body = upload(tenant_a.client, "returns.md", RETURNS_POLICY.encode()).json()
+    worker.run_all()
+    detail = tenant_a.client.get(f"/api/v1/sources/{body['source']['id']}").json()
+    website_fields = {"source_url", "settings", "page_counts", "canonical_url", "fetched_at"}
+    assert not website_fields & set(detail)
+    assert detail["kind"] == "file"  # the generic source kind stays
+    assert not website_fields & set(detail["documents"][0])
+    listed = tenant_a.client.get("/api/v1/sources").json()[0]
+    assert not website_fields & set(listed)

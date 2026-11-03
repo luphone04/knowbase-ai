@@ -100,8 +100,6 @@ class SourceOut(BaseModel):
     id: uuid.UUID
     kind: str
     display_name: str
-    source_url: str | None
-    settings: dict[str, Any]
     original_filename: str | None
     file_type: str | None
     file_size: int | None
@@ -118,8 +116,6 @@ class SourceOut(BaseModel):
 class DocumentOut(BaseModel):
     id: uuid.UUID
     title: str
-    canonical_url: str | None
-    fetched_at: datetime | None
     content_hash: str
     chunk_count: int
     metadata: dict[str, Any]
@@ -130,49 +126,9 @@ class DocumentOut(BaseModel):
 class SourceDetailOut(SourceOut):
     documents: list[DocumentOut]
     jobs: list[JobOut]
-    # Website sources: crawl pages by status (indexed, unchanged, duplicate, skipped, failed).
-    page_counts: dict[str, int]
 
 
 class UploadOut(BaseModel):
     source: SourceOut
     job: JobOut | None
     unchanged: bool
-
-
-# --- website sources (M5) ------------------------------------------------------------
-
-
-class WebsiteIn(StrictRequest):
-    url: str = Field(min_length=1, max_length=2048, description="Public http(s) URL to start at")
-    # Optional, lower-only overrides of MAX_CRAWL_PAGES / MAX_CRAWL_DEPTH.
-    max_pages: int | None = Field(default=None, ge=1)
-    max_depth: int | None = Field(default=None, ge=0)
-
-
-class WebsiteOut(BaseModel):
-    source: SourceOut
-    job: JobOut | None
-    created: bool
-
-
-class CrawlPageOut(BaseModel):
-    id: uuid.UUID
-    url: str
-    final_url: str | None
-    document_url: str | None  # the document this page owns
-    duplicate_of: str | None  # duplicates: the document with the same content
-    depth: int
-    discovered_via: str
-    status: str
-    reason: str | None
-    message: str | None
-    http_status: int | None
-    content_type: str | None
-    title: str | None
-    content_hash: str | None
-    in_latest_crawl: bool
-    first_seen_at: datetime
-    fetched_at: datetime | None
-    indexed_at: datetime | None
-    changed_at: datetime | None
