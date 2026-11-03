@@ -10,6 +10,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from app.ingestion.parsers import Block, ParsedDocument, UnsupportedDocument
@@ -44,10 +45,28 @@ class CleanDocument:
     content_hash: str
     metadata: dict[str, Any]
 
+    # Computed once per document: rebuilding them per chunk made chunking quadratic.
+    @cached_property
+    def _starts(self) -> list[int]:
+        return [start for start, _ in self.offsets]
+
+    @cached_property
+    def _headings(self) -> list[str | None]:
+        """For each block, the text of the nearest heading at or before it."""
+        current: str | None = None
+        headings: list[str | None] = []
+        for block in self.blocks:
+            if block.kind == "heading":
+                current = block.text
+            headings.append(current)
+        return headings
+
     def block_at(self, position: int) -> int:
         """Index of the block containing (or nearest before) a text position."""
-        starts = [start for start, _ in self.offsets]
-        return max(0, bisect.bisect_right(starts, position) - 1)
+        return max(0, bisect.bisect_right(self._starts, position) - 1)
+
+    def heading_at(self, block_index: int) -> str | None:
+        return self._headings[block_index] if self.blocks else None
 
 
 def build_clean_document(

@@ -174,3 +174,31 @@ def test_fingerprint_changes_with_settings() -> None:
 def test_inconsistent_settings_are_rejected(target: int, maximum: int, overlap: int) -> None:
     with pytest.raises(ValueError):
         ChunkerConfig(target=target, maximum=maximum, overlap=overlap)
+
+
+def test_chunking_many_small_blocks_is_not_quadratic() -> None:
+    """200,000 tiny paragraphs took ~5 s when block lookups rebuilt per chunk (audit M13)."""
+    import time
+
+    from app.ingestion.cleaner import build_clean_document
+    from app.ingestion.parsers import parse_document
+
+    parsed = parse_document("txt", b"a\n\n" * 200_000)
+    document = build_clean_document(parsed, file_type="txt", fallback_title="t", min_chars=1)
+    started = time.perf_counter()
+    chunks = chunk_document(document, ChunkerConfig())
+    assert time.perf_counter() - started < 2.0
+    assert chunks and all(c.heading is None for c in chunks)
+
+
+def test_heading_lookup_matches_the_nearest_preceding_heading() -> None:
+    from app.ingestion.cleaner import build_clean_document
+    from app.ingestion.parsers import parse_document
+
+    text = "# One\n\n" + "para one. " * 300 + "\n\n# Two\n\n" + "para two. " * 300
+    document = build_clean_document(
+        parse_document("md", text.encode()), file_type="md", fallback_title="t", min_chars=1
+    )
+    chunks = chunk_document(document, ChunkerConfig())
+    assert [c.heading for c in chunks][0] == "One"
+    assert chunks[-1].heading == "Two"

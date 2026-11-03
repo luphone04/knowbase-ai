@@ -164,7 +164,7 @@ def chunk_document(document: CleanDocument, config: ChunkerConfig) -> list[Chunk
                 content_hash=sha256_text(text[start:end]),
                 char_start=start,
                 char_end=end,
-                heading=_heading_for(document, first_block),
+                heading=document.heading_at(first_block),
                 page_start=document.blocks[first_block].page,
                 page_end=document.blocks[last_block].page,
             )
@@ -172,10 +172,3 @@ def chunk_document(document: CleanDocument, config: ChunkerConfig) -> list[Chunk
         previous = (start, end)
         i = j
     return chunks
-
-
-def _heading_for(document: CleanDocument, block_index: int) -> str | None:
-    for index in range(block_index, -1, -1):
-        if document.blocks[index].kind == "heading":
-            return document.blocks[index].text
-    return None
