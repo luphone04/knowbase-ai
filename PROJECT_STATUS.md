@@ -2,8 +2,8 @@
 
 | Field | Value |
 |---|---|
-| Current work | **File-only cleanup (C1)**: website crawling removed; Knowbase AI is file-upload-only ([ADR 0008](docs/decisions/0008-file-upload-only-scope.md)) |
-| Status | **READY_FOR_REVIEW**: checks pass, dev database migrated with file data verified identical, pushed to `main`; awaiting owner review and approval. M6 not started |
+| Current milestone | **M6 — Hybrid retrieval and RRF** (IN_PROGRESS) |
+| Status | C1 file-only cleanup **APPROVED** (owner authorised closeout on passing checks, 2026-11-03). M6 work proceeds in small pushed steps |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -19,8 +19,8 @@
 | M3 | Gemini provider and embeddings | APPROVED_AND_MERGED | `bb36797` | `APPROVE MILESTONE 3`, 2026-11-02 |
 | M4 | File ingestion and durable worker | APPROVED_AND_MERGED | `8af4b01` | `APPROVE MILESTONE 4`, 2026-11-02 |
 | M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
-| C1 | File-only cleanup (not a milestone; tracked separately) | READY_FOR_REVIEW | see Commits | Pending owner approval |
-| M6 | Hybrid retrieval and RRF | NOT_STARTED | — | — |
+| C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
+| M6 | Hybrid retrieval and RRF | IN_PROGRESS | — | — |
 | M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
@@ -83,16 +83,25 @@ No purge was needed (there was no website data). Both Docker volumes are intact;
 | Compose / CI / hygiene | `docker compose config`; `actionlint`; `scripts/check_repo_hygiene.sh` |
 | Live acceptance (rebuilt stack) | Removed endpoints 404. A TXT upload indexed through the real worker and Gemini (1 chunk, 768 dims, norm 1.000000; 1 text embedded). Re-index unchanged with 0 embeddings. Delete → 404. No key, password, or document text in logs. Your data unchanged afterwards; the test user removed |
 
-### Manual review steps (owner)
+### Closeout verification (2026-11-03, done by Claude at the owner's request)
 
-| Step | Expected | Result |
-|---|---|---|
-| `docker compose up --build -d` (`API_HOST_PORT=8001` while 8000 is busy) | migrate reports `0006` already applied; api healthy; worker "ready" | not yet checked |
-| `docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version_num FROM alembic_version"'` | `0006_retire_website_crawling` | not yet checked |
-| `curl -s -b alice.jar $API/sources` | your file source is still listed, with no website fields | not yet checked |
-| `curl -s -o /dev/null -w '%{http_code}' -b alice.jar -H "$O" -X POST $API/sources/websites` | `404` | not yet checked |
-| README → "Upload and index documents (curl)": upload, poll, reindex, delete | unchanged M4 behaviour | not yet checked |
-| `docker compose exec api pytest -q` | 486 passed, 3 skipped | not yet checked |
+The owner chose not to log in with their original account; it was neither
+used nor modified. A local password reset was briefly staged, then
+cancelled. The staged script failed to import the app before doing
+anything. A fingerprint shows the account's password hash unchanged, and the
+script was removed from the container.
+
+| Check | Result |
+|---|---|
+| Live data vs the pre-cleanup backup | **Identical.** The backup was restored into a separate throwaway PostgreSQL container, and per-table fingerprints of every column were compared: users (3, including password-hash fingerprints), workspaces (3), memberships (3), file sources (1, including the stored-file checksum), documents (1, text fingerprint), chunks (8, content and vector fingerprints), embedding cache (8), jobs (1). The throwaway database was dropped afterwards |
+| Uploaded file | Exists; 220,237 bytes; SHA-256 equals the hash recorded at upload, and the checksum of the uploads volume is unchanged |
+| Original document and chunks | 1 document (2 pages); 8 chunks, 768 dims, norm 1.000000, `gemini-embedding-001` |
+| Migration | `0006_retire_website_crawling` on the dev database; `alembic check` clean; full round trip on a throwaway database |
+| Live API with a temporary random account | Register 201; login 200; `/auth/me` OK; `POST /sources/websites`, `GET /sources/websites`, and `GET /sources/{id}/pages` → 404; TXT upload 202; job queued → running → succeeded (attempt 1); source ready (1 document, 1 chunk, 768 dims, norm 1.000000); the original `test.pdf` not visible to the test user; delete 202 → 404, leaving 0 sources and 0 cache rows; logout 204 → `/auth/me` 401 |
+| Gemini | Available: 1 embedding call for the whole check |
+| Temporary account removal | The app has no account-deletion endpoint. The test source was deleted through the API and the session logged out through the API; the temporary user and its empty workspace were then removed by a guarded SQL block (exactly one `c1-check-…@example.com` user, no sources). Original accounts untouched |
+| Logs | No Gemini key, document text, or session cookies |
+| Suites and checks | Host 489 passed; container 486 passed, 3 skipped; ruff, mypy (strict), `uv lock --check`, Compose, actionlint, hygiene: all pass |
 
 Restore the backup only if needed:
 `docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /Users/richard/knowbase-backups/knowbase-before-0006-20261103T080306Z.dump`
@@ -121,7 +130,8 @@ up to `2b8513e`.
 | C1 | `f8530e3` | chore: remove the crawler package, beautifulsoup4, crawler settings, and crawler tests |
 | C1 | `a4e7c67` | fix(queue): use the database clock when recovering stale jobs |
 | C1 | `217fb4b` | feat(db): migration 0006 retires website crawling; file is the only source kind |
-| C1 | see `git log` | docs: file-upload-only scope (ADR 0008); update SPEC, README, architecture, status |
+| C1 | `8732483` | docs: file-upload-only scope (ADR 0008); update SPEC, README, architecture, status |
+| C1 | see `git log` | docs: close out C1 (verification results; approved) |
 
 ## Blockers
 
