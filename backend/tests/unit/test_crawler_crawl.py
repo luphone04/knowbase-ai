@@ -404,3 +404,41 @@ def test_repeated_blocks_are_site_boilerplate() -> None:
     pages = [[Block("paragraph", f"Unique page text {i}"), footer] for i in range(4)]
     assert repeated_blocks(pages) == {footer.text}
     assert repeated_blocks(pages[:2]) == set()  # too few pages to tell
+
+
+def test_sitemap_redirects_obey_robots_and_skip_rules() -> None:
+    site = small_site()
+    site.add(
+        f"{SITE}/robots.txt",
+        f"User-agent: *\nDisallow: /private/\nSitemap: {SITE}/a.xml\nSitemap: {SITE}/b.xml\n",
+        content_type="text/plain",
+    )
+    site.add(f"{SITE}/sitemap.xml", status=301, headers={"location": "/private/sitemap.xml"})
+    site.add(f"{SITE}/a.xml", status=302, headers={"location": "/login/sitemap.xml"})
+    site.add(f"{SITE}/b.xml", status=302, headers={"location": "/maps/pages.xml"})
+    site.add(
+        f"{SITE}/maps/pages.xml",
+        f"<urlset {NS}><url><loc>{SITE}/about</loc></url></urlset>",
+        content_type="application/xml",
+    )
+    site.add(f"{SITE}/private/sitemap.xml", "<urlset/>", content_type="application/xml")
+    site.add(f"{SITE}/login/sitemap.xml", "<urlset/>", content_type="application/xml")
+    report, _ = crawl(site)
+
+    assert f"{SITE}/private/sitemap.xml" not in site.urls  # disallowed target never requested
+    assert f"{SITE}/login/sitemap.xml" not in site.urls
+    assert f"{SITE}/maps/pages.xml" in site.urls  # an allowed .xml target is followed
+    failed = {s["url"]: s["message"] for s in report.sitemaps if s["status"] == "failed"}
+    assert "robots.txt" in failed[f"{SITE}/sitemap.xml"]
+    assert f"{SITE}/a.xml" in failed
+    assert by_url(report)[f"{SITE}/about"].discovered_via == "sitemap"
+
+
+def test_sitemap_redirects_cannot_leave_the_site() -> None:
+    site = small_site()
+    site.add(
+        f"{SITE}/sitemap.xml", status=301, headers={"location": "http://169.254.169.254/x.xml"}
+    )
+    report, _ = crawl(site)
+    assert report.sitemaps[0]["status"] == "failed"
+    assert not any("169.254" in url for url in site.urls)

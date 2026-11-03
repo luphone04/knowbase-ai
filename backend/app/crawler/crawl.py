@@ -336,7 +336,12 @@ class Crawler:
                 continue
             fetched += 1
             try:
-                response = self._get(url, accept=XML_TYPES, max_bytes=self._limits.max_bytes)
+                response = self._get(
+                    url,
+                    accept=XML_TYPES,
+                    max_bytes=self._limits.max_bytes,
+                    allow_redirect=self._sitemap_redirect_check,
+                )
             except FetchError as exc:
                 sitemaps.append({"url": url, "status": "failed", "message": exc.message})
                 if exc.reason == "blocked_destination":
@@ -370,6 +375,20 @@ class Crawler:
                     queued.add(child)
                     queue.append(child)
         return pages
+
+    def _sitemap_redirect_check(self, target: str) -> tuple[str, str] | None:
+        """A sitemap may redirect only to a URL we would fetch directly.
+
+        The fetcher has already normalised the target, kept it on this origin,
+        and will check its destination address; this adds robots.txt and the
+        skip rules (except the file-extension rule: sitemaps are .xml files).
+        """
+        if not self._robots.allows(path_and_query(target)):
+            return ("robots", "The sitemap redirects to a URL disallowed by robots.txt.")
+        skip = skip_reason(target)
+        if skip is not None and skip[0] != "not_html":
+            return skip
+        return None
 
     # --- one page -------------------------------------------------------------------------
 
