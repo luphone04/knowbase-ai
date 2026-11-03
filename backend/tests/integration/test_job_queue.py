@@ -23,6 +23,7 @@ from app.worker.queue import (
     requeue_or_supersede,
 )
 from tests.fakes.documents import RETURNS_POLICY
+from tests.fakes.providers import MockEmbeddingProvider
 from tests.integration.conftest import Tenant, WorkerHarness, make_worker
 
 pytestmark = pytest.mark.integration
@@ -302,3 +303,87 @@ def test_recovery_uses_the_database_clock(
     monkeypatch.setattr(queue_module, "datetime", FastClock)
     assert recover_stale_jobs(get_sessionmaker(), lease_seconds=120) == 1
     assert claim_next_job(get_sessionmaker(), "worker-after-restart") is not None
+
+
+# --- job deadlines and stuck work (audit H3) ---------------------------------------------------
+
+
+def _upload_returns(tenant: Tenant) -> str:
+    response = tenant.client.post(
+        "/api/v1/sources/files", files={"file": ("returns.md", RETURNS_POLICY.encode())}
+    )
+    job_id: str = response.json()["job"]["id"]
+    return job_id
+
+
+def test_a_hung_parser_is_killed_and_the_job_fails_clearly(tenant_a: Tenant) -> None:
+    from tests.fakes.parsers import hang
+
+    job_id = _upload_returns(tenant_a)
+    harness = make_worker(env={"PARSE_TIMEOUT_SECONDS": "5"}, parse_target=hang)
+    started = time.perf_counter()
+    harness.run_all()
+    assert time.perf_counter() - started < 20
+    row = sql("SELECT status, attempts, last_error FROM ingestion_jobs WHERE id = :j", j=job_id)[0]
+    assert row.status == "failed" and row.attempts == 1  # a file too slow to read stays so
+    assert "took longer than 5 s" in row.last_error
+    assert sql("SELECT count(*) AS n FROM chunks")[0].n == 0
+    assert harness.provider.texts_embedded == 0
+
+
+class _SlowProvider(MockEmbeddingProvider):
+    def embed_documents(self, texts: Any) -> Any:
+        time.sleep(0.3)
+        return super().embed_documents(texts)
+
+
+def test_a_job_past_its_deadline_stops_and_publishes_nothing(tenant_a: Tenant) -> None:
+    from tests.integration.test_ingestion_worker import long_markdown
+
+    response = tenant_a.client.post(
+        "/api/v1/sources/files", files={"file": ("handbook.md", long_markdown())}
+    )
+    job_id = response.json()["job"]["id"]
+    harness = make_worker(
+        provider=_SlowProvider(model="gemini-embedding-001"),
+        env={"GEMINI_EMBEDDING_BATCH_SIZE": "1"},
+    )
+    harness.worker.settings = harness.worker.settings.model_copy(
+        update={"job_max_runtime_seconds": 1}
+    )
+    harness.run_all()
+    row = sql("SELECT status, attempts, last_error FROM ingestion_jobs WHERE id = :j", j=job_id)[0]
+    assert row.status == "queued" and row.attempts == 1  # retried later, within max_attempts
+    assert "longer than 1 s (JOB_MAX_RUNTIME_SECONDS)" in row.last_error
+    assert sql("SELECT count(*) AS n FROM chunks")[0].n == 0  # nothing partial published
+    assert 0 < harness.provider.texts_embedded < 7  # stopped between batches
+    assert sql("SELECT count(*) AS n FROM embedding_cache")[0].n == harness.provider.texts_embedded
+
+
+def test_the_heartbeat_stops_renewing_at_the_deadline(tenant_a: Tenant) -> None:
+    from app.ingestion.pipeline import _Heartbeat, _JobRun
+
+    _upload_returns(tenant_a)
+    claim = claim_next_job(get_sessionmaker(), "wedged-worker")
+    assert claim is not None
+    sql("UPDATE ingestion_jobs SET locked_at = now() - interval '1 hour'")
+    expired = _JobRun(max_runtime=0)
+    with _Heartbeat(get_engine(), claim, interval=0.05, run=expired):
+        time.sleep(0.3)
+    locked_at = sql("SELECT locked_at < now() - interval '30 minutes' AS stale FROM ingestion_jobs")
+    assert locked_at[0].stale  # never renewed, so recovery will take the job back
+    assert recover_stale_jobs(get_sessionmaker(), lease_seconds=120) == 1
+
+
+def test_a_lost_lease_stops_the_job_before_any_gemini_call(tenant_a: Tenant) -> None:
+    from app.ingestion.pipeline import _JobRun
+
+    _upload_returns(tenant_a)
+    harness = make_worker()
+    claim = claim_next_job(get_sessionmaker(), "test-worker")
+    assert claim is not None
+    run = _JobRun(max_runtime=900)
+    run.lost.set()  # the heartbeat found another owner
+    harness.worker.process(claim, run)
+    assert harness.provider.texts_embedded == 0
+    assert sql("SELECT count(*) AS n FROM chunks")[0].n == 0

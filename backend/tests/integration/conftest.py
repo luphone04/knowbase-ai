@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.session import get_engine, get_sessionmaker
+from app.ingestion.isolation import ParseFunction
+from app.ingestion.parsers import parse_document
 from app.ingestion.pipeline import IngestionWorker
 from app.ingestion.storage import FileStorage
 from app.main import app
@@ -214,7 +216,9 @@ class WorkerHarness:
 
 
 def make_worker(
-    provider: MockEmbeddingProvider | None = None, env: dict[str, str] | None = None
+    provider: MockEmbeddingProvider | None = None,
+    env: dict[str, str] | None = None,
+    parse_target: ParseFunction = parse_document,
 ) -> WorkerHarness:
     """A real IngestionWorker on the test database, with a deterministic embedding provider."""
     for name, value in (env or {}).items():
@@ -229,6 +233,7 @@ def make_worker(
         storage=FileStorage(settings.upload_dir),
         embedding_provider_factory=lambda: mock,
         worker_id="test-worker",
+        parse_target=parse_target,
     )
     return WorkerHarness(worker, mock)
 

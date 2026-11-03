@@ -104,7 +104,7 @@ def embed_document_texts(
     batch_size: int,
     budget: EmbeddingBudget,
     provider_factory: Callable[[], EmbeddingProvider],
-    on_progress: Callable[[], None] = lambda: None,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> EmbeddingOutcome:
     """Return a vector for every distinct text, calling Gemini only for uncached ones.
 
@@ -136,6 +136,7 @@ def embed_document_texts(
 
     embedded = requests = 0
     for batch in _batches(missing, min(batch_size, budget.batch_cap)):
+        checkpoint()  # stop between batches once the job's deadline has passed
         budget.reserve(len(batch))
         result = provider.embed_documents([texts_by_hash[h] for h in batch])
         if (
@@ -161,7 +162,6 @@ def embed_document_texts(
         vectors.update(zip(batch, result.vectors, strict=True))
         embedded += len(batch)
         requests += result.requests
-        on_progress()
     logger.info(
         "Embedded chunks workspace=%s new=%d cached=%d requests=%d model=%s",
         workspace_id,

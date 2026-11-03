@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     job_lease_seconds: int = Field(default=120, ge=30)
     job_heartbeat_seconds: int = Field(default=30, ge=5)
     job_retry_base_seconds: int = Field(default=30, ge=1)
+    # Wall-clock limit for one job attempt. Untrusted parsing runs in a child process
+    # that is killed after PARSE_TIMEOUT_SECONDS; its address space is capped at
+    # PARSE_MEMORY_LIMIT_MB (Linux; 0 disables the cap).
+    job_max_runtime_seconds: int = Field(default=900, ge=60, le=86_400)
+    parse_timeout_seconds: int = Field(default=120, ge=5, le=3600)
+    parse_memory_limit_mb: int = Field(default=1536, ge=0, le=65_536)
 
     @field_validator("app_secret_key", "jwt_secret")
     @classmethod
@@ -143,6 +149,12 @@ class Settings(BaseSettings):
     def _top_n_fits_the_candidates(self) -> Self:
         if self.retrieval_top_n > self.retrieval_candidates:
             raise ValueError("RETRIEVAL_TOP_N must be at most RETRIEVAL_CANDIDATES")
+        return self
+
+    @model_validator(mode="after")
+    def _parsing_fits_in_a_job(self) -> Self:
+        if self.parse_timeout_seconds >= self.job_max_runtime_seconds:
+            raise ValueError("PARSE_TIMEOUT_SECONDS must be less than JOB_MAX_RUNTIME_SECONDS")
         return self
 
     @model_validator(mode="after")

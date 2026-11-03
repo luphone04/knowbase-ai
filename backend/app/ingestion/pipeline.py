@@ -34,7 +34,7 @@ from types import TracebackType
 from typing import Any
 
 from sqlalchemy import ColumnElement, Engine, delete, exists, func, insert, select
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.rate_limit import RateLimiter
@@ -49,6 +49,12 @@ from app.ingestion.embedding import (
     EmbeddingDisabled,
     EmbeddingOutcome,
     embed_document_texts,
+)
+from app.ingestion.isolation import (
+    ParseFunction,
+    ParseResourceError,
+    ParseTimeout,
+    parse_in_subprocess,
 )
 from app.ingestion.parsers import ParseLimits, UnsupportedDocument, parse_document
 from app.ingestion.storage import FileStorage, StoredFileMissing
@@ -119,24 +125,73 @@ def _document_key(canonical_url: str | None) -> ColumnElement[bool]:
     return Document.canonical_url == canonical_url
 
 
-class _Heartbeat:
-    """Renews the job's lease in the background while it is processed."""
+class JobTimedOut(Exception):
+    def __init__(self, seconds: float) -> None:
+        self.message = (
+            f"Processing took longer than {seconds:g} s (JOB_MAX_RUNTIME_SECONDS) and was stopped."
+        )
+        super().__init__(self.message)
 
-    def __init__(self, engine: Engine, job: ClaimedJob, interval: float) -> None:
+
+class _JobRun:
+    """The running job's deadline and lease state, checked between stages (audit H3).
+
+    `checkpoint()` raises JobTimedOut once the deadline has passed, and JobLost
+    once the heartbeat has found that another worker owns the job, so no
+    partial or stale result is ever published.
+    """
+
+    def __init__(self, max_runtime: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.max_runtime = max_runtime
+        self._clock = clock
+        self.deadline = clock() + max_runtime
+        self.lost = threading.Event()
+
+    def remaining(self) -> float:
+        return max(0.0, self.deadline - self._clock())
+
+    def expired(self) -> bool:
+        return self._clock() >= self.deadline
+
+    def checkpoint(self) -> None:
+        if self.lost.is_set():
+            raise JobLost()
+        if self.expired():
+            raise JobTimedOut(self.max_runtime)
+
+
+class _Heartbeat:
+    """Renews the job's lease in the background while it is processed.
+
+    Renewal stops at the job's deadline: a job wedged somewhere no checkpoint
+    reaches then loses its lease, and recovery requeues it (bounded by
+    max_attempts) instead of it holding the queue forever.
+    """
+
+    def __init__(self, engine: Engine, job: ClaimedJob, interval: float, run: _JobRun) -> None:
         self._engine = engine
         self._job = job
         self._interval = interval
+        self._run_state = run
         self._stop = threading.Event()
-        self.lost = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"heartbeat-{job.id}", daemon=True)
+
+    @property
+    def lost(self) -> threading.Event:
+        return self._run_state.lost
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
+            if self._run_state.expired():
+                logger.warning(
+                    "Job %s passed its deadline; no longer renewing its lease", self._job.id
+                )
+                return
             try:
                 if not engine_heartbeat(self._engine, self._job):
-                    self.lost.set()
+                    self._run_state.lost.set()
                     return
-            except DBAPIError:
+            except SQLAlchemyError:  # includes pool timeouts, not only DBAPI errors
                 logger.warning("Heartbeat failed for job %s; will retry", self._job.id)
 
     def __enter__(self) -> "_Heartbeat":
@@ -163,6 +218,7 @@ class IngestionWorker:
         storage: FileStorage,
         embedding_provider_factory: Callable[[], EmbeddingProvider],
         worker_id: str,
+        parse_target: ParseFunction = parse_document,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
@@ -170,6 +226,9 @@ class IngestionWorker:
         self._storage = storage
         self._provider_factory = embedding_provider_factory
         self.worker_id = worker_id
+        # The parser run inside the isolated child process (tests substitute one).
+        self._parse_target = parse_target
+        self._run = _JobRun(settings.job_max_runtime_seconds)
         # One handler per source kind (app.db.models.SOURCE_KINDS).
         self._handlers: dict[str, Callable[[ClaimedJob], _Outcome]] = {
             "file": self._ingest_file,
@@ -194,8 +253,9 @@ class IngestionWorker:
         job = claim_next_job(self._session_factory, self.worker_id)
         if job is None:
             return False
-        with _Heartbeat(self._engine, job, self.settings.job_heartbeat_seconds):
-            self.process(job)
+        run = _JobRun(self.settings.job_max_runtime_seconds)
+        with _Heartbeat(self._engine, job, self.settings.job_heartbeat_seconds, run):
+            self.process(job, run)
         return True
 
     def recover(self) -> int:
@@ -210,9 +270,10 @@ class IngestionWorker:
             bind_workspace(session, job.workspace_id)
             yield session
 
-    def process(self, job: ClaimedJob) -> None:
+    def process(self, job: ClaimedJob, run: _JobRun | None = None) -> None:
         started = time.perf_counter()
         outcome = "failed"
+        self._run = run or _JobRun(self.settings.job_max_runtime_seconds)
         try:
             if job.job_type == "delete":
                 self._delete(job)
@@ -229,8 +290,11 @@ class IngestionWorker:
         except ProviderQuotaExhausted as exc:
             outcome = "deferred"
             self._defer(job, datetime.now(UTC) + PROVIDER_QUOTA_RETRY, exc.message)
-        except (UnsupportedDocument, PermanentJobError) as exc:
-            self._fail(job, exc.message)
+        except (UnsupportedDocument, PermanentJobError, ParseTimeout, ParseResourceError) as exc:
+            self._fail(job, exc.message)  # a file too slow or too big to read stays so
+        except JobTimedOut as exc:
+            outcome = "timed_out"
+            self._retry_or_fail(job, exc.message)
         except EmbeddingDisabled as exc:
             self._fail(job, exc.message)
         except StoredFileMissing:
@@ -290,7 +354,16 @@ class IngestionWorker:
             db.commit()
 
         data = self._storage.read(key)
-        parsed = parse_document(file_type, data, self.parse_limits)
+        self._run.checkpoint()
+        parsed = parse_in_subprocess(
+            file_type,
+            data,
+            self.parse_limits,
+            timeout=min(self.settings.parse_timeout_seconds, max(1.0, self._run.remaining())),
+            memory_mb=self.settings.parse_memory_limit_mb or None,
+            target=self._parse_target,
+        )
+        self._run.checkpoint()
         clean = build_clean_document(
             parsed,
             file_type=file_type,
@@ -378,6 +451,7 @@ class IngestionWorker:
             return indexed
 
         drafts = chunk_document(clean, self.chunker)
+        self._run.checkpoint()
         if len(drafts) > self.settings.max_document_chunks:
             raise PermanentJobError(
                 f"The document would make {len(drafts):,} chunks; the limit is "
@@ -394,7 +468,9 @@ class IngestionWorker:
             batch_size=self.settings.gemini_embedding_batch_size,
             budget=self.budget,
             provider_factory=self._provider_factory,
+            checkpoint=self._run.checkpoint,
         )
+        self._run.checkpoint()
         return self._publish(
             job,
             clean,
