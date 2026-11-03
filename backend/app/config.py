@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     chunk_max_chars: int = Field(default=2400, ge=200)
     chunk_overlap_chars: int = Field(default=250, ge=0)
 
+    # Retrieval (SPEC.md §9): candidates per list, RRF constant, chunks returned.
+    retrieval_candidates: int = Field(default=10, ge=1, le=100)
+    rrf_k: int = Field(default=60, ge=1, le=1000)
+    retrieval_top_n: int = Field(default=5, ge=1, le=50)
+
     frontend_origin: str = "http://localhost:3000"
 
     daily_chat_request_limit: int = Field(default=30, ge=0)
@@ -126,6 +131,12 @@ class Settings(BaseSettings):
     def _heartbeat_beats_the_lease(self) -> Self:
         if self.job_heartbeat_seconds * 2 > self.job_lease_seconds:
             raise ValueError("JOB_HEARTBEAT_SECONDS must be at most half of JOB_LEASE_SECONDS")
+        return self
+
+    @model_validator(mode="after")
+    def _top_n_fits_the_candidates(self) -> Self:
+        if self.retrieval_top_n > self.retrieval_candidates:
+            raise ValueError("RETRIEVAL_TOP_N must be at most RETRIEVAL_CANDIDATES")
         return self
 
     @model_validator(mode="after")

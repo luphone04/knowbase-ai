@@ -125,6 +125,8 @@ def test_app_starts_without_gemini_key() -> None:
         ("gemini_thinking_level", "minimal"),  # rejected by gemini-3.8-flash
         ("embedding_dimensions", 1536),  # schema is vector(768)
         ("max_upload_mb", 0),
+        ("rrf_k", 0),
+        ("retrieval_top_n", 11),  # more than RETRIEVAL_CANDIDATES (10)
         ("jwt_secret", PLACEHOLDER_SECRET),
         ("jwt_secret", "too-short-secret"),
         ("app_secret_key", PLACEHOLDER_SECRET),
