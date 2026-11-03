@@ -20,10 +20,11 @@
    start URL, nothing is crawled, and pages it forbids are removed the same way.
 
 The document key is the page's canonical URL when it's on the same site,
-otherwise the URL it was fetched from. A canonical URL can't merge different
-content: if two pages claim the same canonical URL with different text, the
-second is keyed by its own URL. Identical text found at two URLs is indexed
-once; the other page is recorded as a duplicate.
+otherwise the URL it was fetched from, decided for the whole crawl at once by
+`assign_document_keys`. A canonical URL can't merge different content or take
+over a real page: a page fetched at a URL keeps that URL for its own content.
+Identical text found at two URLs is indexed once; the other page is recorded
+as a duplicate, never of itself.
 
 **Ownership.** `crawl_pages.document_url` is the document a page *owns*
 (published). A duplicate owns nothing; it points at the other page's document
@@ -40,6 +41,7 @@ only if no page could be indexed, and retries only if a retry could help
 
 import math
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -59,7 +61,7 @@ from app.crawler.crawl import (
 from app.crawler.robots import RobotsRules
 from app.crawler.urls import origin_of, path_and_query
 from app.db.models import CrawlPage, Document, IngestionJob, Source
-from app.ingestion.cleaner import build_clean_document
+from app.ingestion.cleaner import CleanDocument, build_clean_document
 from app.ingestion.parsers import Block, ParsedDocument, UnsupportedDocument
 from app.worker.queue import ClaimedJob
 
@@ -83,6 +85,81 @@ def repeated_blocks(pages: list[list[Block]]) -> set[str]:
     threshold = max(BOILERPLATE_MIN_PAGES, math.ceil(len(pages) / 2))
     counts = Counter(text for blocks in pages for text in {block.text for block in blocks})
     return {text for text, count in counts.items() if count >= threshold}
+
+
+@dataclass(frozen=True)
+class KeyCandidate:
+    own: str  # the URL the page was fetched from (after redirects)
+    canonical: str | None  # its same-site canonical URL, if it declares one
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class KeyAssignment:
+    key: str  # the document key: owned when duplicate_of is None
+    duplicate_of: str | None  # set: same content as that (other page's) document
+
+
+def assign_document_keys(pages: list[KeyCandidate]) -> list[KeyAssignment]:
+    """Decide, for one crawl, which page owns which document key (BFS order in, same out).
+
+    Deterministic rules:
+    1. A page wants its canonical URL, unless that URL is another fetched page
+       with *different* content. A canonical tag can't take over a real page.
+    2. Pages wanting the same key form a group. The page fetched *at* that URL
+       owns it; otherwise the first in BFS order does. A member whose content
+       differs from the owner's (possible only for a canonical URL no fetched
+       page lives at) falls back to its own URL, which nobody else can hold.
+    3. Identical content under different keys: the group seen first keeps it;
+       later groups become duplicates of that key.
+    4. Never a self-reference: a duplicate fetched at its target's URL takes
+       ownership instead (the previous owner becomes the duplicate).
+    """
+    own_hash = {page.own: page.content_hash for page in pages}
+    wanted: list[str] = []
+    for page in pages:
+        key = page.canonical or page.own
+        if key != page.own and key in own_hash and own_hash[key] != page.content_hash:
+            key = page.own
+        wanted.append(key)
+
+    def grouped() -> dict[str, list[int]]:
+        groups: dict[str, list[int]] = {}
+        for index, key in enumerate(wanted):
+            groups.setdefault(key, []).append(index)
+        return groups
+
+    def owner_of(key: str, members: list[int]) -> int:
+        return next((i for i in members if pages[i].own == key), members[0])
+
+    for key, members in grouped().items():
+        owner = owner_of(key, members)
+        for index in members:
+            if pages[index].content_hash != pages[owner].content_hash:
+                wanted[index] = pages[index].own
+
+    assigned: list[KeyAssignment | None] = [None] * len(pages)
+    key_for_hash: dict[str, str] = {}
+    for key, members in grouped().items():
+        content_hash = pages[members[0]].content_hash
+        if content_hash in key_for_hash:
+            target = key_for_hash[content_hash]
+            for index in members:
+                assigned[index] = KeyAssignment(target, target)
+            continue
+        key_for_hash[content_hash] = key
+        owner = owner_of(key, members)
+        for index in members:
+            assigned[index] = KeyAssignment(key, None if index == owner else key)
+
+    result = [a for a in assigned if a is not None]
+    for index, assignment in enumerate(result):
+        if assignment.duplicate_of is not None and assignment.duplicate_of == pages[index].own:
+            for other, current in enumerate(result):
+                if current.key == assignment.key and current.duplicate_of is None:
+                    result[other] = KeyAssignment(assignment.key, assignment.key)
+            result[index] = KeyAssignment(assignment.key, None)
+    return result
 
 
 def _page_values(job: ClaimedJob, result: PageResult, **fields: Any) -> dict[str, Any]:
@@ -307,8 +384,7 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
     totals = Counter[str]()
     kept_rows: list[dict[str, Any]] = []  # failed: the page keeps the document it owns
     assigned_rows: list[dict[str, Any]] = []  # gone or duplicate: owns nothing now
-    claimed: dict[str, str] = {}  # document key -> content hash, in this crawl
-    by_hash: dict[str, str] = {}  # content hash -> document key, in this crawl
+    candidates: list[tuple[PageResult, CleanDocument]] = []  # indexable, in BFS order
     live: set[str] = set()
     released: set[str] = set()  # documents some page stopped owning in this crawl
     removed_blocks = 0
@@ -347,12 +423,26 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
             kept_rows.append(_page_values(job, result))
             continue
 
-        key = result.canonical_url or url
-        if key in claimed and claimed[key] != clean.content_hash:
-            key = url  # the canonical URL is already taken by different content
-        if clean.content_hash in by_hash or key in claimed:
+        candidates.append((result, clean))
+
+    assignments = assign_document_keys(
+        [
+            KeyCandidate(
+                own=result.final_url or result.url,
+                canonical=result.canonical_url,
+                content_hash=clean.content_hash,
+            )
+            for result, clean in candidates
+        ]
+    )
+    for (result, clean), assignment in zip(candidates, assignments, strict=True):
+        assert result.page is not None
+        page = result.page
+        url = result.final_url or result.url
+        key = assignment.key
+        if assignment.duplicate_of is not None:
             counts["duplicate"] += 1
-            same_as = by_hash.get(clean.content_hash, key)
+            same_as = assignment.duplicate_of
             result.reason, result.message = "duplicate", f"Same content as {same_as}."
             release(result.url)  # whatever this page owned before is now stale
             assigned_rows.append(
@@ -366,8 +456,6 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
                 )
             )
             continue
-        claimed[key] = clean.content_hash
-        by_hash[clean.content_hash] = key
         if previous.get(result.url) != key:
             release(result.url)  # e.g. its canonical URL changed
 

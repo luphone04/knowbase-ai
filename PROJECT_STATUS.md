@@ -50,7 +50,7 @@ Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
 | Disallowed and private targets are blocked | live: robots `/lessons/`, `/faq/`; 9 unsafe URLs via the API; tests | PASS: skipped and never requested; 422 for every unsafe URL |
 | Unchanged re-crawl doesn't duplicate chunks | live re-crawl; tests | PASS: 2 pages unchanged, identical chunk ids, 0 Gemini calls |
 | A changed page gets re-indexed | live: `quotes.toscrape.com/random` re-crawled; tests | PASS: 1 page re-indexed, 1 text embedded, chunk replaced |
-| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 786 passed, 0 skipped** (542 unit, 244 integration; **306 new in M5**, 13 of them from the review fixes) |
+| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 794 passed, 0 skipped** (548 unit, 246 integration; **314 new in M5**, 21 of them from the review fixes) |
 | Full suite in the api container | `docker compose exec api pytest -q` | PASS: 783 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
 | M0–M4 regression | same runs (the M4 pipeline now shares `index_document` with websites) | PASS |
 | Lint / format / strict types / lock / migrations | `ruff check`, `ruff format --check`, `mypy` (strict, 104 files), `uv lock --check`, `alembic check` | PASS |
@@ -97,6 +97,7 @@ Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
 | **Start URL newly disallowed by robots.txt** (inspected as asked). Nothing was crawled, the job failed, and every page stayed indexed, contrary to the removal policy. | Nothing is crawled and the job fails permanently, but earlier pages the new rules forbid are removed first. | `Disallow: /` removes every page; `Disallow: /$` removes only the start page; only robots.txt is requested |
 | **Sitemap redirects skipped robots.txt.** Sitemap requests used the default redirect callback. | Sitemap redirect targets get robots.txt and the skip rules (except the file-extension rule), on top of the fetcher's same-origin and destination checks. | A redirect into a disallowed path or a sign-in path is never requested; an allowed `.xml` redirect is followed; a redirect off the site is refused |
 | README still said Milestone 4. | Status now says Milestone 5, with website crawling implemented and retrieval (M6) and chat (M7) still to come. | — |
+| **Canonical URL collision** (second review). Keys were claimed first-come. `/a` (content A) declaring `/b` canonical claimed `/b` before the real `/b` (content B), which then collided again on its own URL and was marked a duplicate of itself. Even with identical content, the real `/b` became a self-referencing duplicate. | Keys are assigned for the whole crawl at once, deterministically (ADR 0007): a canonical URL that is another fetched page with different content is ignored; the page fetched at a URL owns it; differing claimants fall back to their own URL; a duplicate is never of itself. | PostgreSQL regression: `/a` → canonical `/b`, different content, `/a` first. 3 documents, each page owns its own URL, chunk contents separate, no duplicates or self-references. Identical alias: one document owned by `/b`, `/a` is `duplicate_of` `/b`. 6 unit tests of the rules (both orders, aliases, unfetched canonicals, self-reference). Both integration tests fail on the pre-fix commit `0047b1e` |
 
 **The bugs were real:** the new integration tests, adapted to the old schema, fail on the pre-fix commit `9f393eb`:
 - the duplicate's stale document was kept;
@@ -153,7 +154,7 @@ Full commands are in README → "Crawl a website (curl)".
 | Add `quotes.toscrape.com/random` (depth 0), then re-crawl | 2nd job: `pages_indexed` 1, `embedded_texts` 1 | not yet checked |
 | Submit `http://localhost:8000` and `http://10.0.0.1/` | 422 `blocked_url` | not yet checked |
 | Bob's cookie on Alice's source | 404 | not yet checked |
-| `docker compose exec api pytest -q` | 783 passed, 3 skipped | not yet checked |
+| `docker compose exec api pytest -q` (after `docker compose up --build -d`) | 791 passed, 3 skipped | not yet checked |
 | AI Studio: project still on the **Free** tier, no billing linked | Free tier | not yet checked |
 
 ## Commits
@@ -174,7 +175,8 @@ Full commands are in README → "Crawl a website (curl)".
 | M5 | `9f393eb` | docs: document the website crawler and record Milestone 5 results |
 | M5 | `df6e2b3` | fix(crawler): check robots.txt and skip rules on sitemap redirects |
 | M5 | `e6ab581` | fix(worker): track which page owns each document; remove gone pages even when nothing indexes |
-| M5 | see `git log` | docs: record the M5 review fixes |
+| M5 | `0047b1e` | docs: record the M5 review fixes |
+| M5 | see `git log` | fix(worker): assign document keys deterministically so a canonical claim can't take over a real page |
 
 ## Blockers
 

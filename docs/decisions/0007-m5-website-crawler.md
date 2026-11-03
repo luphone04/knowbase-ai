@@ -157,10 +157,19 @@ seen too.
 
 - **One page = one document,** keyed by `documents.canonical_url`. The key is
   the page's canonical URL when it's on the same site, otherwise the URL it
-  was fetched from. If two pages claim one canonical URL with different text,
-  the second keeps its own URL, so canonical tags can't merge different
-  content. Identical text at two URLs is indexed once; the other is recorded
-  as `duplicate`.
+  was fetched from. Keys are assigned for the whole crawl at once
+  (`assign_document_keys`), deterministically:
+  1. A canonical URL that is another fetched page with *different* content is
+     ignored, so a canonical tag can't take over a real page.
+  2. Among pages wanting the same key, the page fetched *at* that URL owns
+     it, otherwise the first in BFS order. A member with different content
+     falls back to its own URL.
+  3. Identical text under different keys is indexed once; the others become
+     `duplicate`.
+  4. A duplicate never points at its own URL: if it was fetched there, it
+     owns the document instead.
+  So `/a` declaring `/b` canonical, with different content from the real
+  `/b`, gives two documents in either order.
 - **Unchanged:** same text hash, title, chunker, and model. No chunking and no
   embedding; the chunks are untouched (same ids). `fetched_at` and the page
   record are updated. Tested live: an unchanged re-crawl made 0 Gemini calls.

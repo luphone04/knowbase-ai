@@ -462,6 +462,68 @@ def test_a_document_two_pages_own_survives_while_one_still_owns_it(tenant_a: Ten
     assert f"{SITE}/faq" in documents(source_id)
 
 
+def test_a_canonical_claim_cannot_take_over_a_real_page_with_other_content(
+    tenant_a: Tenant,
+) -> None:
+    """/a (content A) declares /b canonical; /b is a real page with content B; /a comes first."""
+    site = two_page_site(
+        a=page_html("Faq", PAGES["faq"], f'<link rel="canonical" href="{SITE}/b">'),
+        b=WARRANTY,
+    )
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)
+
+    result = job(body["job"]["id"]).result
+    assert result["pages_indexed"] == 3 and result["pages_duplicate"] == 0
+    docs = documents(source_id)
+    assert set(docs) == {f"{SITE}/", f"{SITE}/a", f"{SITE}/b"}  # both distinct pages kept
+    assert "Gift cards never expire" in docs[f"{SITE}/a"].text_content
+    assert "two-year warranty" in docs[f"{SITE}/b"].text_content
+    by_doc = {
+        row.canonical_url: row.content
+        for row in sql(
+            "SELECT d.canonical_url, string_agg(c.content, ' ') AS content FROM chunks c"
+            " JOIN documents d ON d.id = c.document_id WHERE d.source_id = :s"
+            " GROUP BY d.canonical_url",
+            s=source_id,
+        )
+    }
+    assert "Gift cards" in by_doc[f"{SITE}/a"] and "warranty" not in by_doc[f"{SITE}/a"]
+    assert "two-year warranty" in by_doc[f"{SITE}/b"] and "Gift" not in by_doc[f"{SITE}/b"]
+    rows = pages(source_id)
+    for path in ("a", "b"):
+        row = rows[f"{SITE}/{path}"]
+        assert row.status == "indexed"
+        assert row.document_url == f"{SITE}/{path}"  # each owns its own document
+        assert row.duplicate_of is None
+    assert not any(row.duplicate_of == row.url for row in rows.values())  # no self-reference
+
+
+def test_a_canonical_alias_with_identical_content_is_a_duplicate_of_the_real_page(
+    tenant_a: Tenant,
+) -> None:
+    """A genuine alias (/a declares /b canonical, same content), /a processed first: one
+    document, owned by the real page /b. (Before the fix /b became a duplicate of itself.)"""
+    site = two_page_site(
+        a=page_html("Faq", PAGES["faq"], f'<link rel="canonical" href="{SITE}/b">'),
+        b=page_html("Faq", PAGES["faq"]),
+    )
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)
+
+    assert set(documents(source_id)) == {f"{SITE}/", f"{SITE}/b"}
+    rows = pages(source_id)
+    assert rows[f"{SITE}/b"].status == "indexed" and rows[f"{SITE}/b"].document_url == f"{SITE}/b"
+    alias = rows[f"{SITE}/a"]
+    assert alias.status == "duplicate" and alias.duplicate_of == f"{SITE}/b"
+    assert alias.document_url is None
+    assert sql("SELECT count(*) AS n FROM chunks")[0].n == 2  # home + /b, nothing for /a
+
+
 # --- removals when nothing (else) can be indexed --------------------------------------------
 
 
