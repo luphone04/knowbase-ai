@@ -45,7 +45,7 @@ def test_duplicates_within_a_list_keep_their_best_rank() -> None:
 
 
 def test_ties_are_broken_deterministically() -> None:
-    # A is rank 1 in vector, C rank 1 in lexical: equal scores, equal best rank.
+    # A is rank 1 in vector, C rank 1 in lexical: equal scores, so ordered by chunk id.
     fused = reciprocal_rank_fusion({"vector": [C], "lexical": [A]}, k=60, limit=10)
     assert [hit.chunk_id for hit in fused] == [A, C]  # then by id
     again = reciprocal_rank_fusion({"lexical": [A], "vector": [C]}, k=60, limit=10)

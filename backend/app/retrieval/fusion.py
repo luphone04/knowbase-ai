@@ -5,8 +5,8 @@
 Only ranks are combined. Raw cosine distances and `ts_rank_cd` values have
 unrelated scales, so they're never added. Ranks start at 1.
 
-Deterministic: ties on score are broken by the best rank the chunk reached
-in any list, then by chunk id, so the same inputs always give the same order.
+Deterministic: exact score ties are broken by chunk id, so the same inputs
+always give the same order.
 """
 
 import uuid
@@ -39,11 +39,11 @@ def reciprocal_rank_fusion(
             ranks.setdefault(chunk_id, {}).setdefault(name, position)  # dedupe: first wins
 
     scored = [
-        (sum(1.0 / (k + rank) for rank in by_list.values()), min(by_list.values()), chunk_id)
+        (sum(1.0 / (k + rank) for rank in by_list.values()), chunk_id)
         for chunk_id, by_list in ranks.items()
     ]
-    scored.sort(key=lambda item: (-item[0], item[1], str(item[2])))
+    scored.sort(key=lambda item: (-item[0], str(item[1])))
     return [
         FusedHit(chunk_id=chunk_id, score=score, rank=position, source_ranks=dict(ranks[chunk_id]))
-        for position, (score, _best, chunk_id) in enumerate(scored[:limit], start=1)
+        for position, (score, chunk_id) in enumerate(scored[:limit], start=1)
     ]
