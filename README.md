@@ -1,20 +1,20 @@
 # Knowbase AI
 
-A locally runnable website-and-document knowledge assistant. Add a public
-website or upload documents. The system indexes them into PostgreSQL +
-pgvector, and answers questions with Gemini (free tier), grounded in your
-own sources and with validated citations. When the sources don't support an
-answer, it says so.
+A locally runnable document knowledge assistant. Upload PDF, DOCX, TXT, or
+Markdown files. The system indexes them into PostgreSQL + pgvector, and
+answers questions with Gemini (free tier), grounded in your own documents
+and with validated citations. When the documents don't support an answer,
+it says so.
 
 This is a well-engineered prototype for local demos, not production software.
 
-> **Status:** Milestone 5 (website crawler and incremental indexing). You can
-> sign in, upload PDF, DOCX, TXT, and Markdown files, and add a public website.
-> The worker crawls the site politely, respecting robots.txt and limited to
-> public addresses, and indexes files and pages into pgvector with Gemini
-> embeddings. Pages that haven't changed aren't embedded again. Retrieval (M6)
-> and chat (M7) are not built yet. See [PROJECT_STATUS.md](PROJECT_STATUS.md)
-> for progress.
+> **Status:** File-upload-only (owner decision, 3 November 2026; see
+> [ADR 0008](docs/decisions/0008-file-upload-only-scope.md)). You can sign in
+> and upload PDF, DOCX, TXT, and Markdown files. The worker indexes them into
+> pgvector with Gemini embeddings, and content that hasn't changed isn't
+> embedded again. Website crawling (Milestone 5) was built and then removed;
+> it is descoped. Retrieval (M6) and chat (M7) are not built yet. See
+> [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
 
@@ -166,86 +166,6 @@ docker compose start worker     # it is picked up; jobs left 'running' by a dead
                                 # worker are recovered once their 120 s lease lapses
 docker compose logs -f worker   # ids, counts, and timings only, never document text
 ```
-
-## Crawl a website (curl)
-
-Signed in as above. Only crawl sites you may crawl. These two are public
-sandboxes built for practising scrapers:
-- `www.scrapethissite.com` has a robots.txt that disallows `/lessons/` and `/faq/`.
-- `quotes.toscrape.com/random` serves a different quote on every request,
-  so it shows a "changed page".
-
-```bash
-API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
-O='Origin: http://localhost:3000'; J='Content-Type: application/json'
-
-# 1. Add a site (202 at once; the worker crawls). Limits can only be lowered.
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/sources/websites \
-  -d '{"url": "https://www.scrapethissite.com/pages/", "max_pages": 3, "max_depth": 1}'
-#    -> {"source": {"id": ..., "kind": "website"}, "job": {"id": ..., "status": "queued"}, "created": true}
-
-# 2. Watch the crawl: progress while running, then totals
-curl -s -b alice.jar $API/jobs/<job-id>
-#    result: pages_requested 3, stopped_reason "page_limit", robots "parsed",
-#            pages_indexed, pages_skipped, embedded_texts, ...
-
-# 3. Page by page: status, reason, HTTP status, title
-curl -s -b alice.jar "$API/sources/<source-id>/pages"
-#    /faq/ and /lessons/: "skipped", reason "robots" (and never requested; see the worker log)
-#    /login/: "skipped", reason "auth_page"; a noindex page: reason "noindex"
-curl -s -b alice.jar "$API/sources/<source-id>/pages?status=failed"   # failures only
-
-# 4. Stored pages and vectors
-docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "SELECT d.canonical_url, d.title, left(d.text_content, 120) AS text, count(c.id) AS chunks,
-          min(vector_dims(c.embedding)) AS dims
-   FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
-   WHERE d.canonical_url IS NOT NULL GROUP BY d.id ORDER BY 1"'
-
-# 5. Crawl again: unchanged pages keep their chunks and cost no Gemini calls
-curl -s -b alice.jar -H "$O" -X POST $API/sources/<source-id>/reindex
-#    -> job result: pages_unchanged N, embedded_texts 0, embedding_requests 0
-#    (a second reindex while one is queued: 409 crawl_in_progress)
-
-# 6. A changed page gets re-indexed
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/sources/websites \
-  -d '{"url": "https://quotes.toscrape.com/random", "max_depth": 0}'
-curl -s -b alice.jar -H "$O" -X POST $API/sources/<that-source-id>/reindex
-#    -> pages_indexed 1, embedded_texts 1 (a new quote: new text hash, chunks replaced)
-
-# 7. Blocked targets: 422, nothing is created, nothing is fetched
-for u in http://localhost:8000 http://127.0.0.1:8000/ http://10.0.0.1/ \
-         http://169.254.169.254/latest/meta-data/ http://db:5432/ ftp://example.com/; do
-  curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/sources/websites -d "{\"url\": \"$u\"}"; echo
-done
-#    -> {"error": {"code": "blocked_url" | "invalid_url", "message": ...}}
-
-# 8. Workspace isolation: Bob can't see or touch Alice's site (404 everywhere)
-curl -s -b bob.jar $API/sources/<source-id>/pages
-
-# 9. Delete: pages, chunks, crawl records, and unused cached vectors
-curl -s -b alice.jar -H "$O" -X DELETE $API/sources/<source-id>
-```
-
-How the crawler behaves (details in
-[ADR 0007](docs/decisions/0007-m5-website-crawler.md)):
-- **Same site only:** scheme, host, and port must match. Pages are fetched
-  breadth-first, at most `MAX_CRAWL_PAGES` (20) and `MAX_CRAWL_DEPTH` (2), and
-  at least `CRAWL_DELAY_SECONDS` (1) apart.
-- **robots.txt:**
-  - read first;
-  - if it's missing (4xx), there are no restrictions;
-  - if it's unreachable (5xx, 429, network), nothing is crawled and the job
-    retries;
-  - sitemap pages obey it too.
-- **Never fetched:** private, loopback, link-local, and metadata addresses,
-  including hosts that *resolve* there now. The check is made on the actual
-  connection, so DNS rebinding fails.
-- **Some pages failing** (timeouts, 500s, too little text) doesn't fail the
-  crawl. Each failure is listed under `pages?status=failed`, and that page's
-  previous version stays indexed.
-- **No JavaScript** is run, so pages that render in the browser come out
-  nearly empty.
 
 ## Gemini (AI provider)
 

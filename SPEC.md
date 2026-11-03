@@ -7,8 +7,15 @@
 `docs/decisions/0002-main-branch-workflow.md`)\
 **Prepared:** 1 November 2026\
 **Primary goal:** Build a working, demonstrable, zero-subscription-cost
-website and document knowledge assistant using Gemini's free API tier
-and local open-source infrastructure.
+document knowledge assistant using Gemini's free API tier and local
+open-source infrastructure.
+
+> **Scope change (3 November 2026, ADR 0008):** Knowbase AI is
+> file-upload-only. It ingests PDF, DOCX, TXT, and Markdown uploads.
+> Website crawling was built in Milestone 5 and then removed by owner
+> decision; it is not part of the product. The source model stays generic
+> (`sources.kind`), so another ingestion method can be added later through
+> a new milestone and migration.
 
 ------------------------------------------------------------------------
 
@@ -85,8 +92,8 @@ Treat this document as the source of truth.
 
 ### Expected result
 
-A local web application with: - A dashboard for adding public websites
-and uploading documents. - A durable ingestion worker that extracts,
+A local web application with: - A dashboard for uploading
+documents. - A durable ingestion worker that extracts,
 cleans, chunks, embeds, and indexes content. - PostgreSQL with pgvector
 for vector retrieval and PostgreSQL full-text search for lexical
 retrieval. - Reciprocal Rank Fusion (RRF) to combine retrieval
@@ -95,7 +102,7 @@ validated source citations and an abstain/no-answer behavior. -
 Conversation history and useful follow-up-question handling. - An
 evaluation page that compares vector-only retrieval with hybrid
 retrieval using a real test set. - Tenant/workspace isolation, basic
-authentication, upload/crawler safeguards, logs, and tests. - A Docker
+authentication, upload safeguards, logs, and tests. - A Docker
 Compose setup that runs locally without a paid database, hosting
 provider, or cloud storage.
 
@@ -105,15 +112,14 @@ provider, or cloud storage.
 
 ### 1.1 What is Knowbase AI?
 
-Knowbase AI is a website-to-knowledge assistant for businesses.
+Knowbase AI is a document-to-knowledge assistant for businesses.
 
-A business owner or administrator can: 1. Create a workspace. 2. Add a
-publicly accessible website URL. 3. Upload PDF, DOCX, TXT, or Markdown
-documents. 4. Let the system extract and index the content. 5. Ask
-questions through a chat interface. 6. Receive answers grounded in the
-business's own sources, with links or page references. 7. Inspect
-retrieval and evaluation results to understand whether the system is
-working.
+A business owner or administrator can: 1. Create a workspace. 2. Upload
+PDF, DOCX, TXT, or Markdown documents. 3. Let the system extract and
+index the content. 4. Ask questions through a chat interface. 5. Receive
+answers grounded in the business's own documents, with file and page
+references. 6. Inspect retrieval and evaluation results to understand
+whether the system is working.
 
 Example business scenario: a fictional online store has a return policy,
 warranty policy, shipping policy, product guide, and support FAQ. A
@@ -127,12 +133,12 @@ not find enough information.
 The project must demonstrate more than an LLM API call or a chat UI. The
 differentiating engineering work is:
 
--   Website crawling with scope limits, robots.txt handling, and SSRF
-    protections.
+-   Safe file ingestion: signature checks, size limits, and safe
+    storage for untrusted uploads.
 -   A persistent database-backed job queue rather than fragile
     in-process background tasks.
--   Incremental ingestion: detect unchanged pages and avoid re-embedding
-    them.
+-   Incremental ingestion: detect unchanged documents and avoid
+    re-embedding them.
 -   Workspace isolation across all source, document, chunk,
     conversation, and job queries.
 -   Hybrid retrieval with a transparent ranking-fusion stage.
@@ -311,8 +317,8 @@ another paid managed RAG service.
 
 Implement application-level guardrails: - Configurable daily chat
 request limit, default 30 per local demo user. - Configurable daily
-embedding-text limit, default 300 texts. - Maximum 20 website pages per
-crawl by default. - Maximum upload size 10 MB by default. - Embedding
+embedding-text limit, default 300 texts. - Maximum upload size 10 MB by
+default. - Embedding
 cache/deduplication by workspace + content hash + model + dimension
 where practical. - Do not re-embed unchanged documents. - Record request
 counts, token usage metadata when returned, latency, and provider
@@ -366,10 +372,6 @@ a change is necessary, document it before implementing.
                                                            paragraph/table
                                                            extraction
 
-  Web extraction   `httpx` + `beautifulsoup4`              Controlled HTTP
-                                                           crawler and HTML
-                                                           parsing
-
   Password hashing `pwdlib[argon2]`                        Password hashing
 
   JWT              `PyJWT`                                 Signed access
@@ -422,10 +424,8 @@ flowchart TD
     API --> DB[("PostgreSQL 18 + pgvector")]
     API --> JOBS["Ingestion Job Table"]
     WORKER["Worker Process"] --> JOBS
-    WORKER --> CRAWL["Website Crawler"]
-    WORKER --> PARSE["PDF / DOCX / TXT Parser"]
-    CRAWL --> CLEAN["Clean + Normalize"]
-    PARSE --> CLEAN
+    WORKER --> PARSE["PDF / DOCX / TXT / MD Parser"]
+    PARSE --> CLEAN["Clean + Normalize"]
     CLEAN --> CHUNK["Chunk + Metadata"]
     CHUNK --> EMB["Gemini Embedding API"]
     EMB --> DB
@@ -458,7 +458,7 @@ This makes the job queue durable across API restarts and avoids two
 workers claiming the same job.
 
 Use one worker process and low concurrency for the MVP. The worker must
-not run long crawling/embedding operations inside a user-facing API
+not run long parsing/embedding operations inside a user-facing API
 request.
 
 ------------------------------------------------------------------------
@@ -521,7 +521,6 @@ knowbase-ai/
 │   │   │   ├── gemini.py
 │   │   │   └── interfaces.py
 │   │   ├── ingestion/
-│   │   │   ├── crawler.py
 │   │   │   ├── parsers.py
 │   │   │   ├── cleaner.py
 │   │   │   ├── chunker.py
@@ -616,16 +615,19 @@ user its owner. Membership invitations can be deferred.
 > `deleting` source status, and an `embedding_cache` table. See
 > `docs/decisions/0006-m4-file-ingestion.md`.
 >
-> **Milestone 5** (migration `0004_crawler`) adds a `crawl_pages` table:
-> per-URL crawl outcomes for website sources. Website pages reuse
-> `documents` (one per canonical URL) and `chunks`. See
-> `docs/decisions/0007-m5-website-crawler.md`.
+> **Milestone 5** (migrations `0004`, `0005`) added a `crawl_pages` table
+> for website crawling. **Migration `0006_retire_website_crawling`** drops
+> it and allows only `kind = 'file'` (ADR 0008). The nullable
+> `sources.source_url`, `documents.canonical_url`, and
+> `documents.fetched_at` columns remain for a possible future source type;
+> file sources leave them NULL.
 
 #### `sources`
 
-Represents one uploaded file or one website root. -
+Represents one ingested source; today, one uploaded file. -
 `id UUID PRIMARY KEY` - `workspace_id UUID NOT NULL` -
-`kind TEXT NOT NULL CHECK (kind IN ('website','file'))` -
+`kind TEXT NOT NULL CHECK (kind IN ('file'))`, the generic source
+type; a new ingestion method widens it with a migration -
 `display_name TEXT NOT NULL` - `source_url TEXT NULL` -
 `original_filename TEXT NULL` - `storage_key TEXT NULL` -
 `status TEXT NOT NULL` --- `pending`, `processing`, `ready`, `failed` -
@@ -635,7 +637,7 @@ Unique pair `(workspace_id, id)` for composite tenant-safe foreign keys.
 
 #### `documents`
 
-Represents an extracted website page or uploaded file. -
+Represents the extracted text of an uploaded file. -
 `id UUID PRIMARY KEY` - `workspace_id UUID NOT NULL` -
 `source_id UUID NOT NULL` - `title TEXT NOT NULL` -
 `canonical_url TEXT NULL` - `content_hash TEXT NOT NULL` -
@@ -767,12 +769,11 @@ Every workspace-owned table must include `workspace_id`.
 
 ### 7.1 Supported inputs
 
-**MVP:** - Public HTTP/HTTPS website. - PDF with extractable text. -
-DOCX. - TXT. - Markdown.
+**MVP:** - PDF with extractable text. - DOCX. - TXT. - Markdown.
 
-**Not in MVP:** - Scanned-PDF OCR. - Password-protected documents. -
-Login-protected websites. - Google Drive/Notion connectors. -
-Video/audio ingestion.
+**Not in MVP:** - Website crawling (descoped 3 November 2026; ADR 0008). -
+Scanned-PDF OCR. - Password-protected documents. - Google Drive/Notion
+connectors. - Video/audio ingestion.
 
 If a PDF has no extractable text, mark it as unsupported in the
 source/job error. Do not silently index an empty document or pretend OCR
@@ -793,45 +794,12 @@ occurred.
     key.
 -   Do not expose local filesystem paths through API responses.
 
-### 7.3 Website crawler behavior
+### 7.3 Website crawler behavior (descoped)
 
-Implement a polite, bounded crawler:
-
--   Accept only `http` and `https`.
--   Start at the supplied URL and stay on the same origin
-    (scheme/host/port).
--   Check `robots.txt` and do not crawl disallowed paths.
--   Try `sitemap.xml` where available, then use breadth-first crawling
-    of same-origin links.
--   Default maximum: 20 pages; maximum depth: 2; configurable.
--   Delay at least 1 second between requests to the same host.
--   Request timeout: 10 seconds.
--   Maximum downloaded HTML response: 5 MB.
--   Accept only HTML content types.
--   Do not crawl login pages, form submissions, query-heavy tracking
-    URLs, or external domains.
--   Normalize URLs, remove fragments and known tracking parameters, and
-    deduplicate.
--   Record title, canonical URL, content hash, fetch time, and HTTP
-    status.
--   If a page's normalized text hash has not changed, skip chunking and
-    embedding.
--   If changed, replace that page's old chunks transactionally after
-    successful extraction and embedding.
--   Show per-page counts and failures in the job detail view.
-
-**SSRF protections are mandatory:** reject localhost, loopback, private,
-link-local, multicast, reserved, and non-public IP destinations. Resolve
-and validate host addresses before fetching; revalidate redirects and
-every new URL. Do not follow redirects to a different origin. For any
-future public deployment, add a strict domain allowlist and stronger
-network-level egress controls. The local demo is not permission to
-expose an unrestricted URL-fetching service to the public internet.
-
-Use `httpx` and BeautifulSoup. Remove `script`, `style`, `nav`,
-`footer`, `header`, `form`, `noscript`, and repeated boilerplate where
-possible. Prefer `<main>` or `<article>` if present. Preserve headings
-and paragraphs. Do not use an LLM to extract HTML.
+Descoped by owner decision on 3 November 2026; see `docs/decisions/0008-file-upload-only-scope.md`. Website sources, the crawler, and `POST /sources/websites` were
+removed. If a future milestone brings back any URL-based ingestion, its
+requirements must be specified again. SSRF protection is mandatory for any
+server-side fetching.
 
 ### 7.4 Document parsing
 
@@ -840,7 +808,6 @@ and paragraphs. Do not use an LLM to extract HTML.
 -   DOCX: use `python-docx`; extract paragraphs and tables in reading
     order where practical.
 -   TXT/MD: decode UTF-8 safely; report decoding errors.
--   Website: extract visible main/article text and title.
 -   Normalize whitespace, remove repeated blank lines, preserve
     headings, and reject content below a configurable minimum text
     length.
@@ -853,8 +820,7 @@ middle of a sentence when a paragraph boundary is available.
 
 Initial defaults: - Target chunk size: 1,800 characters. - Maximum chunk
 size: 2,400 characters. - Overlap: 250 characters. - Preserve source
-title, URL, heading, PDF page number, chunk index, and offsets in
-metadata.
+title, heading, PDF page number, chunk index, and offsets in metadata.
 
 These are starting values, not claims of optimality. Keep them
 configurable and tune them using the evaluation dataset.
@@ -967,11 +933,11 @@ previous assistant responses as authoritative source material.
 ### 9.6 Context building
 
 -   Use the top 5 fused chunks.
--   Remove duplicate/near-identical chunks from the same page where
-    possible.
+-   Remove duplicate/near-identical chunks from the same document
+    where possible.
 -   Include a stable citation key such as `[S1]`, `[S2]`.
--   Include only source title, canonical URL or filename, PDF page
-    number if applicable, and chunk text.
+-   Include only source title, filename, PDF page number if
+    applicable, and chunk text.
 -   Limit total context to a configurable character/token budget.
 -   Keep citation metadata in server memory for validation; never let
     the model invent a URL.
@@ -1014,7 +980,6 @@ If the answer is uncertain or incomplete, say so clearly.
     display it as a grounded answer. Return a safe insufficient-evidence
     response or retry once with a correction prompt.
 -   Return validated citation metadata separately from answer text.
--   For web pages, citation opens the canonical page URL.
 -   For PDFs, citation displays filename and page number.
 -   Do not accept arbitrary URLs generated by the model.
 
@@ -1077,8 +1042,6 @@ random id both return the same 404. See
 ### Sources and ingestion
 
 -   `GET /sources` --- list current workspace sources.
--   `POST /sources/websites` --- create website source and enqueue crawl
-    job.
 -   `POST /sources/files` --- multipart upload, create source and
     enqueue ingestion job.
 -   `GET /sources/{source_id}` --- source detail and ingestion summary.
@@ -1133,17 +1096,16 @@ must not take priority over working backend behavior.
     -   Workspace name on registration.
     -   Clear validation and error states.
 2.  **Dashboard**
-    -   Number of sources, indexed pages/documents, chunks,
+    -   Number of sources, indexed documents, chunks,
         completed/failed jobs.
     -   Recent ingestion jobs.
     -   AI configuration status (configured / missing key / quota
         error).
     -   Do not show fabricated metrics.
 3.  **Sources**
-    -   Add website URL.
     -   Upload supported files.
-    -   Source type, title, status, page count, chunk count, last
-        indexed time.
+    -   Source type, title, status, chunk count, last indexed time
+        (page count for PDFs).
     -   Re-index and delete actions.
     -   Job detail with progress/error state.
 4.  **Chat**
@@ -1151,8 +1113,8 @@ must not take priority over working backend behavior.
     -   Streaming is optional; a normal loading state is acceptable for
         MVP.
     -   Answer with inline citation markers.
-    -   Citation panel with source title, URL or filename, PDF page, and
-        a short excerpt.
+    -   Citation panel with source title, filename, PDF page, and a
+        short excerpt.
     -   Visible no-answer state.
     -   Clear API/quota error state.
     -   Follow-up questions use conversation context.
@@ -1242,8 +1204,7 @@ replace deterministic retrieval metrics or human review.
 -   Enforce workspace scoping on every database query.
 -   Validate file extension, size, signature, and storage key.
 -   Prevent path traversal.
--   Prevent SSRF and redirect-based SSRF in crawler.
--   Do not render raw HTML from crawled pages without sanitization.
+-   The server never fetches user-supplied URLs (no crawler; ADR 0008).
 -   Treat source content as untrusted prompt context.
 -   Use parameterized SQL/SQLAlchemy, never string-concatenate user
     input into SQL.
@@ -1257,9 +1218,9 @@ replace deterministic retrieval metrics or human review.
 -   Worker jobs are retryable and idempotent.
 -   A worker crash must not permanently leave a job in `running`; add a
     stale-lock recovery mechanism.
--   Add request timeouts for Gemini and crawler calls.
--   Handle empty files, malformed PDFs, no-text PDFs, HTTP errors,
-    redirects, timeouts, and Gemini quota errors.
+-   Add request timeouts for Gemini calls.
+-   Handle empty files, malformed PDFs, no-text PDFs, timeouts, and
+    Gemini quota errors.
 -   The frontend must show real job status and useful errors.
 
 ### Observability
@@ -1322,10 +1283,6 @@ GEMINI_EMBEDDING_BATCH_SIZE=8
 
 UPLOAD_DIR=/app/data/uploads
 MAX_UPLOAD_MB=10
-MAX_CRAWL_PAGES=20
-MAX_CRAWL_DEPTH=2
-CRAWL_DELAY_SECONDS=1
-CRAWL_TIMEOUT_SECONDS=10
 
 FRONTEND_ORIGIN=http://localhost:3000
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
@@ -1390,7 +1347,6 @@ Claude Code must create and run tests. At minimum:
 -   Citation ID validation.
 -   Follow-up query contextualization.
 -   Prompt construction and untrusted-context instruction.
--   URL normalization and crawler URL validation.
 -   File size/type validation.
 -   Metric calculations for known small examples.
 
@@ -1411,14 +1367,11 @@ Claude Code must create and run tests. At minimum:
 -   No retrieved evidence produces a safe abstention.
 -   Gemini 429 produces a clear provider/quota error, not a fake answer.
 -   Cross-workspace access is denied.
--   Crawler blocks localhost/private IPs and redirect attempts to
-    blocked destinations.
 -   Worker stale-lock recovery requeues abandoned jobs.
 
 ### Frontend smoke checks
 
 -   Register, login, logout.
--   Add a website source.
 -   Upload a supported document.
 -   View job status and error details.
 -   Start a conversation and receive a cited answer.
@@ -1432,17 +1385,16 @@ The project is not complete until: 1. `docker compose config` succeeds.
 2. `docker compose up --build` starts all services without manual
 database setup. 3. The API health endpoint succeeds. 4. Migrations run
 once and complete successfully. 5. A user can register and create a
-workspace. 6. A file can be uploaded and indexed by the worker. 7. A
-public website can be crawled within configured limits. 8. Indexed
-chunks exist in PostgreSQL with 768-dimensional vectors. 9. Vector-only
-and hybrid retrieval both return results. 10. RRF ranks and deduplicates
-correctly. 11. A question receives a source-grounded answer with valid
-citations. 12. An unsupported question receives an abstention. 13.
-Evaluation runs against the seeded questions and displays computed
-values. 14. Cross-workspace data access tests pass. 15. Backend tests
-pass. 16. No required feature depends on a paid service. 17. README
-setup instructions work on a clean machine with Docker and a Gemini
-free-tier key.
+workspace. 6. A file can be uploaded and indexed by the worker. 7.
+Indexed chunks exist in PostgreSQL with 768-dimensional vectors. 8.
+Vector-only and hybrid retrieval both return results. 9. RRF ranks and
+deduplicates correctly. 10. A question receives a source-grounded answer
+with valid citations. 11. An unsupported question receives an
+abstention. 12. Evaluation runs against the seeded questions and
+displays computed values. 13. Cross-workspace data access tests pass.
+14. Backend tests pass. 15. No required feature depends on a paid
+service. 16. README setup instructions work on a clean machine with
+Docker and a Gemini free-tier key.
 
 If a live Gemini API key is unavailable during implementation,
 mocked-provider tests may pass, but the final report must explicitly say
@@ -1552,7 +1504,7 @@ Use this starter table:
                 and durable                                  
                 worker                                       
 
-  M5            Website crawler  NOT_STARTED   ---           ---
+  M5            Website crawler  DESCOPED      ---           ---
                 and incremental                              
                 indexing                                     
 
@@ -1862,9 +1814,14 @@ document metadata, chunk counts, and one stored vector.
 
 **STOP after M4.**
 
-### 17.10 Milestone 5 --- Website crawler and incremental indexing
+### 17.10 Milestone 5 --- Website crawler and incremental indexing (DESCOPED)
 
-**Goal:** Ingest a bounded set of public pages safely.
+> **DESCOPED.** Descoped by owner decision on 3 November 2026; see `docs/decisions/0008-file-upload-only-scope.md`. The crawler was built, reviewed, and then
+> removed; the file-only cleanup is tracked separately in
+> `PROJECT_STATUS.md`. The original M5 brief is kept below for the record
+> only. Do not implement it.
+
+**Goal (historical):** Ingest a bounded set of public pages safely.
 
 Checklist: - \[ \] Validate HTTP/HTTPS URL input. - \[ \] Resolve and
 reject private/reserved/loopback/link-local IPs. - \[ \] Revalidate
@@ -1951,8 +1908,7 @@ follow-up, ask an unsupported question, and inspect persisted messages.
 **Goal:** Connect a usable interface to the already-working backend.
 
 Checklist: - \[ \] Login/register pages. - \[ \] Dashboard with real
-counts and real job status. - \[ \] Source list, website form, and file
-upload. - \[ \] Source detail/job progress/error view. - \[ \] Chat with
+counts and real job status. - \[ \] Source list and file upload. - \[ \] Source detail/job progress/error view. - \[ \] Chat with
 citations and follow-up history. - \[ \] No-answer and provider-error
 states. - \[ \] Evaluation page shell connected to evaluation APIs. - \[
 \] Loading, empty, success, and error states. - \[ \] Responsive layout
@@ -2053,8 +2009,7 @@ cannot explain.
 Prepare a 5--7 minute demo:
 
 1.  Open the dashboard and explain the product problem.
-2.  Add a public website or upload the synthetic Northstar Outfitters
-    policy documents.
+2.  Upload the synthetic Northstar Outfitters policy documents.
 3.  Show the ingestion job moving through queued → running → succeeded.
 4.  Show document/chunk counts and explain extraction, chunking,
     embeddings, and pgvector.
@@ -2083,8 +2038,8 @@ cannot prove.
     only synthetic/public data should be used in this demo.
 -   Local Docker deployment is intended for development and interview
     demonstration, not public production hosting.
--   The crawler handles public same-origin HTML only; it does not bypass
-    authentication or robots.txt.
+-   Only uploaded files are ingested (PDF, DOCX, TXT, Markdown); there
+    is no website crawling (ADR 0008).
 -   Scanned PDFs requiring OCR are unsupported in MVP.
 -   PostgreSQL `simple` full-text search is a lexical baseline; language
     tokenization quality varies. Semantic embeddings provide the

@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M5 — Website crawler and incremental indexing** |
-| Status | **READY_FOR_REVIEW** (owner review fixes applied 2026-11-03): checks pass, live crawl PASS, pushed to `main`; awaiting `APPROVE MILESTONE 5` |
+| Current work | **File-only cleanup (C1)**: website crawling removed; Knowbase AI is file-upload-only ([ADR 0008](docs/decisions/0008-file-upload-only-scope.md)) |
+| Status | **READY_FOR_REVIEW**: checks pass, dev database migrated with file data verified identical, pushed to `main`; awaiting owner review and approval. M6 not started |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
-| Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
+| Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
 | Last verified checkpoint | 2026-11-03 |
 
@@ -18,165 +18,110 @@
 | M2 | Authentication and workspace isolation | APPROVED_AND_MERGED | `e488b7b` | `APPROVE MILESTONE 2`, 2026-11-02 |
 | M3 | Gemini provider and embeddings | APPROVED_AND_MERGED | `bb36797` | `APPROVE MILESTONE 3`, 2026-11-02 |
 | M4 | File ingestion and durable worker | APPROVED_AND_MERGED | `8af4b01` | `APPROVE MILESTONE 4`, 2026-11-02 |
-| M5 | Website crawler and incremental indexing | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 5` |
+| M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
+| C1 | File-only cleanup (not a milestone; tracked separately) | READY_FOR_REVIEW | see Commits | Pending owner approval |
 | M6 | Hybrid retrieval and RRF | NOT_STARTED | — | — |
 | M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
-## M5 checklist (SPEC.md §17.10)
+## C1 — File-only cleanup (2026-11-03)
 
-Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
+Owner decisions: M5 is descoped; the website endpoints are removed (404);
+`ck_sources_kind` is restricted to `('file')` while `sources.kind` stays generic;
+website-only response fields are removed but the nullable database columns
+are kept; SPEC.md is updated, with ADR 0008 added and earlier ADRs kept; no
+recovery tag.
 
-- [x] Validate HTTP/HTTPS URL input (no other schemes, no credentials, valid public host names)
-- [x] Resolve and reject private, reserved, loopback, link-local, multicast, and other non-public IPs, at submission, per request, and **on the connection itself** (DNS rebinding)
-- [x] Revalidate redirects and block cross-origin redirects (manual, at most 5, each hop re-checked)
-- [x] Parse robots.txt (RFC 9309) and respect disallowed paths; 5xx/unreachable means complete disallow
-- [x] Parse sitemap.xml and sitemap indexes when available (DTDs refused)
-- [x] Crawl same-origin pages breadth-first with depth, page, and time limits
-- [x] Rate-limit requests per host (≥1 s apart, or a longer Crawl-delay)
-- [x] Extract main/article content and preserve headings (BeautifulSoup, no LLM)
-- [x] Normalise URLs and remove tracking parameters
-- [x] Hash extracted page content
-- [x] Skip unchanged pages and re-index changed pages (M4 indexing path, atomic per page)
-- [x] SSRF, redirect, timeout, and duplicate-page tests
-- [x] Page-level crawl status and failures (`GET /sources/{id}/pages?status=failed`)
+### What changed
 
-## M5 acceptance evidence (2026-11-03)
-
-| Criterion | Command | Result |
-|---|---|---|
-| A known public test site is crawled within limits | live: `www.scrapethissite.com/pages/` with `max_pages` 3 | PASS: 3 requests, `stopped_reason: page_limit` |
-| Disallowed and private targets are blocked | live: robots `/lessons/`, `/faq/`; 9 unsafe URLs via the API; tests | PASS: skipped and never requested; 422 for every unsafe URL |
-| Unchanged re-crawl doesn't duplicate chunks | live re-crawl; tests | PASS: 2 pages unchanged, identical chunk ids, 0 Gemini calls |
-| A changed page gets re-indexed | live: `quotes.toscrape.com/random` re-crawled; tests | PASS: 1 page re-indexed, 1 text embedded, chunk replaced |
-| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 794 passed, 0 skipped** (548 unit, 246 integration; **314 new in M5**, 21 of them from the review fixes) |
-| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 783 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
-| M0–M4 regression | same runs (the M4 pipeline now shares `index_document` with websites) | PASS |
-| Lint / format / strict types / lock / migrations | `ruff check`, `ruff format --check`, `mypy` (strict, 104 files), `uv lock --check`, `alembic check` | PASS |
-| Compose and CI workflow | `docker compose config`; migrate applied `0004_crawler` and `0005_crawl_page_duplicates` to the dev DB; `actionlint` | PASS |
-| Tests catch regressions (mutation check) | 26 protections broken one at a time, restored with `git checkout` (list below) | PASS: 25 caught (after two gaps were fixed) + 1 equivalent mutant; tree clean |
-| No secrets or content in logs | 108 lines of api/worker logs against the Gemini key, JWT secret, app secret, DB password, test password, cookies, and crawled text | PASS: none present |
-| Hygiene | `scripts/check_repo_hygiene.sh` | PASS |
-
-**Mutations caught** (25):
-1. Address policy allowing everything.
-2. The connection skipping its own DNS check.
-3. One public DNS answer accepted among private ones.
-4. Cross-origin redirects followed.
-5. No destination check per redirect hop.
-6. Decompressed size unchecked (memory bound).
-7. Slow-drip deadline ignored.
-8. robots.txt first match instead of longest.
-9. robots.txt 5xx treated as allow-all.
-10. robots.txt ignored for discovered links.
-11. External links queued.
-12. Depth limit ignored.
-13. Page limit ignored.
-14. No per-host delay.
-15. Sitemap DTD accepted.
-16. Boilerplate tags kept.
-17. Credentials allowed in URLs.
-18. Tracking parameters kept.
-19. Unchanged pages re-embedded.
-20. Gone pages kept in the index.
-21. Repeated blocks not removed.
-22. Identical content indexed twice.
-23. Progress write not fenced (a stale worker kept crawling).
-24. The API skipping its DNS check.
-25. Duplicate crawl allowed.
-
-**Equivalent mutant:** `trust_env=True` on the client. httpx never reads environment proxies when a transport is supplied (`allow_env_proxies = trust_env and transport is None`), so the setting is a second layer, not the protection that does the work. The proxy test passes either way, because the real protection holds.
-
-### Owner review fixes (2026-11-03)
-
-| Issue | Fix | Tests |
-|---|---|---|
-| **Duplicate pages and document ownership.** `crawl_pages.document_url` meant "my document" for indexed pages but "the other page's document" for duplicates, and removal treated both as owned. | `document_url` now always means the document the page owns; duplicates point at the original through `duplicate_of` (migration `0005` moves existing links). A document is deleted only after the crawl's page rows are written, and only if no page still owns it. | A page becoming identical to another (its stale document and chunks removed, the original untouched); a duplicate alias disappearing while its original isn't reached (original kept); an alias becoming unique while its original isn't reached (original kept); a document two pages own survives while one still owns it; the 0005 data move, both ways |
-| **Zero indexable pages skipped removals.** The job failed before the removal step, so 404/410, noindex, and robots-disallowed pages kept stale documents. | Confirmed removals commit first (inside the fenced publish transaction); the job then fails (all permanent) or retries (any transient failure, whose pages keep their documents). Pages the crawl didn't reach are also checked against the current robots.txt. | Gone pages removed with nothing indexable (job fails, no retry); mixed 410 + noindex + robots + 503 (only the 503 page keeps its index; job retried); transient failures alone keep the whole index; a newly disallowed page that isn't reached is removed |
-| **Start URL newly disallowed by robots.txt** (inspected as asked). Nothing was crawled, the job failed, and every page stayed indexed, contrary to the removal policy. | Nothing is crawled and the job fails permanently, but earlier pages the new rules forbid are removed first. | `Disallow: /` removes every page; `Disallow: /$` removes only the start page; only robots.txt is requested |
-| **Sitemap redirects skipped robots.txt.** Sitemap requests used the default redirect callback. | Sitemap redirect targets get robots.txt and the skip rules (except the file-extension rule), on top of the fetcher's same-origin and destination checks. | A redirect into a disallowed path or a sign-in path is never requested; an allowed `.xml` redirect is followed; a redirect off the site is refused |
-| README still said Milestone 4. | Status now says Milestone 5, with website crawling implemented and retrieval (M6) and chat (M7) still to come. | — |
-| **Canonical URL collision** (second review). Keys were claimed first-come. `/a` (content A) declaring `/b` canonical claimed `/b` before the real `/b` (content B), which then collided again on its own URL and was marked a duplicate of itself. Even with identical content, the real `/b` became a self-referencing duplicate. | Keys are assigned for the whole crawl at once, deterministically (ADR 0007): a canonical URL that is another fetched page with different content is ignored; the page fetched at a URL owns it; differing claimants fall back to their own URL; a duplicate is never of itself. | PostgreSQL regression: `/a` → canonical `/b`, different content, `/a` first. 3 documents, each page owns its own URL, chunk contents separate, no duplicates or self-references. Identical alias: one document owned by `/b`, `/a` is `duplicate_of` `/b`. 6 unit tests of the rules (both orders, aliases, unfetched canonicals, self-reference). Both integration tests fail on the pre-fix commit `0047b1e` |
-
-**The bugs were real:** the new integration tests, adapted to the old schema, fail on the pre-fix commit `9f393eb`:
-- the duplicate's stale document was kept;
-- the original was deleted (alias gone, and alias became unique);
-- a document still owned by another page was deleted;
-- gone, noindex, and newly disallowed pages kept their documents.
-
-**Mutation check of the fixes:** 7 mutations; 6 caught. The 7th (a gone page releasing documents it never owned) survives because removal also requires that no page still owns the document. That check is the protection, and it is itself tested (removing it is caught). No Gemini calls were needed: the fixes are tested with the mock provider. The live crawl was not re-run for these fixes.
-
-### Live crawl (real sites, real Gemini free tier, dev stack on port 8001)
-
-Both sites are public sandboxes built for practising scrapers.
-
-| Step | Result |
+| Area | Change |
 |---|---|
-| `POST /sources/websites` `https://www.scrapethissite.com/` (`max_pages` 4, depth 1) | 202 in 0.03 s; job succeeded on attempt 1 in 5.4 s |
-| robots.txt (`Disallow: /lessons/`, `/faq/`) | `robots: parsed`. `/lessons/` and `/faq/` skipped with reason `robots`; the worker log shows they were never requested. `/login/` skipped as `auth_page`. Only robots.txt, sitemap.xml (404 → `missing`), `/`, and `/pages/` were requested |
-| Stored | 2 documents with titles and canonical URLs; 3 chunks with URL and heading metadata; 768 dims, norm 1.000000 |
-| Re-crawl, unchanged | 2 pages `unchanged`, `embedded_texts` 0, `embedding_requests` 0; chunk ids identical; second re-crawl request while queued → 409 |
-| `https://quotes.toscrape.com/random` (a different quote per request), crawled twice | `robots: missing` (404); 2nd crawl: `pages_indexed` 1, `embedded_texts` 1, chunk replaced |
-| `https://www.scrapethissite.com/pages/` (`max_pages` 3) | 3 requests, `stopped_reason: page_limit`; `/pages/simple/` has `meta robots noindex` and was skipped as `noindex`; 2 pages indexed from the workspace embedding cache (0 Gemini calls) |
-| `http://localhost:8000`, `http://127.0.0.1:8001/...`, `10.0.0.1`, `169.254.169.254`, `db:5432`, `api:8000`, `host.docker.internal`, `ftp://`, `user:pw@` | 422 each (`blocked_url` / `invalid_url`) with a clear message; nothing created |
-| Workspace isolation (second live user) | 404 on A's source, pages, and job; reindex and delete 404; B's source list empty |
-| Delete all three sources via the API | 0 website sources, documents, chunks, and crawl pages |
-| Gemini used by the whole run | 5 texts embedded, 5 requests (daily budget 5 of 300) |
+| Worker | Ingestion dispatches through a per-kind handler table; `file` is the only kind, and an unknown kind fails once with a clear message. `index_document` stays the shared indexing path. The crawl path, crawler hooks, crawl progress writes, and `TransientJobError` are removed |
+| API | `POST /sources/websites` and `GET /sources/{id}/pages` removed (both 404: source ids are matched as UUIDs, so `websites` matches no route). Website-only response fields removed: `source_url`, `settings`, `page_counts`, and documents' `canonical_url` and `fetched_at`. `kind` stays |
+| Code and dependencies | `app/crawler/` and `app/ingestion/website.py` removed; `beautifulsoup4` (and `soupsieve`) removed; `httpx` stays (the Gemini SDK) |
+| Configuration | 8 `CRAWL_*` settings removed from Settings, `.env.example`, and the test environment. An old local `.env` that still sets them loads fine (tested) |
+| Database | Migration `0006_retire_website_crawling`: refuses if website data exists unless explicitly purged; drops `crawl_pages`; restricts `ck_sources_kind` to `'file'`. Migrations 0001–0005 unchanged |
+| Bug found and fixed | Stale-job recovery used the worker's clock while claims compare against the database clock, so recovered jobs could briefly be "not yet due". This made two M4 tests flaky. Now the database clock is used, with a deterministic test |
+| Docs | SPEC.md (file-upload-only scope; §7.3 and §17.10 kept as descoped records), ADR 0008, ADR 0007 marked superseded, README, architecture overview, this file |
 
-The two test users and their workspaces were removed afterwards. Your three accounts and their data are untouched.
+### Dev database migration (0005 → 0006)
 
-### Problems found and fixed during M5
+Before: verified counts and checksums. Backup:
+`/Users/richard/knowbase-backups/knowbase-before-0006-20261103T080306Z.dump`
+(`pg_dump -Fc`, mode 600, outside the repository; verified with `pg_restore --list`: 12 tables).
+The worker and api were stopped and no job was active; the real `migrate` service then applied 0006.
 
-1. **A redirect to an already-seen page was fetched again.** A unit test caught it; redirect targets are now checked against the visited set before the hop is requested.
-2. **Settings leaked between integration tests.** `make_worker(env=...)` wrote to `os.environ` permanently, so a 2-text budget from one test broke the next. An autouse fixture now restores the environment after every test.
-3. **The test fake returned pre-read bodies,** which the streaming fetcher can't read. It now returns real byte streams, like a server.
-4. **A SQLAlchemy 2.1 deprecation** (`Result.tuples()`) was caught by warnings-as-errors and removed.
-5. **Two gaps found by mutation testing:**
-   - the gzip-bomb test didn't bound memory (a final size check alone still passed);
-   - the stale-worker test didn't check that the worker stops crawling.
-   Both are asserted now.
-6. **Check order at submission:** `http://192.168.0.10/admin` was reported as an admin page instead of a private address. The destination check now runs first.
-7. **Re-adding a website that is being deleted** returned the doomed source; it now gets 409 like uploads.
+| Item | Before | After |
+|---|---|---|
+| Alembic revision | `0005_crawl_page_duplicates` | `0006_retire_website_crawling` |
+| File sources / website sources | 1 / 0 | 1 / 0 |
+| Documents / chunks | 1 / 8 | 1 / 8 |
+| Embedding cache rows | 8 | 8 |
+| Users / workspaces / jobs | 3 / 3 / 1 | 3 / 3 / 1 |
+| Uploaded files | 1 | 1 |
+| Checksum of source, document, chunk, and user ids | `caf266e5…` | `caf266e5…` (identical) |
+| Checksum of chunk contents and vectors | `33bb3b71…` | `33bb3b71…` (identical) |
+| Checksum of cache keys | `c8663dbe…` | `c8663dbe…` (identical) |
+| Checksum of uploaded file bytes | `cc900538…` | `cc900538…` (identical) |
+| `crawl_pages` | present (0 rows) | dropped |
+| `ck_sources_kind` | `website`, `file` | `CHECK (kind = 'file')` |
 
-## Manual review steps (owner)
+No purge was needed (there was no website data). Both Docker volumes are intact; `docker compose down -v` was never used.
 
-Full commands are in README → "Crawl a website (curl)".
+### Verification
+
+| Check | Result |
+|---|---|
+| Full suite on host (PostgreSQL + pgvector) | **PASS: 489 passed, 0 skipped** (307 unit, 182 integration); 5 consecutive full runs green after the recovery-clock fix |
+| Full suite in the api container | PASS: 486 passed, 3 skipped (`.env.example` isn't in the image) |
+| M0–M4 regression | PASS: every M0–M4 test kept and passing (auth, isolation, Gemini provider, file ingestion, queue, retries, fencing, recovery, budget) |
+| New tests | Kind dispatch; removed endpoints return 404; no website fields in responses; old `.env` with crawler variables still loads; recovery uses the database clock; migration 0006 (file data snapshot preserved across upgrade, downgrade, and re-upgrade; refusal rolls back completely; the purge removes only website data and keeps a vector shared with a file) |
+| Mutation check of 0006 | 3 of 3 caught: guard disabled; shared cache rows purged; file sources purged |
+| Lint / format / strict types / lock | `ruff check`, `ruff format --check`, `mypy` (strict, 85 files), `uv lock --check` |
+| Migrations | `alembic check` clean; full round trip from base to head and back to head |
+| Compose / CI / hygiene | `docker compose config`; `actionlint`; `scripts/check_repo_hygiene.sh` |
+| Live acceptance (rebuilt stack) | Removed endpoints 404. A TXT upload indexed through the real worker and Gemini (1 chunk, 768 dims, norm 1.000000; 1 text embedded). Re-index unchanged with 0 embeddings. Delete → 404. No key, password, or document text in logs. Your data unchanged afterwards; the test user removed |
+
+### Manual review steps (owner)
 
 | Step | Expected | Result |
 |---|---|---|
-| `docker compose up --build -d` (keep `API_HOST_PORT=8001` while 8000 is busy) | migrate applies `0004` and `0005`; worker logs "ready" | not yet checked |
-| Add `https://www.scrapethissite.com/pages/` with `max_pages` 3 | 202; job `queued`, then `succeeded` | not yet checked |
-| `GET /jobs/<id>` | `pages_requested` 3, `stopped_reason` `page_limit`, `robots` `parsed` | not yet checked |
-| `GET /sources/<id>/pages` | `/faq/` and `/lessons/` skipped (`robots`); `/login/` skipped (`auth_page`) | not yet checked |
-| README step 4 (`psql`) | titles, text previews, 768-dim chunks | not yet checked |
-| Re-crawl (`POST /sources/<id>/reindex`) | `pages_unchanged`, `embedded_texts` 0 | not yet checked |
-| Add `quotes.toscrape.com/random` (depth 0), then re-crawl | 2nd job: `pages_indexed` 1, `embedded_texts` 1 | not yet checked |
-| Submit `http://localhost:8000` and `http://10.0.0.1/` | 422 `blocked_url` | not yet checked |
-| Bob's cookie on Alice's source | 404 | not yet checked |
-| `docker compose exec api pytest -q` (after `docker compose up --build -d`) | 791 passed, 3 skipped | not yet checked |
-| AI Studio: project still on the **Free** tier, no billing linked | Free tier | not yet checked |
+| `docker compose up --build -d` (`API_HOST_PORT=8001` while 8000 is busy) | migrate reports `0006` already applied; api healthy; worker "ready" | not yet checked |
+| `docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version_num FROM alembic_version"'` | `0006_retire_website_crawling` | not yet checked |
+| `curl -s -b alice.jar $API/sources` | your file source is still listed, with no website fields | not yet checked |
+| `curl -s -o /dev/null -w '%{http_code}' -b alice.jar -H "$O" -X POST $API/sources/websites` | `404` | not yet checked |
+| README → "Upload and index documents (curl)": upload, poll, reindex, delete | unchanged M4 behaviour | not yet checked |
+| `docker compose exec api pytest -q` | 486 passed, 3 skipped | not yet checked |
+
+Restore the backup only if needed:
+`docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /Users/richard/knowbase-backups/knowbase-before-0006-20261103T080306Z.dump`
+(this returns the database to 0005; running it would need the pre-cleanup code).
+
+## M5 (descoped) — record
+
+M5 built a crawler with SSRF defences checked on the connection itself, RFC 9309 robots.txt handling,
+sitemaps, same-origin BFS, and incremental indexing, then had two rounds of review fixes. The live
+crawl passed (see [ADR 0007](docs/decisions/0007-m5-website-crawler.md), now superseded). It was never
+approved: the owner descoped it on 2026-11-03 before approval. All of its code is in git history,
+up to `2b8513e`.
 
 ## Commits
 
-| Milestone | SHA | Message |
+| Item | SHA | Message |
 |---|---|---|
 | M0 | `e2b2a9f` … `47b96a4` | 8 commits; see [M0 summary](#m0-summary) |
 | M1 | `2412552` … `e8d667a` | 6 commits: backend skeleton, migrations, Compose, tests, CI, docs |
 | M2 | `33199da` … `e488b7b` | 7 commits: auth schema, tenancy guard, auth, API, tests, docs, rate-limit race fix |
 | M3 | `b9f32a2` … `bb36797` | 6 commits: providers, status endpoint and redaction, smoke command, tests, timeout fix, docs |
 | M4 | `3c2095d` … `8af4b01` | 7 commits: schema, ingestion, worker and queue, API, tests, mutation gaps, docs |
-| M5 | `0b8fa04` | feat(db): add crawl_pages and crawler settings |
-| M5 | `d45fd09` | feat(crawler): add SSRF-safe fetching, robots.txt, sitemaps, extraction, and BFS |
-| M5 | `5ec866d` | feat(worker): index crawled pages through the M4 pipeline |
-| M5 | `8d90436` | feat(api): add website sources, page results, and re-crawl |
-| M5 | `8d48404` | test: cover the crawler, SSRF defences, incremental crawling, and website API |
-| M5 | `57d1cc0` | test: close two gaps found by mutation testing |
-| M5 | `9f393eb` | docs: document the website crawler and record Milestone 5 results |
-| M5 | `df6e2b3` | fix(crawler): check robots.txt and skip rules on sitemap redirects |
-| M5 | `e6ab581` | fix(worker): track which page owns each document; remove gone pages even when nothing indexes |
-| M5 | `0047b1e` | docs: record the M5 review fixes |
-| M5 | see `git log` | fix(worker): assign document keys deterministically so a canonical claim can't take over a real page |
+| M5 (descoped) | `0b8fa04` … `2b8513e` | 11 commits: crawler, worker, API, tests, two review-fix rounds, docs |
+| C1 | `4dcccb8` | refactor(worker): dispatch ingestion by source kind; remove the website crawl path |
+| C1 | `6b9b471` | feat(api)!: remove website source and crawl page endpoints |
+| C1 | `f8530e3` | chore: remove the crawler package, beautifulsoup4, crawler settings, and crawler tests |
+| C1 | `a4e7c67` | fix(queue): use the database clock when recovering stale jobs |
+| C1 | `217fb4b` | feat(db): migration 0006 retires website crawling; file is the only source kind |
+| C1 | see `git log` | docs: file-upload-only scope (ADR 0008); update SPEC, README, architecture, status |
 
 ## Blockers
 
@@ -190,20 +135,18 @@ None.
   - [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md) (M2);
   - [ADR 0005](docs/decisions/0005-m3-gemini-provider.md) (M3);
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
-  - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5):
-    - one page per document, keyed by canonical URL;
-    - robots.txt 4xx allows all, while 5xx/unreachable means disallow;
-    - sitemap pages at depth 1;
-    - repeated blocks across at least half the pages are boilerplate;
-    - a page owns at most one document and duplicates own none; a document goes only when no page owns it;
-    - 404/robots/noindex pages are removed from the index, even when nothing else indexes;
-    - re-crawling while a crawl is active gives 409;
-    - 20 crawl starts per workspace per day.
+  - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
+- Owner: [ADR 0008](docs/decisions/0008-file-upload-only-scope.md) (2026-11-03):
+  - the product is file-upload-only and M5 is descoped;
+  - the website endpoints are removed (404);
+  - `kind` is restricted to `'file'`, with the generic source abstraction kept;
+  - the nullable columns are kept, and website response fields removed;
+  - no recovery tag.
 
 ## Risks, limitations, and deferred work
 
-- **Crawler:** no JavaScript rendering (pages built in the browser come out nearly empty); boilerplate removal is heuristic, and sites without semantic tags keep some chrome; one origin per source (www vs bare domain, and http vs https, are different sites); no gzipped sitemaps or linked PDFs; no conditional requests, so every crawl re-fetches (unchanged pages still cost no embeddings); the per-host delay is per worker process; the time limit covers fetching only.
-- **Crawling in a public deployment** would need a domain allowlist and network egress controls (SPEC.md §7.3). This is a local prototype.
+- **File uploads only** (ADR 0008). Bringing back any URL-based ingestion would be a new milestone, with SSRF protection required (see ADR 0007 and git history for the earlier design).
+- **The pre-0006 backup restores only to revision 0005,** with the old code. After 0006, a downgrade recreates an empty `crawl_pages` table but cannot bring back purged website data (there was none on the dev database).
 - **No OCR:** scanned PDFs, legacy `.doc`, and password-protected files are rejected. PDF headings are heuristic, and multi-column PDFs may interleave.
 - **One worker, one job at a time** (MVP by design). Free-tier Gemini latency varies; jobs retry and back off.
 - **A crashed worker's job is recovered after its lease** (120 s) plus the next recovery pass. Docker's 10 s stop grace usually interrupts a running job, which is then recovered.
@@ -224,6 +167,7 @@ None.
 - **M2:** Argon2id, cookie sessions with revocation, Origin/CORS/Host checks, PostgreSQL rate limits, and a fail-closed workspace session guard. See [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md).
 - **M3:** Gemini provider interfaces; generation and embeddings with validation and normalisation; bounded retries; no paid fallback; the AI status endpoint; log redaction; a live smoke test PASS. See [ADR 0005](docs/decisions/0005-m3-gemini-provider.md).
 - **M4:** uploads validated and stored safely; PDF/DOCX/TXT/MD parsing; deterministic chunking; durable PostgreSQL queue with fencing, heartbeat, and recovery; embedding cache and daily budget; atomic replacement; live Gemini ingestion PASS. See [ADR 0006](docs/decisions/0006-m4-file-ingestion.md).
+- **M5:** descoped (see "M5 (descoped) — record" above).
 
 ## M0 summary
 

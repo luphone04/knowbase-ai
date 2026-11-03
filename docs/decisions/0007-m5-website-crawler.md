@@ -1,6 +1,7 @@
 # 0007 — Milestone 5 website crawler and incremental indexing
 
-- Status: Accepted (within SPEC.md §2.5, §6, §7.3, §7.6, §14; no architecture change)
+- Status: **Superseded by [ADR 0008](0008-file-upload-only-scope.md)** (3 November 2026): website crawling was removed by owner decision. Kept unchanged below as the record of what M5 built; the code is in git history up to `2b8513e`.
+- Original status: Accepted (within SPEC.md §2.5, §6, §7.3, §7.6, §14; no architecture change)
 - Date: 3 November 2026
 
 ## Flow
