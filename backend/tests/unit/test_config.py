@@ -52,7 +52,6 @@ def test_defaults_match_spec() -> None:
     assert settings.embedding_dimensions == 768
     assert settings.gemini_embedding_batch_size == 8
     assert settings.max_upload_mb == 10
-    assert settings.max_crawl_pages == 20
     assert settings.daily_chat_request_limit == 30
     assert settings.cookie_secure is False
     assert settings.allowed_host_list == ["localhost", "127.0.0.1"]
@@ -70,13 +69,25 @@ def test_reads_upper_case_environment_variables(monkeypatch: pytest.MonkeyPatch)
         monkeypatch.setenv(name.upper(), value)
     monkeypatch.setenv("GEMINI_THINKING_LEVEL", "high")
     monkeypatch.setenv("EMBEDDING_DIMENSIONS", "768")
-    monkeypatch.setenv("CRAWL_DELAY_SECONDS", "1")
     monkeypatch.setenv("COOKIE_SECURE", "true")
     settings = Settings()
     assert settings.gemini_thinking_level == "high"
     assert settings.embedding_dimensions == 768
-    assert settings.crawl_delay_seconds == 1.0
     assert settings.cookie_secure is True
+
+
+def test_leftover_crawler_variables_in_an_old_env_are_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Website crawling was removed; a local .env written before that must still load."""
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name.upper(), value)
+    monkeypatch.setenv("MAX_CRAWL_PAGES", "20")
+    monkeypatch.setenv("CRAWL_DELAY_SECONDS", "0.5")  # was a validation error
+    monkeypatch.setenv("CRAWL_USER_AGENT", "anything at all")
+    monkeypatch.setenv("DAILY_CRAWL_REQUEST_LIMIT", "-1")
+    settings = Settings()
+    assert not hasattr(settings, "max_crawl_pages")
 
 
 def test_env_example_parses_once_secrets_are_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,7 +124,6 @@ def test_app_starts_without_gemini_key() -> None:
     [
         ("gemini_thinking_level", "minimal"),  # rejected by gemini-3.8-flash
         ("embedding_dimensions", 1536),  # schema is vector(768)
-        ("crawl_delay_seconds", 0.5),  # SPEC.md §7.3: at least 1 second
         ("max_upload_mb", 0),
         ("jwt_secret", PLACEHOLDER_SECRET),
         ("jwt_secret", "too-short-secret"),

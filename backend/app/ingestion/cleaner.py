@@ -75,11 +75,6 @@ def build_clean_document(
                 "No extractable text was found. Scanned or image-only PDFs need OCR, "
                 "which is not supported."
             )
-        if file_type == "html":
-            raise UnsupportedDocument(
-                f"The page has too little readable text to index ({len(text)} characters; "
-                f"at least {min_chars} are needed)."
-            )
         raise UnsupportedDocument(
             f"The document has too little text to index ({len(text)} characters; "
             f"at least {min_chars} are needed)."

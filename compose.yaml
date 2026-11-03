@@ -87,6 +87,6 @@ networks:
   # Database traffic only. `internal` means no route to the internet.
   data:
     internal: true
-  # Outbound access for Gemini calls (api, worker) and crawling (worker),
+  # Outbound access for Gemini calls (api, worker),
   # and the network that carries the API's published localhost port.
   egress: {}
