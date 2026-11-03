@@ -8,10 +8,13 @@ answer, it says so.
 
 This is a well-engineered prototype for local demos, not production software.
 
-> **Status:** Milestone 4 (file ingestion and durable worker). You can sign in,
-> upload PDF, DOCX, TXT, and Markdown files, and the worker indexes them into
-> pgvector with Gemini embeddings. Website crawling, retrieval, and chat come in
-> later milestones. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
+> **Status:** Milestone 5 (website crawler and incremental indexing). You can
+> sign in, upload PDF, DOCX, TXT, and Markdown files, and add a public website.
+> The worker crawls the site politely, respecting robots.txt and limited to
+> public addresses, and indexes files and pages into pgvector with Gemini
+> embeddings. Pages that haven't changed aren't embedded again. Retrieval (M6)
+> and chat (M7) are not built yet. See [PROJECT_STATUS.md](PROJECT_STATUS.md)
+> for progress.
 
 ## Documents
 

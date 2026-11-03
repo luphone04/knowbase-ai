@@ -80,6 +80,9 @@ crawling needs an account, is rate-limited per workspace
   5xx, 429, a timeout, or a network error mean *complete disallow*, so
   nothing is crawled and the job retries with backoff. A robots.txt that
   redirects to another origin is treated the same way, as a permanent error.
+- **Start URL newly disallowed:** nothing is crawled and the job fails
+  permanently. Earlier pages the new rules forbid are removed (all of them for
+  `Disallow: /`); pages still allowed keep their documents.
 - The rules apply to links, sitemap URLs, sitemap files, and redirect
   targets. Page-level `<meta name="robots">` and `X-Robots-Tag` (unprefixed,
   or prefixed for our token) are honoured: `noindex` means not indexed,
@@ -92,7 +95,10 @@ crawling needs an account, is rate-limited per workspace
 `Sitemap:` lines from robots.txt (same origin only) plus `/sitemap.xml`.
 Index files are followed, up to 5 sitemap files and 500 URLs. Their pages
 join the BFS at depth 1, right after the start page, and pass through the
-same origin, robots, and skip checks as links. A sitemap with a DOCTYPE is
+same origin, robots, and skip checks as links. A sitemap's own redirects are
+checked the same way before the target is requested: same origin, the
+destination check, robots.txt, and the skip rules (except the file-extension
+rule, since sitemaps are `.xml`). A disallowed target is never fetched. A sitemap with a DOCTYPE is
 refused before parsing, which rules out entity expansion and external
 entities. A malformed or missing sitemap is recorded and the crawl continues
 from links. Gzipped sitemaps are skipped (not supported).
@@ -167,14 +173,35 @@ seen too.
 - **A failed update never destroys the last good index.** Fetch or extraction
   failures keep the previous document. An embedding failure aborts the job
   before that page's swap.
-- **Removed from the index:** pages that now return 404/410, are
-  robots-disallowed, are noindex, or moved to a different key. Pages that
-  simply weren't reached this time (limits) are kept.
+- **Ownership** (review fix, migration `0005`). `crawl_pages.document_url`
+  is the document a page *owns*, the one it published. A duplicate owns
+  nothing; it points at the other page's document through `duplicate_of`.
+  A page only ever gives up a document it owns. The document is deleted only
+  after this crawl's page rows are written, and only if no page owns it any
+  more. So:
+  - a duplicate alias that disappears or becomes unique never removes the
+    original, even when this crawl didn't reach the original;
+  - a document two pages own survives while either still owns it.
+- **Removed from the index:** a page's own document goes when the page:
+  - returns 404/410;
+  - is now robots-disallowed (also for pages the crawl didn't reach: every
+    known page is checked against the current rules);
+  - is noindex;
+  - now redirects to another crawled page;
+  - became a duplicate of another page;
+  - moved to a different key.
+  Pages that weren't reached for other reasons (limits, no longer linked)
+  keep their documents.
+- **Removals happen even when no page is indexable this time.** Confirmed
+  removals commit first, then the job fails (all permanent) or retries (any
+  transient failure). Pages that failed transiently keep their documents.
 
-## Database (migration `0004_crawler`)
+## Database (migrations `0004_crawler`, `0005_crawl_page_duplicates`)
 
 The `crawl_pages` table holds, per URL and source:
-- the URL, final URL after redirects, and the document key;
+- the URL, final URL after redirects, the document the page owns
+  (`document_url`), and for duplicates the document with the same content
+  (`duplicate_of`, added in `0005`, which moves existing duplicate links there);
 - depth and how it was discovered (`start`, `sitemap`, `link`);
 - the status (`indexed`, `unchanged`, `duplicate`, `skipped`, `failed`) with a
   reason code and message;
@@ -191,8 +218,10 @@ existed) and `chunks`. Crawl progress and totals live in `ingestion_jobs.result`
 | Situation | Outcome |
 |---|---|
 | A page: 404, 401/403, 5xx, timeout, not HTML, too large, too little text | Recorded on the page; crawl continues; previous version kept (404 removes it) |
-| No page indexable; any failure transient | Job retried with backoff (30 s, 60 s), up to 3 attempts |
-| No page indexable; all permanent; start URL disallowed; host blocked | Job fails once with a clear message |
+| No page indexable; any failure transient | Confirmed removals commit; job retried with backoff (30 s, 60 s), up to 3 attempts |
+| No page indexable; all permanent | Confirmed removals commit; job fails once with a clear message |
+| Start URL newly disallowed by robots.txt | Nothing crawled; pages the rules forbid are removed; job fails once |
+| Host blocked | Job fails once with a clear message |
 | robots.txt 5xx/429/unreachable | Nothing crawled; retried |
 | Daily embedding budget or Gemini daily quota | Deferred without using an attempt; finished pages kept |
 | Gemini temporary error | Job retried; already-published pages are unchanged next time |

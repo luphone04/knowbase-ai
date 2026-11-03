@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M5 — Website crawler and incremental indexing** |
-| Status | **READY_FOR_REVIEW**: checks pass, live crawl PASS, pushed to `main`; awaiting `APPROVE MILESTONE 5` |
+| Status | **READY_FOR_REVIEW** (owner review fixes applied 2026-11-03): checks pass, live crawl PASS, pushed to `main`; awaiting `APPROVE MILESTONE 5` |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -50,11 +50,11 @@ Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
 | Disallowed and private targets are blocked | live: robots `/lessons/`, `/faq/`; 9 unsafe URLs via the API; tests | PASS: skipped and never requested; 422 for every unsafe URL |
 | Unchanged re-crawl doesn't duplicate chunks | live re-crawl; tests | PASS: 2 pages unchanged, identical chunk ids, 0 Gemini calls |
 | A changed page gets re-indexed | live: `quotes.toscrape.com/random` re-crawled; tests | PASS: 1 page re-indexed, 1 text embedded, chunk replaced |
-| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 773 passed, 0 skipped** (540 unit, 233 integration; **293 new in M5**) |
-| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 770 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
+| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 786 passed, 0 skipped** (542 unit, 244 integration; **306 new in M5**, 13 of them from the review fixes) |
+| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 783 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
 | M0–M4 regression | same runs (the M4 pipeline now shares `index_document` with websites) | PASS |
 | Lint / format / strict types / lock / migrations | `ruff check`, `ruff format --check`, `mypy` (strict, 104 files), `uv lock --check`, `alembic check` | PASS |
-| Compose and CI workflow | `docker compose config`; migrate applied `0004_crawler`; `actionlint` | PASS |
+| Compose and CI workflow | `docker compose config`; migrate applied `0004_crawler` and `0005_crawl_page_duplicates` to the dev DB; `actionlint` | PASS |
 | Tests catch regressions (mutation check) | 26 protections broken one at a time, restored with `git checkout` (list below) | PASS: 25 caught (after two gaps were fixed) + 1 equivalent mutant; tree clean |
 | No secrets or content in logs | 108 lines of api/worker logs against the Gemini key, JWT secret, app secret, DB password, test password, cookies, and crawled text | PASS: none present |
 | Hygiene | `scripts/check_repo_hygiene.sh` | PASS |
@@ -87,6 +87,24 @@ Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
 25. Duplicate crawl allowed.
 
 **Equivalent mutant:** `trust_env=True` on the client. httpx never reads environment proxies when a transport is supplied (`allow_env_proxies = trust_env and transport is None`), so the setting is a second layer, not the protection that does the work. The proxy test passes either way, because the real protection holds.
+
+### Owner review fixes (2026-11-03)
+
+| Issue | Fix | Tests |
+|---|---|---|
+| **Duplicate pages and document ownership.** `crawl_pages.document_url` meant "my document" for indexed pages but "the other page's document" for duplicates, and removal treated both as owned. | `document_url` now always means the document the page owns; duplicates point at the original through `duplicate_of` (migration `0005` moves existing links). A document is deleted only after the crawl's page rows are written, and only if no page still owns it. | A page becoming identical to another (its stale document and chunks removed, the original untouched); a duplicate alias disappearing while its original isn't reached (original kept); an alias becoming unique while its original isn't reached (original kept); a document two pages own survives while one still owns it; the 0005 data move, both ways |
+| **Zero indexable pages skipped removals.** The job failed before the removal step, so 404/410, noindex, and robots-disallowed pages kept stale documents. | Confirmed removals commit first (inside the fenced publish transaction); the job then fails (all permanent) or retries (any transient failure, whose pages keep their documents). Pages the crawl didn't reach are also checked against the current robots.txt. | Gone pages removed with nothing indexable (job fails, no retry); mixed 410 + noindex + robots + 503 (only the 503 page keeps its index; job retried); transient failures alone keep the whole index; a newly disallowed page that isn't reached is removed |
+| **Start URL newly disallowed by robots.txt** (inspected as asked). Nothing was crawled, the job failed, and every page stayed indexed, contrary to the removal policy. | Nothing is crawled and the job fails permanently, but earlier pages the new rules forbid are removed first. | `Disallow: /` removes every page; `Disallow: /$` removes only the start page; only robots.txt is requested |
+| **Sitemap redirects skipped robots.txt.** Sitemap requests used the default redirect callback. | Sitemap redirect targets get robots.txt and the skip rules (except the file-extension rule), on top of the fetcher's same-origin and destination checks. | A redirect into a disallowed path or a sign-in path is never requested; an allowed `.xml` redirect is followed; a redirect off the site is refused |
+| README still said Milestone 4. | Status now says Milestone 5, with website crawling implemented and retrieval (M6) and chat (M7) still to come. | — |
+
+**The bugs were real:** the new integration tests, adapted to the old schema, fail on the pre-fix commit `9f393eb`:
+- the duplicate's stale document was kept;
+- the original was deleted (alias gone, and alias became unique);
+- a document still owned by another page was deleted;
+- gone, noindex, and newly disallowed pages kept their documents.
+
+**Mutation check of the fixes:** 7 mutations; 6 caught. The 7th (a gone page releasing documents it never owned) survives because removal also requires that no page still owns the document. That check is the protection, and it is itself tested (removing it is caught). No Gemini calls were needed: the fixes are tested with the mock provider. The live crawl was not re-run for these fixes.
 
 ### Live crawl (real sites, real Gemini free tier, dev stack on port 8001)
 
@@ -126,7 +144,7 @@ Full commands are in README → "Crawl a website (curl)".
 
 | Step | Expected | Result |
 |---|---|---|
-| `docker compose up --build -d` (keep `API_HOST_PORT=8001` while 8000 is busy) | migrate applies `0004`; worker logs "ready" | not yet checked |
+| `docker compose up --build -d` (keep `API_HOST_PORT=8001` while 8000 is busy) | migrate applies `0004` and `0005`; worker logs "ready" | not yet checked |
 | Add `https://www.scrapethissite.com/pages/` with `max_pages` 3 | 202; job `queued`, then `succeeded` | not yet checked |
 | `GET /jobs/<id>` | `pages_requested` 3, `stopped_reason` `page_limit`, `robots` `parsed` | not yet checked |
 | `GET /sources/<id>/pages` | `/faq/` and `/lessons/` skipped (`robots`); `/login/` skipped (`auth_page`) | not yet checked |
@@ -135,7 +153,7 @@ Full commands are in README → "Crawl a website (curl)".
 | Add `quotes.toscrape.com/random` (depth 0), then re-crawl | 2nd job: `pages_indexed` 1, `embedded_texts` 1 | not yet checked |
 | Submit `http://localhost:8000` and `http://10.0.0.1/` | 422 `blocked_url` | not yet checked |
 | Bob's cookie on Alice's source | 404 | not yet checked |
-| `docker compose exec api pytest -q` | 770 passed, 3 skipped | not yet checked |
+| `docker compose exec api pytest -q` | 783 passed, 3 skipped | not yet checked |
 | AI Studio: project still on the **Free** tier, no billing linked | Free tier | not yet checked |
 
 ## Commits
@@ -153,7 +171,10 @@ Full commands are in README → "Crawl a website (curl)".
 | M5 | `8d90436` | feat(api): add website sources, page results, and re-crawl |
 | M5 | `8d48404` | test: cover the crawler, SSRF defences, incremental crawling, and website API |
 | M5 | `57d1cc0` | test: close two gaps found by mutation testing |
-| M5 | see `git log` | docs: document the website crawler and record Milestone 5 results |
+| M5 | `9f393eb` | docs: document the website crawler and record Milestone 5 results |
+| M5 | `df6e2b3` | fix(crawler): check robots.txt and skip rules on sitemap redirects |
+| M5 | `e6ab581` | fix(worker): track which page owns each document; remove gone pages even when nothing indexes |
+| M5 | see `git log` | docs: record the M5 review fixes |
 
 ## Blockers
 
@@ -172,7 +193,8 @@ None.
     - robots.txt 4xx allows all, while 5xx/unreachable means disallow;
     - sitemap pages at depth 1;
     - repeated blocks across at least half the pages are boilerplate;
-    - 404/robots/noindex pages are removed from the index;
+    - a page owns at most one document and duplicates own none; a document goes only when no page owns it;
+    - 404/robots/noindex pages are removed from the index, even when nothing else indexes;
     - re-crawling while a crawl is active gives 409;
     - 20 crawl starts per workspace per day.
 
