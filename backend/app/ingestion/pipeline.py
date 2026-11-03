@@ -1,5 +1,8 @@
 """Processing one claimed job: read -> parse -> clean -> chunk -> embed -> publish.
 
+Website sources take the same path page by page, after the crawl
+(app.ingestion.website): each page is one document, indexed by `index_document`.
+
 The previous good index is never at risk. Everything slow (parsing,
 Gemini) happens first, with the old chunks untouched. The swap from old chunks
 to new is a single transaction, guarded by the job's fencing token. If
@@ -19,6 +22,7 @@ Logs carry ids, counts, and timings, never document text, vectors, or keys.
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,12 +31,15 @@ from pathlib import PurePosixPath
 from types import TracebackType
 from typing import Any
 
-from sqlalchemy import Engine, delete, exists, func, insert, select
+from sqlalchemy import ColumnElement, Engine, delete, exists, func, insert, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.rate_limit import RateLimiter
 from app.config import Settings
+from app.crawler.fetcher import SafeFetcher
+from app.crawler.network import guarded_client
+from app.crawler.urls import Origin
 from app.db.models import Chunk, Document, EmbeddingCacheEntry, IngestionJob, Source
 from app.db.tenancy import bind_workspace
 from app.ingestion.chunker import ChunkDraft, ChunkerConfig, chunk_document
@@ -41,6 +48,7 @@ from app.ingestion.embedding import (
     EmbeddingBudget,
     EmbeddingDeferred,
     EmbeddingDisabled,
+    EmbeddingOutcome,
     embed_document_texts,
 )
 from app.ingestion.parsers import UnsupportedDocument, parse_document
@@ -63,6 +71,7 @@ from app.worker.queue import (
     lock_owned_job,
     recover_stale_jobs,
     requeue_or_supersede,
+    update_progress,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,7 +79,9 @@ logger = logging.getLogger(__name__)
 MAX_RETRY_DELAY = timedelta(hours=1)
 PROVIDER_QUOTA_RETRY = timedelta(hours=1)  # Gemini's daily quota resets at midnight Pacific
 RETAINED_INDEX_NOTE = " The previously indexed version is still available."
-UNEXPECTED_MESSAGE = "An unexpected error occurred while processing this file (see the worker log)."
+UNEXPECTED_MESSAGE = (
+    "An unexpected error occurred while processing this source (see the worker log)."
+)
 DATABASE_MESSAGE = "The database was temporarily unavailable."
 MISSING_FILE_MESSAGE = "The uploaded file is missing from storage. Upload it again."
 
@@ -85,9 +96,51 @@ class PermanentJobError(Exception):
         self.message = message
 
 
+class TransientJobError(Exception):
+    """Worth retrying later with backoff (e.g. the website's robots.txt was unreachable)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 @dataclass(frozen=True)
 class _Outcome:
     result: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class IndexedDocument:
+    document_id: uuid.UUID
+    unchanged: bool
+    chunks: int
+    embedded: int  # texts sent to Gemini
+    reused: int  # texts served from the embedding cache
+    requests: int
+
+
+# Runs inside the publishing transaction, with the locked job row and source.
+PublishHook = Callable[[Session, IngestionJob, Source, IndexedDocument], None]
+
+
+def _document_key(canonical_url: str | None) -> ColumnElement[bool]:
+    if canonical_url is None:
+        return Document.canonical_url.is_(None)
+    return Document.canonical_url == canonical_url
+
+
+def default_fetcher_factory(settings: Settings) -> Callable[[Origin], SafeFetcher]:
+    """Real crawling: the guarded client (public addresses only), one per crawl."""
+
+    def build(origin: Origin) -> SafeFetcher:
+        return SafeFetcher(
+            origin=origin,
+            client=guarded_client(timeout=settings.crawl_timeout_seconds),
+            user_agent=settings.crawl_user_agent,
+            timeout=settings.crawl_timeout_seconds,
+        )
+
+    return build
 
 
 class _Heartbeat:
@@ -134,6 +187,9 @@ class IngestionWorker:
         storage: FileStorage,
         embedding_provider_factory: Callable[[], EmbeddingProvider],
         worker_id: str,
+        fetcher_factory: "Callable[[Origin], SafeFetcher] | None" = None,
+        crawl_clock: Callable[[], float] = time.monotonic,
+        crawl_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
@@ -141,6 +197,10 @@ class IngestionWorker:
         self._storage = storage
         self._provider_factory = embedding_provider_factory
         self.worker_id = worker_id
+        # Website crawling; tests swap in mocked HTTP and a fake clock.
+        self.fetcher_factory = fetcher_factory or default_fetcher_factory(settings)
+        self.crawl_clock = crawl_clock
+        self.crawl_sleep = crawl_sleep
         self.budget = EmbeddingBudget(
             RateLimiter(engine, settings.app_secret_key.get_secret_value()),
             settings.daily_embedding_text_limit,
@@ -168,7 +228,7 @@ class IngestionWorker:
     # --- one job ------------------------------------------------------------------------
 
     @contextmanager
-    def _session(self, job: ClaimedJob) -> Iterator[Session]:
+    def session(self, job: ClaimedJob) -> Iterator[Session]:
         """A session bound to the job's workspace: every tenant row is scoped to it."""
         with self._session_factory() as session:
             bind_workspace(session, job.workspace_id)
@@ -195,6 +255,8 @@ class IngestionWorker:
             self._defer(job, datetime.now(UTC) + PROVIDER_QUOTA_RETRY, exc.message)
         except (UnsupportedDocument, PermanentJobError) as exc:
             self._fail(job, exc.message)
+        except TransientJobError as exc:
+            self._retry_or_fail(job, exc.message)
         except EmbeddingDisabled as exc:
             self._fail(job, exc.message)
         except StoredFileMissing:
@@ -226,7 +288,19 @@ class IngestionWorker:
     # --- ingest ---------------------------------------------------------------------------
 
     def _ingest(self, job: ClaimedJob) -> _Outcome:
-        with self._session(job) as db:
+        with self.session(job) as db:
+            source = db.get(Source, job.source_id)
+            if source is None:
+                raise JobLost()
+            kind = source.kind
+        if kind == "website":
+            from app.ingestion.website import crawl_website
+
+            return _Outcome(crawl_website(self, job))
+        return self._ingest_file(job)
+
+    def _ingest_file(self, job: ClaimedJob) -> _Outcome:
+        with self.session(job) as db:
             source = db.get(Source, job.source_id)
             if source is None:
                 raise JobLost()
@@ -248,13 +322,64 @@ class IngestionWorker:
             fallback_title=fallback_title or "Untitled",
             min_chars=self.settings.min_document_chars,
         )
+        result: dict[str, Any] = {}
+
+        def finish(
+            db: Session, row: IngestionJob, source: Source, indexed: IndexedDocument
+        ) -> None:
+            if indexed.unchanged:
+                result.update(outcome="unchanged")
+            else:
+                result.update(outcome="indexed", characters=len(clean.text))
+                if "page_count" in clean.metadata:
+                    result["pages"] = clean.metadata["page_count"]
+            result.update(
+                chunks=indexed.chunks,
+                embedded_texts=indexed.embedded,
+                reused_embeddings=indexed.reused,
+                embedding_requests=indexed.requests,
+                document_id=str(indexed.document_id),
+            )
+            self._mark_ready(source)
+            self._finish(row, result)
+
+        self.index_document(
+            job,
+            clean,
+            canonical_url=None,
+            extra_meta={"file_type": file_type},
+            fetched_at=None,
+            on_publish=finish,
+        )
+        self._remove_superseded_files(job)
+        return _Outcome(result)
+
+    def index_document(
+        self,
+        job: ClaimedJob,
+        clean: CleanDocument,
+        *,
+        canonical_url: str | None,
+        extra_meta: dict[str, Any],
+        fetched_at: datetime | None,
+        on_publish: PublishHook,
+    ) -> "IndexedDocument":
+        """Make `clean` the indexed version of one document of the job's source.
+
+        Files have one document (`canonical_url` None); website pages have one
+        per canonical URL. Unchanged content (same text hash, title, chunker,
+        and model) keeps its chunks and costs no embeddings. Otherwise the
+        chunks are rebuilt, embedded (cache, then budget, then Gemini), and
+        swapped in by `_publish`. `on_publish` runs inside the publishing
+        transaction, so whatever it records commits or rolls back with the index.
+        """
         model = self.settings.gemini_embedding_model
         dimensions = self.settings.embedding_dimensions
 
-        with self._session(job) as db:
+        with self.session(job) as db:
             current = db.scalars(
                 select(Document).where(
-                    Document.source_id == job.source_id, Document.canonical_url.is_(None)
+                    Document.source_id == job.source_id, _document_key(canonical_url)
                 )
             ).one_or_none()
             current_chunks = (
@@ -266,17 +391,28 @@ class IngestionWorker:
                 current is not None
                 and current_chunks
                 and current.content_hash == clean.content_hash
+                and current.title == clean.title
                 and current.meta.get("chunker") == self.chunker.fingerprint
                 and current.meta.get("embedding_model") == model
                 and current.meta.get("embedding_dimensions") == dimensions
             )
         if unchanged and current is not None:
-            return self._publish_unchanged(job, current.id, int(current_chunks or 0))
+            indexed = IndexedDocument(current.id, True, int(current_chunks or 0), 0, 0, 0)
+            with self.session(job) as db:
+                row, source = self.lock_for_publish(db, job)
+                if fetched_at is not None:  # a re-crawled page: record the check, keep the chunks
+                    document = db.get(Document, current.id, with_for_update=True)
+                    if document is not None:
+                        document.fetched_at = fetched_at
+                        document.meta = {**document.meta, **extra_meta}
+                on_publish(db, row, source, indexed)
+                db.commit()
+            return indexed
 
         drafts = chunk_document(clean, self.chunker)
         texts_by_hash = {draft.content_hash: draft.content for draft in drafts}
         embeddings = embed_document_texts(
-            lambda: self._session(job),
+            lambda: self.session(job),
             workspace_id=job.workspace_id,
             texts_by_hash=texts_by_hash,
             model=model,
@@ -285,83 +421,65 @@ class IngestionWorker:
             budget=self.budget,
             provider_factory=self._provider_factory,
         )
-        result = {
-            "outcome": "indexed",
-            "chunks": len(drafts),
-            "embedded_texts": embeddings.embedded,
-            "reused_embeddings": embeddings.reused,
-            "embedding_requests": embeddings.requests,
-            "characters": len(clean.text),
-        }
-        if "page_count" in clean.metadata:
-            result["pages"] = clean.metadata["page_count"]
-        document_id = self._publish(
-            job, clean, drafts, embeddings.vectors, model, dimensions, result
+        return self._publish(
+            job,
+            clean,
+            drafts,
+            embeddings,
+            canonical_url=canonical_url,
+            extra_meta=extra_meta,
+            fetched_at=fetched_at,
+            on_publish=on_publish,
         )
-        result["document_id"] = str(document_id)
-        self._remove_superseded_files(job)
-        return _Outcome(result)
 
-    def _publish_unchanged(self, job: ClaimedJob, document_id: Any, chunks: int) -> _Outcome:
-        result = {
-            "outcome": "unchanged",
-            "chunks": chunks,
-            "embedded_texts": 0,
-            "reused_embeddings": 0,
-            "embedding_requests": 0,
-            "document_id": str(document_id),
-        }
-        with self._session(job) as db:
-            row = lock_owned_job(db, job)
-            if row is None:
-                raise JobLost()
-            source = db.get(Source, job.source_id, with_for_update=True)
-            if source is None:
-                raise JobLost()
-            self._mark_ready(source)
-            self._finish(row, result)
-            db.commit()
-        self._remove_superseded_files(job)
-        return _Outcome(result)
+    def lock_for_publish(self, db: Session, job: ClaimedJob) -> tuple[IngestionJob, Source]:
+        row = lock_owned_job(db, job)  # fencing: only the current owner may publish
+        if row is None:
+            raise JobLost()
+        source = db.get(Source, job.source_id, with_for_update=True)
+        if source is None:
+            raise JobLost()
+        if source.status == "deleting":
+            raise PermanentJobError("This source is being deleted.")
+        return row, source
 
     def _publish(
         self,
         job: ClaimedJob,
         clean: CleanDocument,
         drafts: list[ChunkDraft],
-        vectors: dict[str, list[float]],
-        model: str,
-        dimensions: int,
-        result: dict[str, Any],
-    ) -> Any:
+        embeddings: EmbeddingOutcome,
+        *,
+        canonical_url: str | None,
+        extra_meta: dict[str, Any],
+        fetched_at: datetime | None,
+        on_publish: PublishHook,
+    ) -> "IndexedDocument":
         """Swap in the new document and chunks atomically (all or nothing)."""
-        with self._session(job) as db:
-            row = lock_owned_job(db, job)  # fencing: only the current owner may publish
-            if row is None:
-                raise JobLost()
-            source = db.get(Source, job.source_id, with_for_update=True)
-            if source is None:
-                raise JobLost()
-            if source.status == "deleting":
-                raise PermanentJobError("This source is being deleted.")
-
+        model = self.settings.gemini_embedding_model
+        vectors = embeddings.vectors
+        with self.session(job) as db:
+            row, source = self.lock_for_publish(db, job)
             document = db.scalars(
                 select(Document)
-                .where(Document.source_id == source.id, Document.canonical_url.is_(None))
+                .where(Document.source_id == source.id, _document_key(canonical_url))
                 .with_for_update()
             ).one_or_none()
             if document is None:
-                document = Document(workspace_id=job.workspace_id, source_id=source.id)
+                document = Document(
+                    workspace_id=job.workspace_id, source_id=source.id, canonical_url=canonical_url
+                )
                 db.add(document)
             document.title = clean.title
             document.content_hash = clean.content_hash
             document.text_content = clean.text
+            document.fetched_at = fetched_at
             document.meta = {
                 **clean.metadata,
-                "file_type": source.file_type,
+                **extra_meta,
                 "chunker": self.chunker.fingerprint,
                 "embedding_model": model,
-                "embedding_dimensions": dimensions,
+                "embedding_dimensions": self.settings.embedding_dimensions,
                 "chunk_count": len(drafts),
                 "character_count": len(clean.text),
             }
@@ -382,6 +500,7 @@ class IngestionWorker:
                             "embedding_model": model,
                             "meta": {
                                 "title": clean.title,
+                                **({"url": canonical_url} if canonical_url else {}),
                                 "heading": draft.heading,
                                 "page_start": draft.page_start,
                                 "page_end": draft.page_end,
@@ -392,10 +511,22 @@ class IngestionWorker:
                         for draft in drafts
                     ],
                 )
-            self._mark_ready(source)
-            self._finish(row, {**result, "document_id": str(document.id)})
+            indexed = IndexedDocument(
+                document.id,
+                False,
+                len(drafts),
+                embeddings.embedded,
+                embeddings.reused,
+                embeddings.requests,
+            )
+            on_publish(db, row, source, indexed)
             db.commit()
-            return document.id
+            return indexed
+
+    def report_progress(self, job: ClaimedJob, progress: dict[str, Any]) -> None:
+        """Show progress in the job's `result` while it runs. JobLost if no longer ours."""
+        if not update_progress(self._engine, job, progress):
+            raise JobLost()
 
     @staticmethod
     def _mark_ready(source: Source) -> None:
@@ -413,7 +544,7 @@ class IngestionWorker:
 
     def _remove_superseded_files(self, job: ClaimedJob) -> None:
         """Keep the current upload and any still waiting to be processed; drop the rest."""
-        with self._session(job) as db:
+        with self.session(job) as db:
             source = db.get(Source, job.source_id)
             if source is None:
                 return
@@ -437,7 +568,7 @@ class IngestionWorker:
     # --- delete -----------------------------------------------------------------------------
 
     def _delete(self, job: ClaimedJob) -> None:
-        with self._session(job) as db:
+        with self.session(job) as db:
             if lock_owned_job(db, job) is None:
                 raise JobLost()
             source = db.get(Source, job.source_id, with_for_update=True)
@@ -479,7 +610,7 @@ class IngestionWorker:
         )
 
     def _fail(self, job: ClaimedJob, message: str) -> None:
-        with self._session(job) as db:
+        with self.session(job) as db:
             row = lock_owned_job(db, job)
             if row is None:
                 return
@@ -495,7 +626,7 @@ class IngestionWorker:
             db.commit()
 
     def _retry_or_fail(self, job: ClaimedJob, message: str) -> None:
-        with self._session(job) as db:
+        with self.session(job) as db:
             row = lock_owned_job(db, job)
             if row is None:
                 return
@@ -521,7 +652,7 @@ class IngestionWorker:
             db.commit()
 
     def _defer(self, job: ClaimedJob, run_at: datetime, reason: str) -> None:
-        with self._session(job) as db:
+        with self.session(job) as db:
             row = lock_owned_job(db, job)
             if row is None:
                 return

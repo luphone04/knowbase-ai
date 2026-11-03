@@ -24,6 +24,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import Connection, Engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -259,3 +260,18 @@ def recover_stale_jobs(session_factory: sessionmaker[Session], lease_seconds: in
 def engine_heartbeat(engine: Engine, job: ClaimedJob) -> bool:
     with engine.begin() as connection:
         return renew_lease(connection, job)
+
+
+def update_progress(engine: Engine, job: ClaimedJob, progress: dict[str, Any]) -> bool:
+    """Write a running job's progress into `result` (fenced like the heartbeat)."""
+    with engine.begin() as connection:
+        result = connection.execute(
+            update(IngestionJob)
+            .where(
+                IngestionJob.id == job.id,
+                IngestionJob.lock_token == job.lock_token,
+                IngestionJob.status == "running",
+            )
+            .values(result=progress, locked_at=func.now())
+        )
+    return result.rowcount == 1
