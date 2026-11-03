@@ -6,16 +6,18 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import text
 
 from app.db.session import get_engine
-from app.ingestion.pipeline import IngestionWorker
+from app.ingestion.pipeline import IngestionWorker, after_quota_reset
 from app.providers.errors import (
     ProviderConfigurationError,
     ProviderNotConfigured,
     ProviderQuotaExhausted,
+    ProviderRateLimited,
     ProviderUnavailable,
 )
 from app.providers.interfaces import EmbeddingResult
@@ -361,7 +363,7 @@ def test_temporary_provider_failure_is_retried_with_backoff(tenant_a: Tenant) ->
     assert done.status == "succeeded" and done.attempts == 2
 
 
-def test_gemini_daily_quota_defers_without_using_an_attempt(tenant_a: Tenant) -> None:
+def test_gemini_daily_quota_defers_until_after_the_reset(tenant_a: Tenant) -> None:
     harness = make_worker()
     harness.provider.failures.append(
         ProviderQuotaExhausted("Gemini's free-tier daily quota is used up.")
@@ -370,8 +372,43 @@ def test_gemini_daily_quota_defers_without_using_an_attempt(tenant_a: Tenant) ->
     harness.run_all()
     deferred = job(body["job"]["id"])
     assert deferred.status == "queued" and deferred.attempts == 0
-    assert deferred.next_run_at > datetime.now(UTC) + timedelta(minutes=50)
+    # Once, after midnight Pacific (08:05 UTC), not every hour until then.
+    assert deferred.next_run_at == after_quota_reset(datetime.now(UTC))
     assert "daily quota" in deferred.last_error
+
+
+def test_the_quota_reset_is_after_midnight_pacific_in_winter_and_summer() -> None:
+    pacific = ZoneInfo("America/Los_Angeles")
+    for now in (
+        datetime(2026, 1, 15, 7, 59, tzinfo=UTC),  # 23:59 PST
+        datetime(2026, 1, 15, 8, 10, tzinfo=UTC),  # 00:10 PST: just reset, next is tomorrow
+        datetime(2026, 7, 15, 6, 59, tzinfo=UTC),  # 23:59 PDT
+        datetime(2026, 7, 15, 23, 0, tzinfo=UTC),
+    ):
+        run_at = after_quota_reset(now)
+        local = run_at.astimezone(pacific)
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        assert run_at > now
+        assert midnight > now.astimezone(pacific)  # the reset happens before the run
+        assert run_at - now <= timedelta(hours=24, minutes=5)
+
+
+def test_per_minute_rate_limits_wait_without_using_attempts(tenant_a: Tenant) -> None:
+    harness = make_worker()
+    body = upload(tenant_a, "returns.md", RETURNS_POLICY.encode())
+    for _ in range(5):  # more than JOB_MAX_ATTEMPTS
+        harness.provider.failures.append(
+            ProviderRateLimited("Rate limit reached.", retry_after_seconds=45)
+        )
+        harness.run_all()
+        waiting = job(body["job"]["id"])
+        assert waiting.status == "queued" and waiting.attempts == 0
+        wait = (waiting.next_run_at - datetime.now(UTC)).total_seconds()
+        assert 40 < wait <= 45
+        assert "Retrying in 45 s" in waiting.last_error
+        make_due()
+    harness.run_all()
+    assert job(body["job"]["id"]).status == "succeeded"
 
 
 def test_unexpected_errors_are_retried_with_a_generic_message(tenant_a: Tenant) -> None:

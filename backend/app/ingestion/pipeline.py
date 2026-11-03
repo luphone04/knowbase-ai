@@ -83,13 +83,32 @@ from app.worker.queue import (
 logger = logging.getLogger(__name__)
 
 MAX_RETRY_DELAY = timedelta(hours=1)
-PROVIDER_QUOTA_RETRY = timedelta(hours=1)  # Gemini's daily quota resets at midnight Pacific
+# Gemini's free-tier daily quota resets at midnight Pacific time: 08:00 UTC in
+# winter, 07:00 UTC in summer. 08:05 UTC is after the reset either way, with no
+# time-zone database needed.
+QUOTA_RESET_UTC = (8, 5)  # hour, minute
+# A per-minute rate limit clears within a minute; wait what Gemini asks, within reason.
+RATE_LIMIT_DELAY = (timedelta(seconds=30), timedelta(seconds=60), timedelta(minutes=10))
 RETAINED_INDEX_NOTE = " The previously indexed version is still available."
 UNEXPECTED_MESSAGE = (
     "An unexpected error occurred while processing this source (see the worker log)."
 )
 DATABASE_MESSAGE = "The database was temporarily unavailable."
 MISSING_FILE_MESSAGE = "The uploaded file is missing from storage. Upload it again."
+
+
+def after_quota_reset(now: datetime) -> datetime:
+    """The first QUOTA_RESET_UTC after `now`."""
+    hour, minute = QUOTA_RESET_UTC
+    today = now.astimezone(UTC).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return today if today > now else today + timedelta(days=1)
+
+
+def rate_limit_delay(retry_after_seconds: float | None) -> timedelta:
+    shortest, default, longest = RATE_LIMIT_DELAY
+    if retry_after_seconds is None:
+        return default
+    return min(longest, max(shortest, timedelta(seconds=retry_after_seconds)))
 
 
 class JobLost(Exception):
@@ -297,8 +316,16 @@ class IngestionWorker:
             outcome = "deferred"
             self._defer(job, exc.run_at, exc.reason)
         except ProviderQuotaExhausted as exc:
+            # Retrying before the reset only spends requests; one try after it.
             outcome = "deferred"
-            self._defer(job, datetime.now(UTC) + PROVIDER_QUOTA_RETRY, exc.message)
+            self._defer(job, after_quota_reset(datetime.now(UTC)), exc.message)
+        except ProviderRateLimited as exc:
+            # Not the job's fault and not a failure: wait it out without using an
+            # attempt (finished batches are cached, so nothing is redone).
+            outcome = "deferred"
+            delay = rate_limit_delay(exc.retry_after_seconds)
+            note = f"{exc.message} Retrying in {int(delay.total_seconds())} s."
+            self._defer(job, datetime.now(UTC) + delay, note)
         except (UnsupportedDocument, PermanentJobError, ParseTimeout, ParseResourceError) as exc:
             self._fail(job, exc.message)  # a file too slow or too big to read stays so
         except JobTimedOut as exc:
@@ -310,7 +337,7 @@ class IngestionWorker:
             self._fail(job, MISSING_FILE_MESSAGE)
         except (ProviderNotConfigured, ProviderConfigurationError, ProviderRequestError) as exc:
             self._fail(job, exc.message)
-        except (ProviderUnavailable, ProviderRateLimited, InvalidProviderResponse) as exc:
+        except (ProviderUnavailable, InvalidProviderResponse) as exc:
             self._retry_or_fail(job, exc.message)
         except ProviderError as exc:
             self._retry_or_fail(job, exc.message)

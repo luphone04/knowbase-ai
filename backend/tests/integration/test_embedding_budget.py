@@ -11,6 +11,12 @@ from app.auth.rate_limit import RateLimiter, RateLimitExceeded, RateLimitRule
 from app.config import get_settings
 from app.db.session import get_engine
 from app.ingestion.embedding import EmbeddingBudget
+from app.providers.errors import (
+    ProviderConfigurationError,
+    ProviderQuotaExhausted,
+    ProviderRateLimited,
+    ProviderUnavailable,
+)
 from tests.integration.conftest import Tenant, make_worker
 
 pytestmark = pytest.mark.integration
@@ -89,6 +95,32 @@ def test_limit_defers_the_job_and_keeps_finished_batches(tenant_a: Tenant) -> No
     assert harness.provider.texts_embedded == 7  # only the 2 missing texts were sent
     assert sql("SELECT count(*) FROM chunks")[0][0] == 7
     assert sql("SELECT status FROM ingestion_jobs")[0].status == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        ProviderRateLimited("Rate limit reached.", status_code=429),
+        ProviderQuotaExhausted("Daily quota used up.", status_code=429),
+        ProviderConfigurationError("Bad key.", status_code=403),
+    ],
+    ids=["rate-limited", "daily-quota", "bad-key"],
+)
+def test_a_call_gemini_refused_gives_its_budget_back(tenant_a: Tenant, refusal: Exception) -> None:
+    harness = make_worker(env=SMALL_CHUNKS)
+    harness.provider.failures.append(refusal)
+    tenant_a.client.post("/api/v1/sources/files", files={"file": ("p.txt", document(3))})
+    harness.run_all()
+    assert harness.provider.texts_embedded == 0
+    assert budget_used() == 0  # nothing reached Gemini's quota, so nothing is spent
+
+
+def test_a_call_that_may_have_reached_gemini_keeps_its_budget(tenant_a: Tenant) -> None:
+    harness = make_worker(env=SMALL_CHUNKS)
+    harness.provider.failures.append(ProviderUnavailable("Gemini is unavailable.", status_code=503))
+    tenant_a.client.post("/api/v1/sources/files", files={"file": ("p.txt", document(3))})
+    harness.run_all()
+    assert budget_used() == 3  # a 5xx may have been counted by Gemini
 
 
 def test_cached_and_unchanged_content_never_uses_budget(tenant_a: Tenant) -> None:

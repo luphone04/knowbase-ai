@@ -5,8 +5,9 @@
    costs no Gemini call and no budget.
 2. **Budget.** Only texts that really go to Gemini reserve the installation-wide
    daily limit (DAILY_EMBEDDING_TEXT_LIMIT). The reservation is atomic and made
-   *before* the call. It isn't refunded if the call then fails, because Gemini
-   may have counted it.
+   *before* the call. It is given back only when Gemini refused the call
+   outright (429, bad key or request); after a 5xx or a timeout it is kept,
+   because Gemini may have counted the request.
 3. **Gemini.** Chunks are embedded with the existing M3 provider: RETRIEVAL_DOCUMENT,
    768 dimensions, validated and normalised there. Each finished batch is
    cached immediately, so a later failure or a budget deferral never wastes it.
@@ -26,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.rate_limit import RateLimiter, RateLimitExceeded, RateLimitRule
 from app.db.models import EmbeddingCacheEntry
-from app.providers.errors import InvalidProviderResponse
+from app.providers.errors import REFUSED_BEFORE_COUNTING, InvalidProviderResponse
 from app.providers.interfaces import DOCUMENT_TASK, EmbeddingProvider
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,12 @@ class EmbeddingDisabled(Exception):
     message = "Embedding is disabled (DAILY_EMBEDDING_TEXT_LIMIT=0), so nothing can be indexed."
 
 
+@dataclass(frozen=True)
+class BudgetReservation:
+    count: int
+    window_start: datetime
+
+
 class EmbeddingBudget:
     """The SPEC.md §2.5 daily guardrail: texts sent to Gemini per UTC day, all workspaces.
 
@@ -60,11 +67,11 @@ class EmbeddingBudget:
         self._limiter = limiter
         self._rule = RateLimitRule("embedding-texts-daily", daily_limit, DAILY_WINDOW_SECONDS)
 
-    def reserve(self, count: int) -> None:
+    def reserve(self, count: int) -> BudgetReservation:
         if self.daily_limit == 0:
             raise EmbeddingDisabled()
         try:
-            self._limiter.reserve_many(self._rule, BUDGET_SCOPE, count)
+            window_start = self._limiter.reserve_many(self._rule, BUDGET_SCOPE, count)
         except RateLimitExceeded as exc:
             retry_after = int(exc.headers.get("Retry-After", DAILY_WINDOW_SECONDS))
             raise EmbeddingDeferred(
@@ -72,6 +79,12 @@ class EmbeddingBudget:
                 f"The daily embedding limit ({self.daily_limit} texts per day) has been reached. "
                 "Indexing resumes automatically after 00:00 UTC; finished batches are kept.",
             ) from exc
+        return BudgetReservation(count, window_start)
+
+    def refund(self, reservation: BudgetReservation) -> None:
+        self._limiter.release_many(
+            self._rule, BUDGET_SCOPE, reservation.count, window_start=reservation.window_start
+        )
 
     def remaining(self) -> int:
         return self._limiter.remaining(self._rule, BUDGET_SCOPE)
@@ -138,8 +151,12 @@ def embed_document_texts(
     embedded = requests = 0
     for batch in _batches(missing, min(batch_size, budget.batch_cap)):
         checkpoint()  # stop between batches once the job's deadline has passed
-        budget.reserve(len(batch))
-        result = provider.embed_documents([texts_by_hash[h] for h in batch])
+        reservation = budget.reserve(len(batch))
+        try:
+            result = provider.embed_documents([texts_by_hash[h] for h in batch])
+        except REFUSED_BEFORE_COUNTING:
+            budget.refund(reservation)
+            raise
         if (
             result.task_type != DOCUMENT_TASK
             or result.model != model

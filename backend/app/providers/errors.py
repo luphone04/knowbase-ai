@@ -87,6 +87,17 @@ class ProviderTimeout(ProviderUnavailable):
     retryable = False
 
 
+# Gemini rejected these before doing any work, so they used none of its quota and
+# the app's own budget reservation for them can be given back. 5xx errors and
+# timeouts are not here: Gemini may have counted those requests.
+REFUSED_BEFORE_COUNTING: tuple[type[ProviderError], ...] = (
+    ProviderRateLimited,
+    ProviderQuotaExhausted,
+    ProviderConfigurationError,
+    ProviderRequestError,
+)
+
+
 class InvalidProviderResponse(ProviderError):
     """The provider answered, but the answer breaks the contract (count, size, values)."""
 

@@ -23,7 +23,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import Settings
@@ -83,7 +83,9 @@ class RateLimiter:
         if count is None or count > rule.limit:
             raise RateLimitExceeded(self._retry_after(rule, now))
 
-    def reserve(self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None) -> None:
+    def reserve(
+        self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None
+    ) -> datetime:
         """Atomically take one of the window's `limit` slots, or reject.
 
         Concurrency-safe: during INSERT ... ON CONFLICT DO UPDATE, PostgreSQL
@@ -91,12 +93,13 @@ class RateLimiter:
         latest committed value, so concurrent callers can never take more than
         `limit` slots between them. A rejected attempt takes no slot, so the
         counter is exactly the number of attempts let through.
+        Returns the window the slot was taken from (for `release_many`).
         """
-        self.reserve_many(rule, identifier, 1, now=now)
+        return self.reserve_many(rule, identifier, 1, now=now)
 
     def reserve_many(
         self, rule: RateLimitRule, identifier: str, amount: int, *, now: datetime | None = None
-    ) -> None:
+    ) -> datetime:
         """Atomically take `amount` slots at once, or none of them (same guarantees as reserve)."""
         if amount < 1:
             raise ValueError("amount must be at least 1")
@@ -106,6 +109,24 @@ class RateLimiter:
             or self._upsert(rule, identifier, now, amount=amount, capped=True) is None
         ):
             raise RateLimitExceeded(self._retry_after(rule, now))
+        return self._window_start(rule, now)
+
+    def release_many(
+        self, rule: RateLimitRule, identifier: str, amount: int, *, window_start: datetime
+    ) -> None:
+        """Give back `amount` slots taken in `window_start`, never going below zero.
+
+        A window that has already ended is left alone: its slots no longer matter.
+        """
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(RateLimitCounter)
+                .where(
+                    RateLimitCounter.bucket_key == self._key(rule, identifier),
+                    RateLimitCounter.window_start == window_start,
+                )
+                .values(count=func.greatest(RateLimitCounter.count - amount, 0))
+            )
 
     def remaining(
         self, rule: RateLimitRule, identifier: str, *, now: datetime | None = None
