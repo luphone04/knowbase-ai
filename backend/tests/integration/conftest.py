@@ -22,11 +22,15 @@ from sqlalchemy import URL, Engine, create_engine, make_url, pool, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.crawler.fetcher import SafeFetcher
+from app.crawler.network import Resolver
+from app.crawler.urls import Origin
 from app.db.session import get_engine, get_sessionmaker
 from app.ingestion.pipeline import IngestionWorker
 from app.ingestion.storage import FileStorage
 from app.main import app
 from tests.fakes.providers import MockEmbeddingProvider
+from tests.fakes.websites import FakeClock, FakeSite, make_fetcher, public_resolver
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 APP_TABLES = (
@@ -40,6 +44,7 @@ APP_TABLES = (
     "chunks",
     "ingestion_jobs",
     "embedding_cache",
+    "crawl_pages",
 )
 TEST_PASSWORD = "integration-test-password-1"
 
@@ -91,6 +96,16 @@ def test_database_url() -> Iterator[URL]:
         os.environ["DATABASE_URL"] = original
         _clear_caches()
         _drop_database(base, name)
+
+
+@pytest.fixture(autouse=True)
+def _restore_environment() -> Iterator[None]:
+    """make_worker(env=...) changes os.environ; no test may leak settings into the next."""
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -202,15 +217,26 @@ class WorkerHarness:
         return ran
 
 
+def _no_network(origin: Origin) -> SafeFetcher:
+    raise AssertionError(f"test tried to crawl {origin} without a FakeSite")
+
+
 def make_worker(
-    provider: MockEmbeddingProvider | None = None, env: dict[str, str] | None = None
+    provider: MockEmbeddingProvider | None = None,
+    env: dict[str, str] | None = None,
+    site: FakeSite | None = None,
+    resolver: Resolver = public_resolver,
 ) -> WorkerHarness:
-    """A real IngestionWorker on the test database, with a deterministic embedding provider."""
+    """A real IngestionWorker on the test database, with a deterministic embedding
+    provider and, for website sources, a fake site and clock (never the network)."""
     for name, value in (env or {}).items():
         os.environ[name] = value
     get_settings.cache_clear()
     settings = get_settings()
     mock = provider or MockEmbeddingProvider(model=settings.gemini_embedding_model)
+    clock = FakeClock()
+    if site is not None:
+        site.clock = clock
     worker = IngestionWorker(
         settings=settings,
         session_factory=get_sessionmaker(),
@@ -218,6 +244,13 @@ def make_worker(
         storage=FileStorage(settings.upload_dir),
         embedding_provider_factory=lambda: mock,
         worker_id="test-worker",
+        fetcher_factory=(
+            (lambda origin: make_fetcher(site, origin, clock=clock, resolver=resolver))
+            if site is not None
+            else _no_network
+        ),
+        crawl_clock=clock,
+        crawl_sleep=clock.sleep,
     )
     return WorkerHarness(worker, mock)
 
