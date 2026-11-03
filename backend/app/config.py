@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     retrieval_candidates: int = Field(default=10, ge=1, le=100)
     rrf_k: int = Field(default=60, ge=1, le=1000)
     retrieval_top_n: int = Field(default=5, ge=1, le=50)
+    # Each search embeds the query with Gemini: searches per workspace per UTC day.
+    daily_retrieval_request_limit: int = Field(default=100, ge=0)
 
     frontend_origin: str = "http://localhost:3000"
 

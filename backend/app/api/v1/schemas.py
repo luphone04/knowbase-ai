@@ -1,8 +1,16 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 # NIST SP 800-63B: length over composition rules; a cap keeps Argon2 input bounded.
 PASSWORD_MIN_LENGTH = 12
@@ -132,3 +140,61 @@ class UploadOut(BaseModel):
     source: SourceOut
     job: JobOut | None
     unchanged: bool
+
+
+# --- retrieval (M6) ---------------------------------------------------------------------
+
+
+class RetrievalSearchIn(StrictRequest):
+    query: str = Field(min_length=1, max_length=1000)
+    mode: Literal["vector", "hybrid"] = "hybrid"
+    # The previous user question, for short follow-ups ("and the warranty?").
+    previous_question: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("query")
+    @classmethod
+    def _query_not_blank(cls, value: str) -> str:
+        return _not_blank(value)
+
+
+class RetrievalHitOut(BaseModel):
+    rank: int
+    score: float  # vector mode: cosine distance; hybrid: RRF score
+    vector_rank: int | None
+    vector_distance: float | None
+    lexical_rank: int | None
+    lexical_score: float | None  # ts_rank_cd (PostgreSQL ranking, not BM25)
+    chunk_id: uuid.UUID
+    chunk_index: int
+    content: str
+    heading: str | None
+    page_start: int | None
+    page_end: int | None
+    document_id: uuid.UUID
+    document_title: str
+    source_id: uuid.UUID
+    source_name: str
+    filename: str | None
+
+
+class RetrievalSearchOut(BaseModel):
+    mode: str
+    query: str
+    retrieval_query: str
+    contextualized: bool
+    trace_id: uuid.UUID
+    latency_ms: int
+    vector_candidates: int
+    lexical_candidates: int
+    results: list[RetrievalHitOut]
+
+
+class TraceOut(BaseModel):
+    id: uuid.UUID
+    retrieval_mode: str
+    query_text: str
+    retrieved_chunk_ids: list[str]
+    retrieval_scores: dict[str, Any]
+    latency_ms: int
+    token_usage: dict[str, Any]
+    created_at: datetime
