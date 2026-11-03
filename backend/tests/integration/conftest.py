@@ -40,7 +40,6 @@ APP_TABLES = (
     "chunks",
     "ingestion_jobs",
     "embedding_cache",
-    "crawl_pages",
 )
 TEST_PASSWORD = "integration-test-password-1"
 
