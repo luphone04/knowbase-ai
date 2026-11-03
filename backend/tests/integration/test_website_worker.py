@@ -481,6 +481,8 @@ def test_a_worker_that_lost_its_lease_publishes_nothing(tenant_a: Tenant) -> Non
     assert documents(body["source"]["id"]) == {}
     assert pages(body["source"]["id"]) == {}
     assert job(body["job"]["id"]).status == "running"  # still the new owner's
+    # Its next fenced progress write failed, so it stopped crawling at once.
+    assert site.urls[-1] == f"{SITE}/returns"
 
 
 # --- isolation and deletion -------------------------------------------------------------------

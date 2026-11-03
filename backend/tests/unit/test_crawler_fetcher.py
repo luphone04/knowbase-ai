@@ -1,6 +1,7 @@
 """SafeFetcher: explicit redirects, origin lock, size, encoding, type, and time limits."""
 
 import gzip
+import tracemalloc
 import zlib
 from collections.abc import Iterator
 
@@ -156,9 +157,16 @@ def test_a_gzip_bomb_cannot_expand_past_the_limit() -> None:
     assert len(bomb) < 100 * 1024
     site = FakeSite()
     site.add(f"{SITE}/bomb", body=bomb, headers={"content-encoding": "gzip"})
-    with pytest.raises(FetchError) as excinfo:
-        _get(site, f"{SITE}/bomb", max_bytes=MB)
+    tracemalloc.start()
+    try:
+        with pytest.raises(FetchError) as excinfo:
+            _get(site, f"{SITE}/bomb", max_bytes=MB)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
     assert excinfo.value.reason == "too_large"
+    # Refused while decompressing: memory stays near the limit, never the 50 MB payload.
+    assert peak < 8 * MB
 
 
 def test_gzip_and_deflate_bodies_are_decoded() -> None:
