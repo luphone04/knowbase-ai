@@ -315,3 +315,32 @@ def test_vectors_must_have_768_dimensions(scratch_engine: Engine, alembic_config
                 f"VALUES ('{WS_A}', '{DOC_A}', 5, 'c', 'h', '[1,2,3]', 'm')"
             )
         )
+
+
+def test_0005_moves_duplicate_links_out_of_document_url(
+    scratch_engine: Engine, alembic_config: Config
+) -> None:
+    """Before 0005 a duplicate's document_url pointed at another page's document."""
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "0004_crawler")
+        _seed(connection)
+        connection.execute(
+            text(
+                "INSERT INTO crawl_pages (workspace_id, source_id, url, document_url, depth, "
+                f"discovered_via, status) VALUES ('{WS_A}', '{SOURCE_A}', "
+                "'https://example.com/alias', 'https://example.com/', 1, 'link', 'duplicate')"
+            )
+        )
+        migrate(connection, alembic_config, "0005_crawl_page_duplicates")
+        moved = connection.execute(
+            text("SELECT url, document_url, duplicate_of FROM crawl_pages ORDER BY url")
+        ).all()
+        assert [tuple(row) for row in moved] == [
+            ("https://example.com/", None, None),  # seeded "indexed" row, untouched
+            ("https://example.com/alias", None, "https://example.com/"),
+        ]
+        migrate(connection, alembic_config, "0004_crawler", down=True)
+        restored = connection.execute(
+            text("SELECT document_url FROM crawl_pages WHERE url = 'https://example.com/alias'")
+        ).scalar_one()
+        assert restored == "https://example.com/"

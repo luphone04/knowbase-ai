@@ -160,7 +160,8 @@ class CrawlPageOut(BaseModel):
     id: uuid.UUID
     url: str
     final_url: str | None
-    document_url: str | None
+    document_url: str | None  # the document this page owns
+    duplicate_of: str | None  # duplicates: the document with the same content
     depth: int
     discovered_via: str
     status: str

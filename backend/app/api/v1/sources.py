@@ -407,6 +407,7 @@ def list_pages(
             url=page.url,
             final_url=page.final_url,
             document_url=page.document_url,
+            duplicate_of=page.duplicate_of,
             depth=page.depth,
             discovered_via=page.discovered_via,
             status=page.status,

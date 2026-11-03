@@ -361,8 +361,11 @@ class CrawlPage(WorkspaceScoped, Base):
     # Normalised URL as discovered (before redirects).
     url: Mapped[str] = mapped_column(Text)
     final_url: Mapped[str | None] = mapped_column(Text)
-    # The document this page is indexed as (documents.canonical_url), if any.
+    # The document this page *owns* (documents.canonical_url): the one it published.
+    # A page may only remove a document it owns, and only once no other page owns it.
     document_url: Mapped[str | None] = mapped_column(Text)
+    # For status "duplicate": the document (another page's) holding the same content.
+    duplicate_of: Mapped[str | None] = mapped_column(Text)
     depth: Mapped[int]
     discovered_via: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text)

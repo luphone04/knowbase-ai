@@ -336,7 +336,249 @@ def test_duplicate_urls_and_identical_pages_make_one_document(tenant_a: Tenant) 
     assert set(docs) == {f"{SITE}/", f"{SITE}/faq"}
     assert site.urls.count(f"{SITE}/faq") == 1
     help_row = pages(body["source"]["id"])[f"{SITE}/help"]
-    assert help_row.status == "duplicate" and help_row.document_url == f"{SITE}/faq"
+    assert help_row.status == "duplicate" and help_row.duplicate_of == f"{SITE}/faq"
+    assert help_row.document_url is None  # a duplicate owns no document
+
+
+# --- page ownership: duplicates never own documents ---------------------------------------
+
+
+def two_page_site(**pages: str) -> FakeSite:
+    """Home links to the given paths (in order); each path serves its HTML."""
+    site = FakeSite()
+    links = "".join(f'<a href="/{path}">{path}</a>' for path in pages)
+    site.add(f"{SITE}/", page_html("Welcome", "Northstar sells tents, packs, and laptops.", links))
+    for path, html in pages.items():
+        site.add(f"{SITE}/{path}", html)
+    return site
+
+
+def relink_home(site: FakeSite, *paths: str) -> None:
+    links = "".join(f'<a href="/{path}">{path}</a>' for path in paths)
+    site.add(f"{SITE}/", page_html("Welcome", "Northstar sells tents, packs, and laptops.", links))
+
+
+def chunk_texts(source_id: str) -> list[str]:
+    rows = sql(
+        "SELECT c.content FROM chunks c JOIN documents d ON d.id = c.document_id"
+        " WHERE d.source_id = :s",
+        s=source_id,
+    )
+    return [row.content for row in rows]
+
+
+FAQ = page_html("Faq", PAGES["faq"])
+WARRANTY = page_html("Warranty", PAGES["warranty"])
+
+
+def test_a_page_that_becomes_a_duplicate_gives_up_its_document(tenant_a: Tenant) -> None:
+    site = two_page_site(faq=FAQ, help=WARRANTY)
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)
+    assert set(documents(source_id)) == {f"{SITE}/", f"{SITE}/faq", f"{SITE}/help"}
+    faq_chunks = chunk_ids(source_id)[f"{SITE}/faq"]
+
+    site.add(f"{SITE}/help", FAQ)  # /help now serves exactly what /faq serves
+    second = recrawl(tenant_a, source_id)
+    crawl_once(harness)
+
+    assert job(second["id"]).result["pages_removed"] == 1
+    assert set(documents(source_id)) == {f"{SITE}/", f"{SITE}/faq"}
+    assert chunk_ids(source_id)[f"{SITE}/faq"] == faq_chunks  # the original is untouched
+    assert not any("two-year warranty" in text for text in chunk_texts(source_id))
+    row = pages(source_id)[f"{SITE}/help"]
+    assert row.status == "duplicate" and row.document_url is None
+    assert row.duplicate_of == f"{SITE}/faq"
+
+
+def test_a_disappearing_alias_keeps_an_original_the_crawl_did_not_reach(
+    tenant_a: Tenant,
+) -> None:
+    site = two_page_site(faq=FAQ, help=FAQ)  # /help is a duplicate of /faq
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)
+    assert pages(source_id)[f"{SITE}/help"].status == "duplicate"
+    faq_chunks = chunk_ids(source_id)[f"{SITE}/faq"]
+
+    relink_home(site, "help")  # /faq is no longer reached
+    site.add(f"{SITE}/help", "gone", status=404)
+    requests_before = len(site.urls)
+    second = recrawl(tenant_a, source_id)
+    crawl_once(harness)
+
+    assert f"{SITE}/faq" not in site.urls[requests_before:]
+    assert job(second["id"]).result["pages_removed"] == 0
+    assert chunk_ids(source_id)[f"{SITE}/faq"] == faq_chunks
+    assert pages(source_id)[f"{SITE}/help"].reason == "not_found"
+    assert pages(source_id)[f"{SITE}/faq"].document_url == f"{SITE}/faq"
+
+
+def test_an_alias_that_becomes_unique_keeps_an_original_the_crawl_did_not_reach(
+    tenant_a: Tenant,
+) -> None:
+    site = two_page_site(faq=FAQ, help=FAQ)
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)
+    faq_chunks = chunk_ids(source_id)[f"{SITE}/faq"]
+
+    relink_home(site, "help")
+    site.add(f"{SITE}/help", WARRANTY)  # now its own content
+    second = recrawl(tenant_a, source_id)
+    crawl_once(harness)
+
+    assert job(second["id"]).result["pages_removed"] == 0
+    assert set(documents(source_id)) == {f"{SITE}/", f"{SITE}/faq", f"{SITE}/help"}
+    assert chunk_ids(source_id)[f"{SITE}/faq"] == faq_chunks
+    row = pages(source_id)[f"{SITE}/help"]
+    assert row.status == "indexed" and row.document_url == f"{SITE}/help"
+    assert row.duplicate_of is None
+
+
+def test_a_document_two_pages_own_survives_while_one_still_owns_it(tenant_a: Tenant) -> None:
+    """Both pages declare one canonical URL; crawls reach them in turn."""
+    canonical = f'<link rel="canonical" href="{SITE}/faq">'
+    site = two_page_site(**{"faq-a": canonical + FAQ})
+    harness = make_worker(site=site)
+    body = add_site(tenant_a)
+    source_id = body["source"]["id"]
+    crawl_once(harness)  # faq-a owns /faq
+
+    relink_home(site, "faq-b")
+    site.add(f"{SITE}/faq-b", canonical + FAQ)
+    recrawl(tenant_a, source_id)
+    crawl_once(harness)  # faq-b owns /faq too; faq-a not reached
+    rows = pages(source_id)
+    assert rows[f"{SITE}/faq-a"].document_url == rows[f"{SITE}/faq-b"].document_url == f"{SITE}/faq"
+
+    site.add(f"{SITE}/faq-b", "gone", status=404)
+    recrawl(tenant_a, source_id)
+    crawl_once(harness)  # faq-b is gone, but faq-a (not reached) still owns /faq
+    assert f"{SITE}/faq" in documents(source_id)
+
+
+# --- removals when nothing (else) can be indexed --------------------------------------------
+
+
+def indexed_northstar(tenant: Tenant) -> tuple[FakeSite, WorkerHarness, str]:
+    site = northstar()
+    harness = make_worker(site=site)
+    body = add_site(tenant)
+    crawl_once(harness)
+    assert len(documents(body["source"]["id"])) == 5
+    return site, harness, body["source"]["id"]
+
+
+def test_gone_pages_are_removed_even_when_no_page_is_indexable(tenant_a: Tenant) -> None:
+    site, harness, source_id = indexed_northstar(tenant_a)
+    site.add(f"{SITE}/", "gone", status=404)  # start page gone: no links to follow
+    site.add(f"{SITE}/faq", "gone", status=410)  # still listed in the sitemap
+    second = recrawl(tenant_a, source_id)
+    harness.run_all()
+
+    failed = job(second["id"])
+    assert failed.status == "failed" and failed.attempts == 1  # permanent: no retry
+    docs = documents(source_id)
+    assert f"{SITE}/" not in docs and f"{SITE}/faq" not in docs
+    # Pages this crawl couldn't reach keep their documents.
+    assert {f"{SITE}/returns", f"{SITE}/shipping", f"{SITE}/warranty"} <= set(docs)
+    assert not any("Gift cards never expire" in t for t in chunk_texts(source_id))
+
+
+def test_mixed_removals_and_transient_failures_with_nothing_indexable(tenant_a: Tenant) -> None:
+    site, harness, source_id = indexed_northstar(tenant_a)
+    before = chunk_ids(source_id)
+    noindex = '<meta name="robots" content="noindex">'
+    site.add(
+        f"{SITE}/",
+        page_html(
+            "Welcome",
+            noindex + "Home",
+            '<a href="/returns">r</a><a href="/shipping">s</a><a href="/warranty">w</a>',
+        ),
+    )
+    site.add(f"{SITE}/returns", "gone", status=410)  # gone
+    site.add(f"{SITE}/shipping", "busy", status=503)  # transient
+    site.add(f"{SITE}/warranty", page_html("Warranty", noindex + PAGES["warranty"]))
+    site.add(  # newly disallowed: /faq (still in the sitemap)
+        f"{SITE}/robots.txt",
+        f"User-agent: *\nDisallow: /faq\nSitemap: {SITE}/sitemap.xml\n",
+        content_type="text/plain",
+    )
+    second = recrawl(tenant_a, source_id)
+    harness.run_all()
+
+    waiting = job(second["id"])
+    assert waiting.status == "queued" and waiting.attempts == 1  # retried for /shipping
+    docs = documents(source_id)
+    assert set(docs) == {f"{SITE}/shipping"}  # only the transient failure kept its index
+    assert chunk_ids(source_id)[f"{SITE}/shipping"] == before[f"{SITE}/shipping"]
+    rows = pages(source_id)
+    assert rows[f"{SITE}/"].reason == "noindex"
+    assert rows[f"{SITE}/returns"].reason == "not_found"
+    assert rows[f"{SITE}/warranty"].reason == "noindex"
+    assert rows[f"{SITE}/faq"].reason == "robots"
+    assert rows[f"{SITE}/shipping"].reason == "server_error"
+    assert rows[f"{SITE}/shipping"].document_url == f"{SITE}/shipping"
+
+
+def test_transient_failures_alone_keep_the_whole_index(tenant_a: Tenant) -> None:
+    site, harness, source_id = indexed_northstar(tenant_a)
+    before = chunk_ids(source_id)
+    for url in list(site.pages):
+        if not url.endswith((".txt", ".xml")):
+            site.add(url, "maintenance", status=503)
+    second = recrawl(tenant_a, source_id)
+    harness.run_all()
+    assert job(second["id"]).status == "queued"  # retried later
+    assert chunk_ids(source_id) == before
+
+
+def test_pages_newly_disallowed_are_removed_even_if_not_reached(tenant_a: Tenant) -> None:
+    site, harness, source_id = indexed_northstar(tenant_a)
+    site.add(
+        f"{SITE}/robots.txt",
+        f"User-agent: *\nDisallow: /warranty\nSitemap: {SITE}/sitemap.xml\n",
+        content_type="text/plain",
+    )
+    relink_home(site, "returns", "shipping")  # /warranty isn't even linked any more
+    requests_before = len(site.urls)
+    second = recrawl(tenant_a, source_id)
+    crawl_once(harness)
+    assert job(second["id"]).status == "succeeded"
+    assert f"{SITE}/warranty" not in documents(source_id)
+    row = pages(source_id)[f"{SITE}/warranty"]
+    assert row.reason == "robots" and row.document_url is None
+    assert f"{SITE}/warranty" not in site.urls[requests_before:]
+
+
+@pytest.mark.parametrize(
+    ("rule", "kept"),
+    [
+        ("Disallow: /", set()),  # the whole site is withdrawn
+        ("Disallow: /$", {"returns", "shipping", "warranty", "faq"}),  # only the start page
+    ],
+    ids=["whole-site", "start-page-only"],
+)
+def test_a_start_url_newly_disallowed_by_robots(
+    tenant_a: Tenant, rule: str, kept: set[str]
+) -> None:
+    site, harness, source_id = indexed_northstar(tenant_a)
+    site.add(f"{SITE}/robots.txt", f"User-agent: *\n{rule}\n", content_type="text/plain")
+    requests_before = len(site.urls)
+    second = recrawl(tenant_a, source_id)
+    harness.run_all()
+
+    failed = job(second["id"])
+    assert failed.status == "failed" and "does not allow" in failed.last_error
+    assert site.urls[requests_before:] == [f"{SITE}/robots.txt"]  # nothing else fetched
+    assert set(documents(source_id)) == {f"{SITE}/{name}" for name in kept}
+    assert pages(source_id)[f"{SITE}/"].reason == "robots"
 
 
 # --- failures -------------------------------------------------------------------------------

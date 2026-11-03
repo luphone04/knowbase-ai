@@ -12,15 +12,25 @@
    changed keeps its chunks and costs no embeddings. Each page commits on its
    own, so a crash or a budget deferral keeps the pages already done; the
    retry finds them unchanged.
-4. **Finish** in one fenced transaction: record skipped and failed pages,
-   remove documents for pages that are gone (404/410), now disallowed by
-   robots.txt, or marked noindex, and mark the source ready with a summary.
+4. **Finish** in one fenced transaction: record skipped and failed pages;
+   remove documents for pages that are gone (404/410), noindex, now a
+   duplicate, or disallowed by robots.txt (including pages this crawl didn't
+   reach); and mark the source ready with a summary. Removals happen even
+   when no page could be indexed this time. If robots.txt now forbids the
+   start URL, nothing is crawled, and pages it forbids are removed the same way.
 
 The document key is the page's canonical URL when it's on the same site,
 otherwise the URL it was fetched from. A canonical URL can't merge different
 content: if two pages claim the same canonical URL with different text, the
 second is keyed by its own URL. Identical text found at two URLs is indexed
 once; the other page is recorded as a duplicate.
+
+**Ownership.** `crawl_pages.document_url` is the document a page *owns*
+(published). A duplicate owns nothing; it points at the other page's document
+through `duplicate_of`. A document is deleted only after this crawl's page
+rows are written, and only if no page owns it any more. A duplicate alias that
+disappears or changes therefore never takes its original away, and a
+document shared by two pages survives while either still owns it.
 
 Failures stay page-level. A page that times out, errors, or has too little
 text is reported and its previously indexed version is kept. The job fails
@@ -34,12 +44,20 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.crawler.crawl import CrawlBlocked, Crawler, CrawlLimits, PageResult, RobotsUnreachable
-from app.crawler.urls import origin_of
+from app.crawler.crawl import (
+    CrawlBlocked,
+    Crawler,
+    CrawlLimits,
+    PageResult,
+    RobotsUnreachable,
+    StartDisallowed,
+)
+from app.crawler.robots import RobotsRules
+from app.crawler.urls import origin_of, path_and_query
 from app.db.models import CrawlPage, Document, IngestionJob, Source
 from app.ingestion.cleaner import build_clean_document
 from app.ingestion.parsers import Block, ParsedDocument, UnsupportedDocument
@@ -85,6 +103,8 @@ def _page_values(job: ClaimedJob, result: PageResult, **fields: Any) -> dict[str
         "content_type": result.content_type,
         "title": result.page.title if result.page else None,
         "content_hash": None,
+        "document_url": None,
+        "duplicate_of": None,
         "last_job_id": job.id,
         "fetched_at": result.fetched_at,
     }
@@ -93,7 +113,12 @@ def _page_values(job: ClaimedJob, result: PageResult, **fields: Any) -> dict[str
 
 
 def _upsert_pages(db: Session, rows: list[dict[str, Any]], *, keep_document: bool) -> None:
-    """Insert or update crawl rows. `keep_document`: a failed fetch keeps its old link."""
+    """Insert or update crawl rows.
+
+    `keep_document=True` (a page that failed for a reason that isn't "gone"):
+    the page keeps the document it owns and its duplicate link. Otherwise the
+    row's ownership is replaced by the values given (a new key, or None).
+    """
     if not rows:
         return
     statement = insert(CrawlPage).values(rows)
@@ -118,6 +143,7 @@ def _upsert_pages(db: Session, rows: list[dict[str, Any]], *, keep_document: boo
         updates["title"] = func.coalesce(excluded.title, CrawlPage.title)
     else:
         updates["document_url"] = excluded.document_url
+        updates["duplicate_of"] = excluded.duplicate_of
         updates["title"] = excluded.title
         updates["content_hash"] = excluded.content_hash
         updates["indexed_at"] = func.coalesce(excluded.indexed_at, CrawlPage.indexed_at)
@@ -144,6 +170,72 @@ def _fallback_title(url: str) -> str:
     return path or parts.hostname or "Untitled page"
 
 
+def _release_disallowed(
+    db: Session,
+    job: ClaimedJob,
+    owned_by: dict[str, str | None],
+    seen: set[str],
+    rules: RobotsRules,
+) -> set[str]:
+    """Pages not reached this crawl that robots.txt now forbids give up their documents.
+
+    Returns the documents released. Pages the crawl did reach were already
+    handled page by page.
+    """
+    urls = [
+        url
+        for url, owned in owned_by.items()
+        if owned and url not in seen and not rules.allows(path_and_query(url))
+    ]
+    if not urls:
+        return set()
+    db.execute(
+        update(CrawlPage)
+        .where(CrawlPage.source_id == job.source_id, CrawlPage.url.in_(urls))
+        .values(
+            status="skipped",
+            reason="robots",
+            message="Now disallowed by robots.txt; removed from the index.",
+            document_url=None,
+            duplicate_of=None,
+            last_job_id=job.id,
+            updated_at=func.now(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return {str(owned_by[url]) for url in urls}
+
+
+def _remove_unowned(db: Session, source_id: Any, candidates: set[str]) -> int:
+    """Delete candidate documents that no crawl page owns any more (chunks cascade).
+
+    Runs after this crawl's page rows are written, so a document still owned
+    by a page this crawl didn't reach (or one that failed transiently) stays.
+    Duplicates never own documents, so an alias can't take its original away.
+    """
+    if not candidates:
+        return 0
+    still_owned = (
+        select(CrawlPage.id)
+        .where(
+            CrawlPage.source_id == source_id,
+            CrawlPage.document_url == Document.canonical_url,
+        )
+        .exists()
+    )
+    removed = db.scalars(
+        delete(Document)
+        .where(
+            Document.source_id == source_id,
+            Document.canonical_url.in_(candidates),
+            ~still_owned,
+        )
+        .returning(Document.id)
+        .execution_options(synchronize_session=False)
+    ).all()
+    return len(removed)
+
+
 def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
     from app.ingestion.pipeline import JobLost, PermanentJobError, TransientJobError
 
@@ -165,6 +257,7 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
             int(source.settings.get("max_depth", settings.max_crawl_depth)),
             settings.max_crawl_depth,
         )
+        # The document each known page owned after the previous crawl (None: none).
         previous = {
             row.url: row.document_url
             for row in db.scalars(select(CrawlPage).where(CrawlPage.source_id == source.id))
@@ -191,6 +284,16 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
     )
     try:
         report = crawler.crawl(start_url)
+    except StartDisallowed as exc:
+        # robots.txt now forbids the start URL: nothing is crawled, and every page
+        # indexed earlier that the new rules forbid is removed (the same policy as
+        # for pages a crawl reaches). Pages still allowed keep their documents.
+        with worker.session(job) as db:
+            worker.lock_for_publish(db, job)
+            forbidden = _release_disallowed(db, job, previous, set(), exc.rules)
+            _remove_unowned(db, job.source_id, forbidden)
+            db.commit()
+        raise PermanentJobError(exc.message) from exc
     except CrawlBlocked as exc:
         raise PermanentJobError(exc.message) from exc
     except RobotsUnreachable as exc:
@@ -202,21 +305,29 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
     boilerplate = repeated_blocks([r.page.blocks for r in fetched if r.page is not None])
     counts = Counter[str]()
     totals = Counter[str]()
-    other_rows: list[dict[str, Any]] = []
+    kept_rows: list[dict[str, Any]] = []  # failed: the page keeps the document it owns
+    assigned_rows: list[dict[str, Any]] = []  # gone or duplicate: owns nothing now
     claimed: dict[str, str] = {}  # document key -> content hash, in this crawl
     by_hash: dict[str, str] = {}  # content hash -> document key, in this crawl
     live: set[str] = set()
-    removable: set[str] = set()
+    released: set[str] = set()  # documents some page stopped owning in this crawl
     removed_blocks = 0
+
+    def release(url: str) -> None:
+        owned = previous.get(url)
+        if owned:
+            released.add(owned)
 
     for result in report.pages:
         if result.status != "fetched" or result.page is None:
             counts[result.status if result.reason != "duplicate" else "duplicate"] += 1
-            if result.reason in GONE_REASONS and previous.get(result.url):
-                removable.add(str(previous[result.url]))
-                other_rows.append(_page_values(job, result, document_url=None))
+            if result.reason in GONE_REASONS or result.reason == "duplicate":
+                # Gone, forbidden, noindex, or now a redirect to another crawled page.
+                release(result.url)
+                duplicate_of = result.final_url if result.reason == "duplicate" else None
+                assigned_rows.append(_page_values(job, result, duplicate_of=duplicate_of))
             else:
-                other_rows.append(_page_values(job, result))
+                kept_rows.append(_page_values(job, result))  # previous version kept
             continue
 
         page = result.page
@@ -233,7 +344,7 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
         except UnsupportedDocument as exc:
             counts["failed"] += 1
             result.status, result.reason, result.message = "failed", "too_little_text", exc.message
-            other_rows.append(_page_values(job, result))
+            kept_rows.append(_page_values(job, result))
             continue
 
         key = result.canonical_url or url
@@ -243,12 +354,13 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
             counts["duplicate"] += 1
             same_as = by_hash.get(clean.content_hash, key)
             result.reason, result.message = "duplicate", f"Same content as {same_as}."
-            other_rows.append(
+            release(result.url)  # whatever this page owned before is now stale
+            assigned_rows.append(
                 _page_values(
                     job,
                     result,
                     status="duplicate",
-                    document_url=same_as,
+                    duplicate_of=same_as,
                     title=clean.title,
                     content_hash=clean.content_hash,
                 )
@@ -256,8 +368,8 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
             continue
         claimed[key] = clean.content_hash
         by_hash[clean.content_hash] = key
-        if previous.get(result.url) and previous[result.url] != key:
-            removable.add(str(previous[result.url]))
+        if previous.get(result.url) != key:
+            release(result.url)  # e.g. its canonical URL changed
 
         extra_meta: dict[str, Any] = {
             "source_kind": "website",
@@ -288,6 +400,7 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
                         result,
                         status="unchanged" if indexed.unchanged else "indexed",
                         document_url=key,
+                        duplicate_of=None,
                         title=title,
                         content_hash=content_hash,
                         indexed_at=None if indexed.unchanged else now,
@@ -344,8 +457,13 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
 
     with worker.session(job) as db:
         row, source = worker.lock_for_publish(db, job)
-        _upsert_pages(db, [r for r in other_rows if "document_url" not in r], keep_document=True)
-        _upsert_pages(db, [r for r in other_rows if "document_url" in r], keep_document=False)
+        _upsert_pages(db, kept_rows, keep_document=True)
+        _upsert_pages(db, assigned_rows, keep_document=False)
+        seen = {r.url for r in report.pages}
+        released |= _release_disallowed(db, job, previous, seen, report.rules)
+        # Confirmed removals happen even when nothing else could be indexed:
+        # a page that is gone stays gone; transient failures kept their documents.
+        result_summary["pages_removed"] = _remove_unowned(db, source.id, released - live)
         if usable == 0:
             db.commit()
             failures = [r for r in report.pages if r.status == "failed"]
@@ -355,15 +473,6 @@ def crawl_website(worker: "IngestionWorker", job: ClaimedJob) -> dict[str, Any]:
                 raise TransientJobError(message)
             raise PermanentJobError(message)
 
-        gone = removable - live
-        if gone:
-            removed = db.scalars(
-                delete(Document)
-                .where(Document.source_id == source.id, Document.canonical_url.in_(gone))
-                .returning(Document.id)
-                .execution_options(synchronize_session=False)
-            ).all()
-            result_summary["pages_removed"] = len(removed)
         worker._mark_ready(source)
         if counts["failed"]:
             source.error_message = (

@@ -63,6 +63,15 @@ class CrawlBlocked(Exception):
         self.message = message
 
 
+class StartDisallowed(CrawlBlocked):
+    """robots.txt now forbids the start URL. `rules` lets the caller apply them to
+    pages indexed earlier (they're removed if disallowed too)."""
+
+    def __init__(self, message: str, rules: RobotsRules) -> None:
+        super().__init__(message)
+        self.rules = rules
+
+
 class RobotsUnreachable(Exception):
     """robots.txt couldn't be read (5xx, 429, network): RFC 9309 says assume disallow."""
 
@@ -107,6 +116,8 @@ class CrawlReport:
     counts: dict[str, int] = field(default_factory=dict)
     stopped_reason: str | None = None
     duration_ms: int = 0
+    # The robots.txt rules this crawl obeyed (also applied to pages it didn't reach).
+    rules: RobotsRules = field(default_factory=RobotsRules.allow_everything)
 
 
 class HostThrottle:
@@ -189,10 +200,14 @@ class Crawler:
 
         robots_status = self._load_robots()
         if not self._robots.allows(path_and_query(start_url)):
-            raise CrawlBlocked("robots.txt does not allow this crawler to fetch the start URL.")
+            raise StartDisallowed(
+                "robots.txt does not allow this crawler to fetch the start URL.", self._robots
+            )
         delay = max(self._limits.delay_seconds, self._robots.crawl_delay or 0.0)
         self._throttle.delay = delay
-        report = CrawlReport(start_url=start_url, robots=robots_status, crawl_delay=delay)
+        report = CrawlReport(
+            start_url=start_url, robots=robots_status, crawl_delay=delay, rules=self._robots
+        )
         self._report = report
 
         self._enqueue(start_url, 0, "start")
