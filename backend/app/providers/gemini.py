@@ -9,6 +9,7 @@ Logs carry model names, counts, finish reasons, token usage, latency, attempts,
 and error categories. Never prompts, texts, vectors, or keys.
 """
 
+import json
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -124,6 +125,11 @@ def classify_gemini_error(exc: Exception) -> ProviderError | None:
                 quota_ids=quota_ids,
                 **common,
             )
+        if exc.code in (408, 499):
+            # The request timed out or was cancelled in transit (not our deadline).
+            return ProviderUnavailable(
+                "Gemini did not receive the request in time. Try again shortly.", **common
+            )
         if exc.code == 504 or exc.status == "DEADLINE_EXCEEDED":
             return ProviderTimeout(_TIMEOUT_MESSAGE, **common)
         if exc.code >= 500:
@@ -149,6 +155,9 @@ def classify_gemini_error(exc: Exception) -> ProviderError | None:
             )
         return ProviderRequestError("Gemini rejected the request as invalid.", **common)
 
+    if isinstance(exc, (json.JSONDecodeError, errors.UnknownApiResponseError)):
+        # For example an HTML page from a proxy instead of Gemini's JSON.
+        return InvalidProviderResponse("Gemini returned a response that could not be read.")
     if isinstance(exc, _READ_TIMEOUTS):
         return ProviderTimeout(_TIMEOUT_MESSAGE)
     if isinstance(exc, _TRANSPORT_ERRORS):

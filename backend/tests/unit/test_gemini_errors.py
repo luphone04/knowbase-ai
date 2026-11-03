@@ -1,11 +1,14 @@
 """Retries, quota handling, error classification, and no paid fallback (no network)."""
 
+import json
 import logging
 
 import httpx
 import pytest
+from google.genai import errors
 
 from app.providers.errors import (
+    InvalidProviderResponse,
     ProviderConfigurationError,
     ProviderError,
     ProviderQuotaExhausted,
@@ -95,6 +98,38 @@ def test_deadline_exceeded_is_not_retried(error: Exception) -> None:
     assert "GEMINI_REQUEST_TIMEOUT_SECONDS" in excinfo.value.message
     assert isinstance(excinfo.value, ProviderUnavailable)  # still an availability problem
     assert h.health.snapshot().last_error_category == "timeout"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        api_error(408, "DEADLINE_EXCEEDED", "Request Timeout"),
+        api_error(408, "", "Request Timeout"),
+        api_error(499, "CANCELLED", "The operation was cancelled."),
+    ],
+    ids=["408-deadline", "408-plain", "499-cancelled"],
+)
+def test_request_timeouts_in_transit_are_retried(error: Exception) -> None:
+    h = make_harness()
+    h.client.models.generate_script.extend([error, generation_response("ok")])
+    assert h.generation.generate(PROMPT).attempts == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        json.JSONDecodeError("Expecting value", "<html>proxy error</html>", 0),
+        errors.UnknownApiResponseError("unexpected response shape"),
+    ],
+    ids=["not-json", "unknown-shape"],
+)
+def test_unreadable_responses_are_a_clear_provider_error(error: Exception) -> None:
+    h = make_harness()
+    h.client.models.generate_script.extend([error, generation_response("ok")])
+    with pytest.raises(InvalidProviderResponse) as excinfo:
+        h.generation.generate(PROMPT)
+    assert excinfo.value.message == "Gemini returned a response that could not be read."
+    assert len(h.calls) == 1
 
 
 def test_embedding_calls_are_retried_too() -> None:
