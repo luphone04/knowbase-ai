@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
 import pytest
@@ -280,3 +280,25 @@ def test_claim_session_is_cross_workspace_by_design(
     while (job := claim_next_job(get_sessionmaker(), "w")) is not None:
         workspaces.add(job.workspace_id)
     assert workspaces == {tenant_a.workspace_id, tenant_b.workspace_id}
+
+
+def test_recovery_uses_the_database_clock(
+    tenant_a: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker whose clock runs ahead of the database still gets recovered jobs at once."""
+    import app.worker.queue as queue_module
+
+    tenant_a.client.post(
+        "/api/v1/sources/files", files={"file": ("returns.md", RETURNS_POLICY.encode())}
+    )
+    assert claim_next_job(get_sessionmaker(), "worker-that-died") is not None
+    sql("UPDATE ingestion_jobs SET locked_at = now() - interval '5 minutes'")
+
+    class FastClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> "FastClock":
+            return cls.fromtimestamp((datetime.now(UTC) + timedelta(hours=1)).timestamp(), tz)
+
+    monkeypatch.setattr(queue_module, "datetime", FastClock)
+    assert recover_stale_jobs(get_sessionmaker(), lease_seconds=120) == 1
+    assert claim_next_job(get_sessionmaker(), "worker-after-restart") is not None

@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import Connection, Engine, func, select, text, update
+from sqlalchemy import ColumnElement, Connection, Engine, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -191,7 +191,12 @@ def has_other_queued_job(db: Session, row: IngestionJob) -> bool:
 
 
 def requeue_or_supersede(
-    db: Session, row: IngestionJob, *, run_at: datetime, message: str, count_attempt: bool
+    db: Session,
+    row: IngestionJob,
+    *,
+    run_at: datetime | ColumnElement[datetime],
+    message: str,
+    count_attempt: bool,
 ) -> bool:
     """Put a running job back in the queue. If a newer job for the same source is
     already waiting, this one is obsolete: mark it failed as superseded instead.
@@ -212,8 +217,13 @@ def requeue_or_supersede(
 
 
 def recover_stale_jobs(session_factory: sessionmaker[Session], lease_seconds: int) -> int:
-    """Requeue (or fail) running jobs whose lease lapsed: their worker died."""
-    cutoff = datetime.now(UTC) - timedelta(seconds=lease_seconds)
+    """Requeue (or fail) running jobs whose lease lapsed: their worker died.
+
+    Both the staleness cutoff and the requeue time use the database clock, the
+    one `claim_next_job` compares against. With the worker's clock, a skew of
+    a few milliseconds could leave a recovered job "not yet due".
+    """
+    cutoff = func.now() - timedelta(seconds=lease_seconds)
     recovered = 0
     with session_factory() as session:
         stale = session.scalars(
@@ -239,7 +249,7 @@ def recover_stale_jobs(session_factory: sessionmaker[Session], lease_seconds: in
                 requeue_or_supersede(
                     session,
                     row,
-                    run_at=datetime.now(UTC),
+                    run_at=func.now(),
                     message=RECOVERED_MESSAGE,
                     count_attempt=True,
                 )
