@@ -143,6 +143,9 @@ def test_an_empty_workspace_returns_no_results(
 def test_exact_terms_in_the_demo_corpus_rank_their_document_first(
     tenant_a: Tenant, worker: WorkerHarness, provider: FixedQueryProvider, query: str, expected: str
 ) -> None:
+    if not DEMO_STORE.is_dir():
+        pytest.skip("sample_data/ is outside the backend image (runs on the host and in CI)")
+    assert len(list(DEMO_STORE.glob("*.md"))) == 5
     for path in sorted(DEMO_STORE.glob("*.md")):
         response = tenant_a.client.post(
             "/api/v1/sources/files", files={"file": (path.name, path.read_bytes())}
