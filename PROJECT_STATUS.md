@@ -2,8 +2,8 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M6 — Hybrid retrieval and RRF** (IN_PROGRESS) |
-| Status | C1 file-only cleanup **APPROVED** (owner authorised closeout on passing checks, 2026-11-03). M6 work proceeds in small pushed steps |
+| Current milestone | **M6 — Hybrid retrieval and RRF** |
+| Status | **READY_FOR_REVIEW**: checks pass, live retrieval review PASS (7/7 known queries in both modes), pushed to `main`; awaiting `APPROVE MILESTONE 6`. C1 approved. M7 not started |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -20,10 +20,71 @@
 | M4 | File ingestion and durable worker | APPROVED_AND_MERGED | `8af4b01` | `APPROVE MILESTONE 4`, 2026-11-02 |
 | M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
-| M6 | Hybrid retrieval and RRF | IN_PROGRESS | — | — |
+| M6 | Hybrid retrieval and RRF | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 6` |
 | M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
+
+## M6 checklist (SPEC.md §17.11)
+
+Design and rationale: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md).
+
+- [x] Workspace-scoped vector search (pgvector `<=>`, top 10, same embedding model only, tenancy guard plus explicit filters)
+- [x] PostgreSQL full-text search (`websearch_to_tsquery('simple')`, `ts_rank_cd`; not BM25)
+- [x] Vector-only retrieval mode
+- [x] Hybrid retrieval mode
+- [x] RRF with configurable `k` (`RRF_K`, default 60), on ranks only
+- [x] Deduplicated by chunk id
+- [x] Deterministic source and chunk metadata and ranks (exact ties ordered by chunk id)
+- [x] Query contextualization for short follow-ups (one previous question, capped at 2,000 characters, no Gemini call)
+- [x] Retrieval traces (`query_traces`, migration `0007`), with `GET /retrieval/traces/{id}`
+- [x] Tests: vector search, exact-term lexical search, RRF, workspace isolation, empty results
+- [x] SQL query plans and indexes checked on the demo corpus
+
+## M6 acceptance evidence (2026-11-03)
+
+| Criterion | Command | Result |
+|---|---|---|
+| Known questions retrieve expected source chunks | Live: 5 demo documents indexed with real Gemini; 6 known questions plus 1 follow-up, each in both modes | **PASS: 7/7 expected document ranked first in vector mode and in hybrid mode** (details below) |
+| Exact product and policy terms found lexically | Tests on the real demo corpus through the upload pipeline (`RMA number`, `NorthCare Plus`, `"Summit 2P"`, `express shipping`, `gift cards expire`); live "NorthCare Plus" and "gift cards expire" | PASS: matching document first, with `lexical_rank` 1 |
+| Vector-only and hybrid separately observable | Every result shows `vector_rank`/`vector_distance` and `lexical_rank`/`lexical_score`; one trace per search with all candidates | PASS |
+| RRF tests pass; no cross-workspace chunk | Unit tests of the exact formula, ordering, deduplication, missing lists, and limits; integration tests of isolation in both searches, the API, and traces, plus a fail-closed unbound session | PASS |
+| Query plans and indexes | `EXPLAIN` on the demo corpus | PASS: the workspace B-tree index, then an exact sort (best for small per-workspace corpora); with sequential scans off, HNSW (`ix_chunks_embedding_hnsw`) serves `ORDER BY <=>` and GIN (`ix_chunks_search_tsv`) serves `@@` |
+| Full suite on host | `uv run pytest` against throwaway pgvector | **PASS: 543 passed, 0 skipped** (324 unit, 219 integration; 54 new in M6) |
+| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 535 passed, 8 skipped (`.env.example` and `sample_data/` are outside the image; they run on host and CI) |
+| Lint / format / strict types / lock / migrations | `ruff`, `mypy` (strict, 96 files), `uv lock --check`, `alembic check`, `0007` up/down/up | PASS |
+| Mutation check | 12 protections broken one at a time | 11 caught. The 12th (a "best rank" tie-break) could never change an order, so it was removed |
+| Your data | Fingerprints vs the pre-cleanup backup after 0007 and after the live review | Identical; uploaded file bytes unchanged |
+
+### Live retrieval review (real Gemini, temporary random account, removed afterwards)
+
+| Question | Expected | Vector top 1 (distance) | Hybrid top 1 (RRF) |
+|---|---|---|---|
+| Can I return a laptop after 20 days? | returns-policy | returns-policy (0.303) | returns-policy (0.0164) |
+| How long is the warranty on a tent? | warranty-policy | warranty-policy (0.272) | warranty-policy |
+| How much does express shipping cost? | shipping-policy | shipping-policy (0.304) | shipping-policy |
+| What is NorthCare Plus? | warranty-policy | warranty-policy (0.365) | warranty-policy (0.0328: vector 1 + lexical 1) |
+| How heavy is the Summit 2P? | product-guide | product-guide (0.325) | product-guide |
+| Do gift cards expire? | support-faq | support-faq (0.351) | support-faq (0.0328: vector 1 + lexical 1) |
+| "And the warranty?" after "How long do I have to return a Trailblazer 14 laptop?" | warranty-policy | warranty-policy, contextualized | warranty-policy, contextualized |
+
+- **Searches:** about 0.5 s each. 14 traces were written, and all were removed with the temporary workspace.
+- **Gemini:** 19 calls for the whole review (5 documents and 14 queries).
+- **Logs:** no key, query text, or document text.
+
+### Problems found and fixed during M6
+
+1. **Demo-corpus tests failed inside the container,** because `sample_data/` is outside the backend image. They now skip there, like the `.env.example` tests, and run on the host and in CI.
+2. **An unreachable RRF tie-break** found by mutation testing was removed (see ADR 0009).
+3. **One test expectation was wrong, not the code.** RRF correctly ranked vector 3 + lexical 1 (0.032266) above vector 2 + lexical 2 (0.032258), and the test was rewritten.
+
+### Decision needed (owner)
+
+**Lexical recall for natural questions is low:** `websearch_to_tsquery` ANDs every word, and the `simple` configuration keeps stop-words. The lexical list contributed to only 2 of the 7 live questions (those with exact terms). Hybrid was never worse than vector, but for most natural questions it equals vector. SPEC.md §9.3 mandates the current query, so I didn't change it. The options are in ADR 0009: OR the terms; use the `english` configuration (needs a migration); or keep it and measure in M9.
+
+### Manual review steps (owner)
+
+README → "Search your documents (curl)". Run at least five known queries in both modes and compare the ranks, scores, and filenames with the table above. Then open a trace with `GET /retrieval/traces/<trace_id>`.
 
 ## C1 — File-only cleanup (2026-11-03)
 
@@ -131,7 +192,14 @@ up to `2b8513e`.
 | C1 | `a4e7c67` | fix(queue): use the database clock when recovering stale jobs |
 | C1 | `217fb4b` | feat(db): migration 0006 retires website crawling; file is the only source kind |
 | C1 | `8732483` | docs: file-upload-only scope (ADR 0008); update SPEC, README, architecture, status |
-| C1 | see `git log` | docs: close out C1 (verification results; approved) |
+| C1 | `9ac9993` | docs: close out C1 (verification results; approved) |
+| M6 | `5cd3f2a` | feat(sample-data): add the fictional Northstar Outfitters demo documents |
+| M6 | `1f4058b` | feat(retrieval): add Reciprocal Rank Fusion and follow-up query contextualization |
+| M6 | `51a3244` | feat(retrieval): add workspace-scoped vector and full-text search |
+| M6 | `810e410` | feat(db): add query_traces for retrieval runs (migration 0007) |
+| M6 | `4fd98a5` | feat(retrieval): add the retrieval service and POST /retrieval/search |
+| M6 | `066b081` | refactor(retrieval): break RRF ties by chunk id only |
+| M6 | see `git log` | docs: document hybrid retrieval (ADR 0009) and record Milestone 6 results |
 
 ## Blockers
 
@@ -146,6 +214,14 @@ None.
   - [ADR 0005](docs/decisions/0005-m3-gemini-provider.md) (M3);
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
   - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
+- Implementation: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md) (M6):
+  - two separate retrieval modes;
+  - RRF on ranks only;
+  - a double workspace barrier;
+  - one embedding model per comparison;
+  - HNSW iterative scans;
+  - a daily search limit per workspace (`DAILY_RETRIEVAL_REQUEST_LIMIT`, an addition to §2.5);
+  - query embeddings outside the document budget.
 - Owner: [ADR 0008](docs/decisions/0008-file-upload-only-scope.md) (2026-11-03):
   - the product is file-upload-only and M5 is descoped;
   - the website endpoints are removed (404);
@@ -164,7 +240,9 @@ None.
 - **Deleting a source also removes its job history.**
 - **`pypdf` runs inside the worker process,** with no separate sandbox.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
-- The M2 session guard covers ORM statements only; M6's raw pgvector SQL must filter `workspace_id` explicitly.
+- **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`; decision pending, see M6 above).
+- **Retrieval has no relevance threshold:** an unanswerable question still returns the nearest chunks. Abstention arrives with chat in M7.
+- **Small demo corpus:** each document is 1–2 chunks, so retrieval is checked at document level. Chunk-size tuning and recall metrics come in M9.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
 - Frontend and the CI frontend job: M8.
 - `uv` isn't installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6.

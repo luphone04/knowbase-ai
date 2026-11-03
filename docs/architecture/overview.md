@@ -4,20 +4,22 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 
 **Implemented (file-upload-only scope, [ADR 0008](../decisions/0008-file-upload-only-scope.md)):**
 - `db`, `migrate`, `api`, and `worker` (no frontend yet).
-- The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*` (file sources), and `/api/v1/jobs/{id}`.
+- The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*` (file sources), `/api/v1/jobs/{id}`, and `/api/v1/retrieval/*` (M6).
+- Retrieval (M6): workspace-scoped pgvector search and PostgreSQL full-text search, fused with RRF, with a trace per search ("Retrieval" below).
 - The worker processes file ingestion and deletion jobs from the PostgreSQL queue, dispatching by source kind (`file` is the only kind).
 - Authentication and workspace isolation ("Request flow").
 - The Gemini provider layer ("AI provider layer"). Ingestion uses it for document embeddings.
 - File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
 - Website crawling was built in M5 and removed by owner decision (M5 is descoped). The server never fetches user-supplied URLs.
 
-**Planned:** retrieval and RRF (M6), chat (M7), frontend (M8), and evaluation (M9). See
+**Planned:** chat (M7), frontend (M8), and evaluation (M9). See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
 [ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
 [ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3),
 [ADR 0006](../decisions/0006-m4-file-ingestion.md) (M4),
 [ADR 0007](../decisions/0007-m5-website-crawler.md) (M5, superseded), and
-[ADR 0008](../decisions/0008-file-upload-only-scope.md) (file-upload-only scope).
+[ADR 0008](../decisions/0008-file-upload-only-scope.md) (file-upload-only scope), and
+[ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval).
 
 ## Request flow (authenticated API call)
 
@@ -126,6 +128,31 @@ sequenceDiagram
 | Failed replacement | Old chunks untouched until a single publish transaction; any failure rolls back |
 | Free-tier protection | Installation-wide daily text budget, reserved atomically; cached texts never count |
 | Tenant isolation | Composite `(workspace_id, …)` foreign keys plus the session guard; claim and recovery are the only explicit cross-workspace statements |
+
+## Retrieval (M6)
+
+```mermaid
+flowchart LR
+    Q["POST /retrieval/search<br/>query, mode, previous_question"] --> L["daily limit<br/>per workspace"]
+    L --> C["contextualize follow-up<br/>(previous + current, no LLM)"]
+    C --> E["Gemini RETRIEVAL_QUERY<br/>embedding (1 request)"]
+    E --> V["vector search<br/>cosine &lt;=&gt;, top 10<br/>same embedding model"]
+    C --> X["full-text search (hybrid)<br/>websearch_to_tsquery('simple')<br/>ts_rank_cd, top 10"]
+    V --> F["RRF k=60<br/>ranks only, dedupe by chunk"]
+    X --> F
+    V -->|"vector mode"| T["top 5 + metadata"]
+    F -->|"hybrid mode"| T
+    T --> TR[("query_traces")]
+```
+
+| Concern | Mechanism |
+|---|---|
+| Cross-workspace results | Tenancy guard on the ORM statements **and** explicit `workspace_id` filters on chunks, documents, and sources; an unbound session fails closed |
+| Mixing embedding models | Vector search compares only chunks with the configured `embedding_model` |
+| Score scales | RRF combines ranks only; raw distances and `ts_rank_cd` are reported, never added |
+| Filtered ANN under-returning | `hnsw.iterative_scan = strict_order` |
+| Gemini cost | `DAILY_RETRIEVAL_REQUEST_LIMIT` reserved before the query embedding; clear 429/503 on provider errors |
+| Observability | One trace per search: candidates with ranks and raw scores, fused scores, settings, latency |
 
 ## AI provider layer (M3)
 

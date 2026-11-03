@@ -13,8 +13,10 @@ This is a well-engineered prototype for local demos, not production software.
 > and upload PDF, DOCX, TXT, and Markdown files. The worker indexes them into
 > pgvector with Gemini embeddings, and content that hasn't changed isn't
 > embedded again. Website crawling (Milestone 5) was built and then removed;
-> it is descoped. Retrieval (M6) and chat (M7) are not built yet. See
-> [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
+> it is descoped. **Milestone 6 (hybrid retrieval)** is implemented and awaiting
+> review: you can search your documents in vector-only or hybrid mode and
+> inspect ranks, scores, and traces. Chat with answers (M7) is not built yet.
+> See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
 
@@ -166,6 +168,41 @@ docker compose start worker     # it is picked up; jobs left 'running' by a dead
                                 # worker are recovered once their 120 s lease lapses
 docker compose logs -f worker   # ids, counts, and timings only, never document text
 ```
+
+## Search your documents (curl)
+
+Retrieval is inspectable before chat exists. Upload the fictional demo
+documents in [`sample_data/demo_store/`](sample_data/README.md), then search.
+Each search makes one Gemini request, to embed the query. Searches are limited
+per workspace per day (`DAILY_RETRIEVAL_REQUEST_LIMIT`, 100).
+
+```bash
+API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
+O='Origin: http://localhost:3000'; J='Content-Type: application/json'
+
+# 1. Index the demo corpus (wait for each job to succeed)
+for f in sample_data/demo_store/*.md; do curl -s -b alice.jar -H "$O" -F "file=@$f" $API/sources/files; echo; done
+
+# 2. Hybrid (vector + full-text, fused with RRF) or vector-only
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
+  -d '{"query": "Can I return a laptop after 20 days?", "mode": "hybrid"}'
+#    -> results[]: rank, score (RRF), vector_rank/vector_distance, lexical_rank/lexical_score,
+#       filename, document_title, heading, page_start, content; plus trace_id and latency_ms
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
+  -d '{"query": "What is NorthCare Plus?", "mode": "vector"}'
+
+# 3. A follow-up borrows the previous question (no extra Gemini call)
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
+  -d '{"query": "And the warranty?", "previous_question": "How long do I have to return a Trailblazer 14 laptop?"}'
+#    -> "contextualized": true, "retrieval_query": "How long ... laptop? And the warranty?"
+
+# 4. The stored trace: every candidate's rank and raw score, the fused scores, timing
+curl -s -b alice.jar $API/retrieval/traces/<trace-id>
+```
+
+Lexical scores come from PostgreSQL `ts_rank_cd`, which is not BM25. Fusion uses
+ranks only (`1/(60 + rank)` per list), never the raw scores. Details:
+[ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md).
 
 ## Gemini (AI provider)
 
