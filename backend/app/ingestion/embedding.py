@@ -105,6 +105,7 @@ def embed_document_texts(
     budget: EmbeddingBudget,
     provider_factory: Callable[[], EmbeddingProvider],
     checkpoint: Callable[[], None] = lambda: None,
+    source_id: uuid.UUID | None = None,
 ) -> EmbeddingOutcome:
     """Return a vector for every distinct text, calling Gemini only for uncached ones.
 
@@ -149,6 +150,7 @@ def embed_document_texts(
         rows: list[dict[str, Any]] = [
             {
                 "workspace_id": workspace_id,
+                "source_id": source_id,  # provenance: deleting this source cleans it up
                 "content_hash": content_hash,
                 "model": model,
                 "dimensions": dimensions,

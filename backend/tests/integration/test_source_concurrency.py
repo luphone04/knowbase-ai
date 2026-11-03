@@ -1,4 +1,4 @@
-"""Uploads, deletes, recovery, and workers racing on one source (audit M1-M3, C-11, C-12, C-15).
+"""Uploads, deletes, recovery, and workers racing on one source (audit M1-M4, C-11, C-12, C-15).
 
 Races are made deterministic by holding a real PostgreSQL row lock in the
 test while a request runs in another thread, or by interleaving claims and
@@ -191,6 +191,24 @@ def test_an_older_upload_is_never_published_over_a_newer_one(
     assert status_of(source_id) == "ready"
     assert all("NorthCare" in chunk for chunk in chunk_texts(source_id))
     assert not storage().exists(stale.storage_key or "")
+
+
+# --- M4: cache provenance ------------------------------------------------------------------------
+
+
+def test_deleting_a_source_removes_cache_rows_of_its_older_versions(
+    tenant_a: Tenant, worker: WorkerHarness
+) -> None:
+    source_id = upload(tenant_a, "returns.md", RETURNS_POLICY.encode())["source"]["id"]
+    worker.run_all()
+    upload(tenant_a, "returns.md", WARRANTY)
+    worker.run_all()
+    owned = sql("SELECT count(*) AS n FROM embedding_cache WHERE source_id = :s", s=source_id)
+    assert owned[0].n > len(chunk_texts(source_id))  # includes version 1's unused vectors
+
+    tenant_a.client.delete(f"/api/v1/sources/{source_id}")
+    worker.run_all()
+    assert sql("SELECT count(*) AS n FROM embedding_cache")[0].n == 0
 
 
 # --- recovery and failure edge cases (C-11, C-12, C-15) -------------------------------------

@@ -328,8 +328,15 @@ class EmbeddingCacheEntry(WorkspaceScoped, Base):
     """
 
     __tablename__ = "embedding_cache"
-    __table_args__ = (PrimaryKeyConstraint("workspace_id", "content_hash", "model", "dimensions"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("workspace_id", "content_hash", "model", "dimensions"),
+        Index("ix_embedding_cache_workspace_source", "workspace_id", "source_id"),
+    )
 
+    # The source whose job first embedded this text (provenance, not ownership:
+    # other sources may reuse the row). Deleting that source removes the row
+    # once no chunk uses it. NULL for rows created before migration 0008.
+    source_id: Mapped[uuid.UUID | None]
     content_hash: Mapped[str] = mapped_column(Text)
     model: Mapped[str] = mapped_column(Text)
     dimensions: Mapped[int]

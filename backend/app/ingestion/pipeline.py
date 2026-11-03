@@ -33,7 +33,7 @@ from pathlib import PurePosixPath
 from types import TracebackType
 from typing import Any
 
-from sqlalchemy import ColumnElement, Engine, delete, exists, func, insert, select
+from sqlalchemy import ColumnElement, Engine, delete, exists, func, insert, or_, select
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -483,6 +483,7 @@ class IngestionWorker:
             budget=self.budget,
             provider_factory=self._provider_factory,
             checkpoint=self._run.checkpoint,
+            source_id=job.source_id,
         )
         self._run.checkpoint()
         return self._publish(
@@ -652,16 +653,22 @@ class IngestionWorker:
             )
             # Cascades to documents, chunks, and this source's jobs (this one included).
             db.execute(delete(Source).where(Source.id == source.id))
-            if hashes:
-                still_used = exists().where(
-                    Chunk.content_hash == EmbeddingCacheEntry.content_hash,
-                    Chunk.workspace_id == EmbeddingCacheEntry.workspace_id,
+            # Cached vectors no chunk uses any more: those of the current chunks, and
+            # every row this source created (earlier versions, unpublished batches).
+            # A vector another document still uses is kept.
+            still_used = exists().where(
+                Chunk.content_hash == EmbeddingCacheEntry.content_hash,
+                Chunk.workspace_id == EmbeddingCacheEntry.workspace_id,
+            )
+            db.execute(
+                delete(EmbeddingCacheEntry).where(
+                    or_(
+                        EmbeddingCacheEntry.content_hash.in_(hashes),
+                        EmbeddingCacheEntry.source_id == source.id,
+                    ),
+                    ~still_used,
                 )
-                db.execute(
-                    delete(EmbeddingCacheEntry).where(
-                        EmbeddingCacheEntry.content_hash.in_(hashes), ~still_used
-                    )
-                )
+            )
             db.commit()
         if not self._storage.delete_source(job.workspace_id, job.source_id):
             logger.error("Source %s deleted, but some stored files remain", job.source_id)
