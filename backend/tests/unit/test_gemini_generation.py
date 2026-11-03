@@ -1,11 +1,17 @@
 """GeminiGenerationProvider against a scripted SDK client (no network)."""
 
+import base64
 import logging
 
+import httpx
 import pytest
+from google import genai
 from google.genai import types
 
 from app.providers.errors import IncompleteGeneration
+from app.providers.gemini import GeminiCalls, GeminiGenerationProvider
+from app.providers.health import ProviderHealth
+from app.providers.retry import RetryPolicy
 from tests.fakes.gemini import generation_response, make_harness
 
 PROMPT = "PRIVATE-PROMPT-TEXT: summarise the returns policy"
@@ -168,3 +174,39 @@ def test_logs_have_usage_and_latency_but_never_the_prompt(caplog: pytest.LogCapt
     assert "total_tokens=12" in logged
     for private in ("PRIVATE-PROMPT-TEXT", "PRIVATE-SYSTEM-INSTRUCTION", "Answer text here"):
         assert private not in logged
+
+
+def test_one_generate_call_is_exactly_one_http_request() -> None:
+    """The real SDK over a mock transport: no hidden continuation requests."""
+    requests: list[httpx.Request] = []
+
+    def gemini(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        candidate: dict[str, object] = {
+            "content": {"role": "model", "parts": [{"text": "part "}]},
+            "finishReason": "STOP",
+        }
+        if len(requests) < 4:  # bounded, so a continuing client ends instead of looping
+            candidate["finishReason"] = "CONTINUATION"
+            candidate["continuationToken"] = base64.b64encode(b"resume-here").decode()
+        return httpx.Response(200, json={"candidates": [candidate]})
+
+    client = genai.Client(
+        api_key="test-gemini-key-not-real",
+        vertexai=False,
+        http_options=types.HttpOptions(
+            httpx_client=httpx.Client(transport=httpx.MockTransport(gemini)),
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+    provider = GeminiGenerationProvider(
+        client,
+        model="gemini-3.8-flash",
+        thinking_level="low",
+        max_output_tokens=1200,
+        calls=GeminiCalls(RetryPolicy(max_retries=0), health=ProviderHealth()),
+    )
+    with pytest.raises(IncompleteGeneration) as excinfo:
+        provider.generate(PROMPT)
+    assert excinfo.value.finish_reason == "CONTINUATION"
+    assert len(requests) == 1

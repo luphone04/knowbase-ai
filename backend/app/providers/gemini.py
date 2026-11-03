@@ -275,6 +275,10 @@ class GeminiGenerationProvider:
             # One request per call: the SDK's automatic function calling could make
             # extra model calls if tools were ever attached.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            # The SDK would otherwise resend the request (each a billed, quota-counted
+            # call) while the model returns a continuation token. A cut-off answer
+            # is reported as incomplete instead.
+            automatic_continuation=False,
         )
         started = time.perf_counter()
         response, attempts = self._calls.run(
