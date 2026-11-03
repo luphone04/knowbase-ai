@@ -156,3 +156,45 @@ def test_unknown_type_is_rejected() -> None:
 def test_pdf_heading_heuristic_is_conservative(lines: list[str], expected_kinds: list[str]) -> None:
     parsed = parse_document("pdf", make_pdf([lines]))
     assert [b.kind for b in parsed.blocks] == expected_kinds
+
+
+# --- Markdown headings: correctness and linear time (audit H1) ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("# Returns", (1, "Returns")),
+        ("###### Six", (6, "Six")),
+        ("## Closing hashes ##", (2, "Closing hashes")),
+        ("# Trailing spaces   ", (1, "Trailing spaces")),
+        ("# C#", (1, "C#")),  # "#" not preceded by a space is part of the text
+        ("#\tTab separated", (1, "Tab separated")),
+        ("#NoSpace", None),
+        ("####### Seven", None),
+        (" # Indented", None),
+        ("# #", None),  # only a closing sequence: an empty heading
+        ("#    ", None),
+    ],
+)
+def test_markdown_heading_rules(line: str, expected: tuple[int, str] | None) -> None:
+    from app.ingestion.parsers import _markdown_heading
+
+    assert _markdown_heading(line) == expected
+
+
+@pytest.mark.parametrize("spaces", [1_000, 20_000, 500_000])
+def test_markdown_heading_parsing_is_linear_on_hostile_lines(spaces: int) -> None:
+    """A heading with a long whitespace run was cubic: 20,000 spaces took ~3 hours."""
+    import time
+
+    hostile = ("# a" + " " * spaces + "b\n").encode()
+    started = time.perf_counter()
+    parsed = parse_document("md", hostile * 5)
+    assert time.perf_counter() - started < 2.0
+    assert parsed.blocks  # still parsed (as paragraphs: too long to be headings)
+
+
+def test_overlong_heading_lines_are_paragraphs() -> None:
+    parsed = parse_document("md", ("# " + "word " * 300).encode())
+    assert [b.kind for b in parsed.blocks] == ["paragraph"]

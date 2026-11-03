@@ -20,7 +20,11 @@ from pypdf import PdfReader
 BlockKind = Literal["heading", "paragraph", "table"]
 
 _MAX_META_LENGTH = 200
-_MARKDOWN_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+# Linear time: "[ \t]+" then "\S" can split a line only one way, so there is no
+# backtracking. (The earlier "(.+?)\s*#*\s*$" was cubic on long runs of spaces.)
+_MARKDOWN_HEADING = re.compile(r"(#{1,6})[ \t]+(\S.*)")
+# Longer lines are never headings; they are read as paragraph text.
+MAX_HEADING_LINE_CHARS = 1000
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _SENTENCE_END = (".", ":", ";", ",", "!", "?", "-")
 _CONTINUATION_WORDS = frozenset(
@@ -72,6 +76,24 @@ class ParsedDocument:
     title: str | None
     blocks: list[Block]
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _markdown_heading(line: str) -> tuple[int, str] | None:
+    """(level, text) for an ATX heading line, else None.
+
+    An optional closing sequence of "#" is dropped when it is preceded by a
+    space, as in CommonMark: "# Title ##" gives "Title", "# C#" stays "C#".
+    """
+    if not line.startswith("#") or len(line) > MAX_HEADING_LINE_CHARS:
+        return None
+    match = _MARKDOWN_HEADING.match(line)
+    if match is None:
+        return None
+    text = match.group(2).rstrip()
+    without_closing = text.rstrip("#")
+    if without_closing != text and (not without_closing or without_closing[-1] in " \t"):
+        text = without_closing.rstrip()
+    return (len(match.group(1)), text) if text else None
 
 
 def _short(value: object) -> str | None:
@@ -276,10 +298,10 @@ def _parse_text(data: bytes, *, markdown: bool) -> ParsedDocument:
         if in_fence:
             paragraph.append(line)
             continue
-        heading = _MARKDOWN_HEADING.match(line) if markdown else None
+        heading = _markdown_heading(line) if markdown else None
         if heading:
             flush()
-            blocks.append(Block("heading", heading.group(2), level=len(heading.group(1))))
+            blocks.append(Block("heading", heading[1], level=heading[0]))
         elif not line.strip():
             flush()
         else:
