@@ -41,6 +41,7 @@ SOURCE_STATUSES = ("pending", "processing", "ready", "failed", "deleting")
 FILE_TYPES = ("pdf", "docx", "txt", "md")
 JOB_TYPES = ("ingest", "reindex", "delete")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed")
+RETRIEVAL_MODES = ("vector", "hybrid")
 
 
 def _sql_in(column: str, values: tuple[str, ...]) -> str:
@@ -333,4 +334,35 @@ class EmbeddingCacheEntry(WorkspaceScoped, Base):
     model: Mapped[str] = mapped_column(Text)
     dimensions: Mapped[int]
     embedding: Mapped[Any] = mapped_column(Vector(SCHEMA_EMBEDDING_DIMENSIONS))
+    created_at: Mapped[datetime] = _created_at()
+
+
+# --- retrieval (Milestone 6) --------------------------------------------------------------
+
+
+class QueryTrace(WorkspaceScoped, Base):
+    """One retrieval run: the query, what came back, the ranks and scores, and timing.
+
+    Written for every search (SPEC.md §6.1 `query_traces`). Conversation and
+    message ids are filled in by chat (M7), which adds their foreign keys.
+    """
+
+    __tablename__ = "query_traces"
+    __table_args__ = (
+        CheckConstraint(_sql_in("retrieval_mode", RETRIEVAL_MODES), name="retrieval_mode"),
+        CheckConstraint("latency_ms >= 0", name="latency_ms"),
+        Index("ix_query_traces_workspace_created", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID | None]
+    message_id: Mapped[uuid.UUID | None]
+    retrieval_mode: Mapped[str] = mapped_column(Text)
+    # The text actually retrieved with (a follow-up includes the previous question).
+    query_text: Mapped[str] = mapped_column(Text)
+    retrieved_chunk_ids: Mapped[list[str]] = mapped_column(JSONB)
+    # Per-list ranks and raw scores, the fused scores, and the settings used.
+    retrieval_scores: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    latency_ms: Mapped[int]
+    token_usage: Mapped[dict[str, Any]] = _jsonb()
     created_at: Mapped[datetime] = _created_at()

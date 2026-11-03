@@ -77,6 +77,7 @@ def test_auth_schema_constraints(scratch_engine: Engine, alembic_config: Config)
             "chunks",
             "ingestion_jobs",
             "embedding_cache",
+            "query_traces",
         }
         assert schema.get_pk_constraint("workspace_members")["constrained_columns"] == [
             "workspace_id",
@@ -255,6 +256,12 @@ def _seed(connection: Connection) -> None:
             f"VALUES ('{WS_A}', 'website', 'https://example.com/')",
             "ck_sources_kind",
         ),
+        (
+            f"INSERT INTO query_traces (workspace_id, retrieval_mode, query_text, "
+            f"retrieved_chunk_ids, retrieval_scores, latency_ms) "
+            f"VALUES ('{WS_A}', 'bm25', 'q', '[]', '{{}}', 1)",
+            "ck_query_traces_retrieval_mode",
+        ),
     ],
     ids=[
         "chunk-into-other-workspace",
@@ -265,6 +272,7 @@ def _seed(connection: Connection) -> None:
         "second-waiting-job",
         "unknown-status",
         "website-kind-retired",
+        "unknown-retrieval-mode",
     ],
 )
 def test_database_enforces_ingestion_integrity(
