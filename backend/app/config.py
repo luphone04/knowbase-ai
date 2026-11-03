@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     max_upload_mb: int = Field(default=10, gt=0, le=100)
     # Extracted text below this length is rejected (e.g. scanned PDFs without OCR).
     min_document_chars: int = Field(default=50, ge=1)
+    # Resource limits for untrusted documents (checked while parsing, not after).
+    max_pdf_pages: int = Field(default=500, ge=1, le=10_000)
+    max_document_chars: int = Field(default=2_000_000, ge=10_000, le=50_000_000)
+    max_document_chunks: int = Field(default=1500, ge=1, le=100_000)
     chunk_target_chars: int = Field(default=1800, ge=200)
     chunk_max_chars: int = Field(default=2400, ge=200)
     chunk_overlap_chars: int = Field(default=250, ge=0)

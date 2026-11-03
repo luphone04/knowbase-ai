@@ -71,6 +71,29 @@ class Block:
     level: int | None = None
 
 
+@dataclass(frozen=True)
+class ParseLimits:
+    """Resource limits for untrusted documents (audit H2).
+
+    A few KB of compressed PDF or DOCX can expand to millions of characters, so
+    the limits apply to what the parser produces, not to the upload size, and
+    they are checked while parsing, before the text is all in memory.
+    """
+
+    max_pdf_pages: int = 500
+    max_chars: int = 2_000_000
+
+
+DEFAULT_LIMITS = ParseLimits()
+
+
+def _too_much_text(limits: ParseLimits) -> UnsupportedDocument:
+    return UnsupportedDocument(
+        f"The document has more than {limits.max_chars:,} characters of text, the limit "
+        "for one file (MAX_DOCUMENT_CHARS). Split it into smaller files."
+    )
+
+
 @dataclass
 class ParsedDocument:
     title: str | None
@@ -101,13 +124,15 @@ def _short(value: object) -> str | None:
     return text[:_MAX_META_LENGTH] or None
 
 
-def parse_document(file_type: str, data: bytes) -> ParsedDocument:
+def parse_document(
+    file_type: str, data: bytes, limits: ParseLimits = DEFAULT_LIMITS
+) -> ParsedDocument:
     if file_type == "pdf":
-        return _parse_pdf(data)
+        return _parse_pdf(data, limits)
     if file_type == "docx":
-        return _parse_docx(data)
+        return _parse_docx(data, limits)
     if file_type in ("txt", "md"):
-        return _parse_text(data, markdown=file_type == "md")
+        return _parse_text(data, limits, markdown=file_type == "md")
     raise UnsupportedDocument(f"Unsupported file type: {file_type}.")
 
 
@@ -156,7 +181,7 @@ def _pdf_page_blocks(text: str, page: int) -> list[Block]:
     return blocks
 
 
-def _parse_pdf(data: bytes) -> ParsedDocument:
+def _parse_pdf(data: bytes, limits: ParseLimits) -> ParsedDocument:
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted and not reader.decrypt(""):
@@ -166,8 +191,14 @@ def _parse_pdf(data: bytes) -> ParsedDocument:
         raise
     except Exception as exc:  # untrusted input: any parser failure means "can't read"
         raise UnsupportedDocument("The PDF could not be read; it may be damaged.") from exc
+    if page_count > limits.max_pdf_pages:
+        raise UnsupportedDocument(
+            f"The PDF has {page_count:,} pages; the limit is {limits.max_pdf_pages:,} "
+            "(MAX_PDF_PAGES). Split it into smaller files."
+        )
 
     blocks: list[Block] = []
+    characters = 0
     empty_pages: list[int] = []
     unreadable_pages: list[int] = []
     for number in range(1, page_count + 1):
@@ -176,6 +207,9 @@ def _parse_pdf(data: bytes) -> ParsedDocument:
         except Exception:
             unreadable_pages.append(number)
             continue
+        characters += len(text)
+        if characters > limits.max_chars:  # checked per page: pages can share one huge stream
+            raise _too_much_text(limits)
         page_blocks = _pdf_page_blocks(text, number)
         if not page_blocks:
             empty_pages.append(number)
@@ -220,7 +254,7 @@ def _table_text(table: Table) -> str:
     return "\n".join(rows)
 
 
-def _parse_docx(data: bytes) -> ParsedDocument:
+def _parse_docx(data: bytes, limits: ParseLimits) -> ParsedDocument:
     try:
         document = docx.Document(io.BytesIO(data))
     except Exception as exc:
@@ -230,9 +264,11 @@ def _parse_docx(data: bytes) -> ParsedDocument:
 
     blocks: list[Block] = []
     title_style: str | None = None
-    paragraphs = tables = 0
+    paragraphs = tables = characters = 0
     try:
         for child in document.element.body.iterchildren():
+            if characters > limits.max_chars:
+                raise _too_much_text(limits)
             tag = child.tag.rsplit("}", 1)[-1]
             if tag == "p":
                 paragraph = Paragraph(child, document)
@@ -242,6 +278,7 @@ def _parse_docx(data: bytes) -> ParsedDocument:
                 level = _heading_level(paragraph.style.name if paragraph.style else "")
                 if level == 0 and title_style is None:
                     title_style = text
+                characters += len(text)
                 if level is None:
                     paragraphs += 1
                     blocks.append(Block("paragraph", text))
@@ -251,9 +288,14 @@ def _parse_docx(data: bytes) -> ParsedDocument:
                 text = _table_text(Table(child, document))
                 if text:
                     tables += 1
+                    characters += len(text)
                     blocks.append(Block("table", text))
+        if characters > limits.max_chars:
+            raise _too_much_text(limits)
         core_title = _short(document.core_properties.title)
         author = _short(document.core_properties.author)
+    except UnsupportedDocument:
+        raise
     except Exception as exc:
         raise UnsupportedDocument(
             "The Word document could not be read; it may be damaged."
@@ -270,13 +312,15 @@ def _parse_docx(data: bytes) -> ParsedDocument:
 # --- TXT / Markdown ------------------------------------------------------------------
 
 
-def _parse_text(data: bytes, *, markdown: bool) -> ParsedDocument:
+def _parse_text(data: bytes, limits: ParseLimits, *, markdown: bool) -> ParsedDocument:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise UnsupportedDocument(
             f"The file is not valid UTF-8 text (invalid byte at position {exc.start})."
         ) from exc
+    if len(text) > limits.max_chars:
+        raise _too_much_text(limits)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
     blocks: list[Block] = []

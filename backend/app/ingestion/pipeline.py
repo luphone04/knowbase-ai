@@ -50,7 +50,7 @@ from app.ingestion.embedding import (
     EmbeddingOutcome,
     embed_document_texts,
 )
-from app.ingestion.parsers import UnsupportedDocument, parse_document
+from app.ingestion.parsers import ParseLimits, UnsupportedDocument, parse_document
 from app.ingestion.storage import FileStorage, StoredFileMissing
 from app.providers.errors import (
     InvalidProviderResponse,
@@ -178,6 +178,9 @@ class IngestionWorker:
             RateLimiter(engine, settings.app_secret_key.get_secret_value()),
             settings.daily_embedding_text_limit,
         )
+        self.parse_limits = ParseLimits(
+            max_pdf_pages=settings.max_pdf_pages, max_chars=settings.max_document_chars
+        )
         self.chunker = ChunkerConfig(
             target=settings.chunk_target_chars,
             maximum=settings.chunk_max_chars,
@@ -287,7 +290,7 @@ class IngestionWorker:
             db.commit()
 
         data = self._storage.read(key)
-        parsed = parse_document(file_type, data)
+        parsed = parse_document(file_type, data, self.parse_limits)
         clean = build_clean_document(
             parsed,
             file_type=file_type,
@@ -375,6 +378,12 @@ class IngestionWorker:
             return indexed
 
         drafts = chunk_document(clean, self.chunker)
+        if len(drafts) > self.settings.max_document_chunks:
+            raise PermanentJobError(
+                f"The document would make {len(drafts):,} chunks; the limit is "
+                f"{self.settings.max_document_chunks:,} (MAX_DOCUMENT_CHUNKS). "
+                "Split it into smaller files."
+            )
         texts_by_hash = {draft.content_hash: draft.content for draft in drafts}
         embeddings = embed_document_texts(
             lambda: self.session(job),

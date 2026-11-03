@@ -110,3 +110,55 @@ RETURNS_POLICY = (
     "If the outer packaging is damaged but the laptop is unused, the return is still accepted. "
     "Contact support with photos within 48 hours.\n"
 )
+
+
+def make_shared_stream_pdf(pages: int, chars_per_page: int) -> bytes:
+    """A tiny PDF whose pages all draw one compressed content stream (audit H2).
+
+    The file stays a few KB while every page extracts to about
+    `chars_per_page` characters: the decompression-amplification shape.
+    """
+    import zlib
+
+    op = b"BT /F1 12 Tf 10 10 Td (Lorem ipsum dolor sit amet) Tj ET\n"
+    content = zlib.compress(op * max(1, chars_per_page // 26), 9)
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids ["
+        + b" ".join(b"%d 0 R" % (5 + i) for i in range(pages))
+        + b"] /Count %d >>" % pages,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(content)
+        + content
+        + b"\nendstream",
+    ]
+    objects += [
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R"
+        b" /Resources << /Font << /F1 3 0 R >> >> >>"
+    ] * pages
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(b"%d 0 obj\n" % number + body + b"\nendobj\n")
+    xref = out.tell()
+    out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
+    for offset in offsets:
+        out.write(b"%010d 00000 n \n" % offset)
+    out.write(
+        b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    )
+    return out.getvalue()
+
+
+def set_zip_flags(data: bytes, flag_bits: int) -> bytes:
+    """Set general-purpose flag bits on every ZIP entry (0x1 = 'encrypted')."""
+    out = bytearray(data)
+    for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = 0
+        while (index := out.find(signature, start)) != -1:
+            flags = int.from_bytes(out[index + offset : index + offset + 2], "little")
+            out[index + offset : index + offset + 2] = (flags | flag_bits).to_bytes(2, "little")
+            start = index + 4
+    return bytes(out)

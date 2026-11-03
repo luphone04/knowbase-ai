@@ -138,3 +138,44 @@ def test_names_without_a_file_part_are_rejected(raw: str | None) -> None:
 def test_very_long_names_keep_their_extension() -> None:
     name = sanitize_filename("a" * 500 + ".pdf")
     assert len(name) == files.MAX_FILENAME_LENGTH and name.endswith(".pdf")
+
+
+# --- DOCX archive safety (audit H2, C-10) ----------------------------------------------------
+
+
+def _word_zip(document_xml: bytes) -> bytes:
+    return make_zip(
+        {
+            "[Content_Types].xml": b'<Types><Override ContentType="application/vnd.'
+            b'openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+            "word/document.xml": document_xml,
+        }
+    )
+
+
+def test_docx_main_part_is_capped_before_parsing() -> None:
+    oversized = _word_zip(b"<w:document>" + b"a" * (10 * MB + 1) + b"</w:document>")
+    assert len(oversized) < 100_000  # compresses tiny: the cap is on the unpacked size
+    assert reject("big.docx", oversized).code == "file_content_mismatch"
+    assert "main text part expands to more than 10 MB" in reject("big.docx", oversized).message
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        "encrypted",  # entries flagged as encrypted: zipfile raises RuntimeError
+        "bad-deflate",  # damaged compressed data: zlib.error
+    ],
+)
+def test_damaged_or_encrypted_docx_archives_are_422_not_500(corrupt: str) -> None:
+    from tests.fakes.documents import set_zip_flags
+
+    good = _word_zip(b"<w:document/>")
+    if corrupt == "encrypted":
+        data = set_zip_flags(good, 0x1)
+    else:
+        marker = good.index(b"[Content_Types].xml") + len("[Content_Types].xml")
+        data = good[:marker] + b"\xff" * 12 + good[marker + 12 :]
+    rejected = reject("broken.docx", data)
+    assert rejected.status_code == 422
+    assert "damaged or encrypted" in rejected.message or "damaged" in rejected.message

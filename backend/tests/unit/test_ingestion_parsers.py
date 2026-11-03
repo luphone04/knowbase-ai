@@ -190,7 +190,7 @@ def test_markdown_heading_parsing_is_linear_on_hostile_lines(spaces: int) -> Non
 
     hostile = ("# a" + " " * spaces + "b\n").encode()
     started = time.perf_counter()
-    parsed = parse_document("md", hostile * 5)
+    parsed = parse_document("md", hostile * 3)  # within MAX_DOCUMENT_CHARS
     assert time.perf_counter() - started < 2.0
     assert parsed.blocks  # still parsed (as paragraphs: too long to be headings)
 
@@ -198,3 +198,42 @@ def test_markdown_heading_parsing_is_linear_on_hostile_lines(spaces: int) -> Non
 def test_overlong_heading_lines_are_paragraphs() -> None:
     parsed = parse_document("md", ("# " + "word " * 300).encode())
     assert [b.kind for b in parsed.blocks] == ["paragraph"]
+
+
+# --- resource limits for untrusted documents (audit H2) ------------------------------------
+
+
+def test_pdf_page_limit_is_checked_before_extracting_text() -> None:
+    from app.ingestion.parsers import ParseLimits
+
+    pdf = make_pdf([["Page text."]] * 3)
+    with pytest.raises(UnsupportedDocument, match="3 pages; the limit is 2"):
+        parse_document("pdf", pdf, ParseLimits(max_pdf_pages=2))
+    assert len(parse_document("pdf", pdf, ParseLimits(max_pdf_pages=3)).blocks) == 3
+
+
+def test_a_small_pdf_that_expands_hugely_stops_at_the_character_limit() -> None:
+    import time
+
+    from app.ingestion.parsers import ParseLimits
+    from tests.fakes.documents import make_shared_stream_pdf
+
+    bomb = make_shared_stream_pdf(pages=50, chars_per_page=200_000)  # ~10 M characters
+    assert len(bomb) < 10_000
+    started = time.perf_counter()
+    with pytest.raises(UnsupportedDocument, match="more than 300,000 characters"):
+        parse_document("pdf", bomb, ParseLimits(max_chars=300_000))
+    # Stopped after about 2 of the 50 pages, not after extracting all of them.
+    assert time.perf_counter() - started < 5
+
+
+def test_docx_and_text_character_limits() -> None:
+    from app.ingestion.parsers import ParseLimits
+
+    limits = ParseLimits(max_chars=1_000)
+    docx_file = make_docx([("paragraph", "word " * 50)] * 10)  # 2,500 characters
+    with pytest.raises(UnsupportedDocument, match="more than 1,000 characters"):
+        parse_document("docx", docx_file, limits)
+    with pytest.raises(UnsupportedDocument, match="more than 1,000 characters"):
+        parse_document("txt", b"x" * 1_001, limits)
+    assert parse_document("txt", b"x" * 1_000, limits).blocks

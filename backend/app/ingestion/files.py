@@ -10,6 +10,7 @@ import hashlib
 import io
 import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass
 
 from app.core.errors import AppError
@@ -17,7 +18,10 @@ from app.core.errors import AppError
 FILE_TYPES_BY_EXTENSION = {".pdf": "pdf", ".docx": "docx", ".txt": "txt", ".md": "md"}
 MAX_FILENAME_LENGTH = 200
 # Zip-bomb guards for DOCX: limits on the unpacked size and entry count, not the upload size.
-MAX_DOCX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+# python-docx holds the whole package in memory and builds an XML tree of the main part
+# (about 25x its size in RAM), so the main part has its own, tighter cap (audit H2).
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+MAX_DOCX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 MAX_DOCX_ENTRIES = 5000
 
 _BINARY_SIGNATURES = (b"%PDF-", b"PK\x03\x04", b"\xd0\xcf\x11\xe0", b"\x7fELF", b"MZ")
@@ -119,13 +123,20 @@ def _check_docx(data: bytes) -> None:
             if len(entries) > MAX_DOCX_ENTRIES:
                 raise _mismatch("docx", "it contains too many parts.")
             if sum(entry.file_size for entry in entries) > MAX_DOCX_UNCOMPRESSED_BYTES:
-                raise _mismatch("docx", "it expands to more than 100 MB.")
-            names = {entry.filename for entry in entries}
-            if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+                raise _mismatch("docx", "it expands to more than 50 MB.")
+            sizes = {entry.filename: entry.file_size for entry in entries}
+            if "[Content_Types].xml" not in sizes or "word/document.xml" not in sizes:
                 raise _mismatch("docx", "it is a ZIP file but not a Word document.")
+            if sizes["word/document.xml"] > MAX_DOCX_DOCUMENT_XML_BYTES:
+                raise _mismatch("docx", "its main text part expands to more than 10 MB.")
             content_types = archive.read("[Content_Types].xml")
-    except zipfile.BadZipFile as exc:
-        raise _mismatch("docx", "the file is damaged.") from exc
+    except UploadRejected:
+        raise
+    # Encrypted entries (RuntimeError), unknown compression (NotImplementedError), and
+    # corrupt data (zlib.error, EOFError, ...) are all a damaged upload, not a server error.
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError,
+            ValueError, OSError) as exc:  # fmt: skip
+        raise _mismatch("docx", "the file is damaged or encrypted.") from exc
     if b"macroEnabled" in content_types:
         raise _mismatch("docx", "macro-enabled documents are not accepted.")
     if b"wordprocessingml.document.main+xml" not in content_types:

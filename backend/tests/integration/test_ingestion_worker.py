@@ -474,3 +474,21 @@ def test_a_source_kind_without_a_handler_fails_once_with_a_clear_message(
     assert failed.status == "failed" and failed.attempts == 1
     assert 'Sources of type "file" are not supported' in failed.last_error
     assert chunks_of(body["source"]["id"]) == []
+
+
+def test_a_document_over_the_chunk_limit_fails_clearly(tenant_a: Tenant) -> None:
+    harness = make_worker(env={"MAX_DOCUMENT_CHUNKS": "2"})
+    body = upload(tenant_a, "handbook.md", long_markdown())
+    harness.run_all()
+    failed = job(body["job"]["id"])
+    assert failed.status == "failed" and failed.attempts == 1
+    assert "the limit is 2 (MAX_DOCUMENT_CHUNKS)" in failed.last_error
+    assert harness.provider.texts_embedded == 0  # rejected before any Gemini call
+
+
+def test_a_document_over_the_character_limit_fails_clearly(tenant_a: Tenant) -> None:
+    harness = make_worker(env={"MAX_DOCUMENT_CHARS": "10000"})
+    body = upload(tenant_a, "handbook.md", long_markdown(sections=20))
+    harness.run_all()
+    failed = job(body["job"]["id"])
+    assert failed.status == "failed" and "MAX_DOCUMENT_CHARS" in failed.last_error
