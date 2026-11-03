@@ -39,6 +39,8 @@ SOURCE_STATUSES = ("pending", "processing", "ready", "failed", "deleting")
 FILE_TYPES = ("pdf", "docx", "txt", "md")
 JOB_TYPES = ("ingest", "reindex", "delete")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed")
+CRAWL_PAGE_STATUSES = ("indexed", "unchanged", "duplicate", "skipped", "failed")
+CRAWL_DISCOVERY = ("start", "sitemap", "link")
 
 
 class Base(DeclarativeBase):
@@ -146,7 +148,7 @@ class RateLimitCounter(Base):
 
 
 class Source(WorkspaceScoped, Base):
-    """One uploaded file (or, from M5, one website root)."""
+    """One uploaded file or one website root."""
 
     __tablename__ = "sources"
     __table_args__ = (
@@ -325,3 +327,56 @@ class EmbeddingCacheEntry(WorkspaceScoped, Base):
     dimensions: Mapped[int]
     embedding: Mapped[Any] = mapped_column(Vector(SCHEMA_EMBEDDING_DIMENSIONS))
     created_at: Mapped[datetime] = _created_at()
+
+
+# --- website crawling (Milestone 5) ------------------------------------------------------
+
+
+class CrawlPage(WorkspaceScoped, Base):
+    """The latest crawl outcome for one URL of a website source.
+
+    Pages themselves are `documents` (keyed by `canonical_url`); this table is
+    the crawl's own record: what was discovered, fetched, skipped, or failed,
+    and why. A URL keeps one row across crawls; `last_job_id` tells whether
+    the latest crawl saw it.
+    """
+
+    __tablename__ = "crawl_pages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "source_id"],
+            ["sources.workspace_id", "sources.id"],
+            ondelete="CASCADE",
+            name="fk_crawl_pages_source_same_workspace",
+        ),
+        UniqueConstraint("source_id", "url", name="uq_crawl_pages_source_url"),
+        CheckConstraint(f"status IN {CRAWL_PAGE_STATUSES}", name="status"),
+        CheckConstraint(f"discovered_via IN {CRAWL_DISCOVERY}", name="discovered_via"),
+        CheckConstraint("depth >= 0", name="depth"),
+        Index("ix_crawl_pages_workspace_source_status", "workspace_id", "source_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_id: Mapped[uuid.UUID]
+    # Normalised URL as discovered (before redirects).
+    url: Mapped[str] = mapped_column(Text)
+    final_url: Mapped[str | None] = mapped_column(Text)
+    # The document this page is indexed as (documents.canonical_url), if any.
+    document_url: Mapped[str | None] = mapped_column(Text)
+    depth: Mapped[int]
+    discovered_via: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    # Machine-readable cause for skipped/failed/duplicate pages (e.g. "robots", "not_found").
+    reason: Mapped[str | None] = mapped_column(Text)
+    message: Mapped[str | None] = mapped_column(Text)
+    http_status: Mapped[int | None]
+    content_type: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(Text)
+    last_job_id: Mapped[uuid.UUID | None]
+    first_seen_at: Mapped[datetime] = _created_at()
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the page's chunks were last (re)built, and when its text last changed.
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = _updated_at()

@@ -75,6 +75,7 @@ def test_auth_schema_constraints(scratch_engine: Engine, alembic_config: Config)
             "chunks",
             "ingestion_jobs",
             "embedding_cache",
+            "crawl_pages",
         }
         assert schema.get_pk_constraint("workspace_members")["constrained_columns"] == [
             "workspace_id",
@@ -161,7 +162,7 @@ def test_ingestion_schema_indexes_and_tenant_safe_keys(
         assert column == "vector(768)"
         fks = {
             fk["name"]: (fk["constrained_columns"], fk["referred_table"])
-            for table in ("documents", "chunks", "ingestion_jobs")
+            for table in ("documents", "chunks", "ingestion_jobs", "crawl_pages")
             for fk in inspect(connection).get_foreign_keys(table)
         }
         assert fks["fk_chunks_document_same_workspace"] == (
@@ -176,6 +177,12 @@ def test_ingestion_schema_indexes_and_tenant_safe_keys(
             ["workspace_id", "source_id"],
             "sources",
         )
+        assert fks["fk_crawl_pages_source_same_workspace"] == (
+            ["workspace_id", "source_id"],
+            "sources",
+        )
+        crawl_indexes = {i["name"] for i in inspect(connection).get_indexes("crawl_pages")}
+        assert "ix_crawl_pages_workspace_source_status" in crawl_indexes
 
 
 WS_A = "00000000-0000-0000-0000-00000000000a"
@@ -201,6 +208,8 @@ def _seed(connection: Connection) -> None:
                 VALUES ('{WS_A}', '{DOC_A}', 0, 'c', 'h', '{VECTOR}', 'm');
             INSERT INTO ingestion_jobs (workspace_id, source_id, job_type) VALUES
                 ('{WS_A}', '{SOURCE_A}', 'ingest');
+            INSERT INTO crawl_pages (workspace_id, source_id, url, depth, discovered_via, status)
+                VALUES ('{WS_A}', '{SOURCE_A}', 'https://example.com/', 0, 'start', 'indexed');
             """
         )
     )
@@ -248,6 +257,24 @@ def _seed(connection: Connection) -> None:
             f"VALUES ('{WS_A}', 'file', 'x', 'exploded')",
             "ck_sources_status",
         ),
+        (
+            f"INSERT INTO crawl_pages (workspace_id, source_id, url, depth, discovered_via, "
+            f"status) VALUES ('{WS_B}', '{SOURCE_A}', 'https://example.com/b', 0, 'link', "
+            f"'indexed')",
+            "fk_crawl_pages_source_same_workspace",
+        ),
+        (
+            f"INSERT INTO crawl_pages (workspace_id, source_id, url, depth, discovered_via, "
+            f"status) VALUES ('{WS_A}', '{SOURCE_A}', 'https://example.com/', 1, 'link', "
+            f"'indexed')",
+            "uq_crawl_pages_source_url",
+        ),
+        (
+            f"INSERT INTO crawl_pages (workspace_id, source_id, url, depth, discovered_via, "
+            f"status) VALUES ('{WS_A}', '{SOURCE_A}', 'https://example.com/c', 0, 'link', "
+            f"'teleported')",
+            "ck_crawl_pages_status",
+        ),
     ],
     ids=[
         "chunk-into-other-workspace",
@@ -257,6 +284,9 @@ def _seed(connection: Connection) -> None:
         "second-file-document",
         "second-waiting-job",
         "unknown-status",
+        "crawl-page-into-other-workspace",
+        "duplicate-crawl-page-url",
+        "unknown-crawl-page-status",
     ],
 )
 def test_database_enforces_ingestion_integrity(

@@ -61,10 +61,19 @@ class Settings(BaseSettings):
     chunk_target_chars: int = Field(default=1800, ge=200)
     chunk_max_chars: int = Field(default=2400, ge=200)
     chunk_overlap_chars: int = Field(default=250, ge=0)
-    max_crawl_pages: int = Field(default=20, gt=0)
-    max_crawl_depth: int = Field(default=2, ge=0)
+    max_crawl_pages: int = Field(default=20, gt=0, le=500)
+    max_crawl_depth: int = Field(default=2, ge=0, le=10)
     crawl_delay_seconds: float = Field(default=1, ge=1)
-    crawl_timeout_seconds: float = Field(default=10, gt=0)
+    crawl_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    crawl_max_duration_seconds: float = Field(default=300, gt=0, le=3600)
+    crawl_max_html_mb: int = Field(default=5, ge=1, le=20)
+    # Its first word (before "/") is the robots.txt product token.
+    crawl_user_agent: str = Field(
+        default="KnowbaseBot/0.1 (+local prototype; respects robots.txt)",
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]*(/[!-~]+)?( [ -~]+)?$",
+        max_length=200,
+    )
+    daily_crawl_request_limit: int = Field(default=20, ge=0)
 
     frontend_origin: str = "http://localhost:3000"
 
@@ -133,6 +142,12 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _crawl_deadline_fits_a_request(self) -> Self:
+        if self.crawl_max_duration_seconds < self.crawl_timeout_seconds:
+            raise ValueError("CRAWL_MAX_DURATION_SECONDS must be at least CRAWL_TIMEOUT_SECONDS")
+        return self
+
+    @model_validator(mode="after")
     def _retry_delays_are_ordered(self) -> Self:
         if self.gemini_retry_max_delay_seconds < self.gemini_retry_base_delay_seconds:
             raise ValueError(
@@ -149,6 +164,11 @@ class Settings(BaseSettings):
         """Values that must never appear in logs (used by the log redaction filter)."""
         candidates = (self.gemini_api_key, self.jwt_secret, self.app_secret_key)
         return [s.get_secret_value() for s in candidates if s.get_secret_value().strip()]
+
+    @property
+    def crawler_product_token(self) -> str:
+        """The name this crawler answers to in robots.txt (e.g. "KnowbaseBot")."""
+        return self.crawl_user_agent.split("/", 1)[0].split(" ", 1)[0]
 
     @property
     def allowed_host_list(self) -> list[str]:
