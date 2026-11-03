@@ -585,25 +585,27 @@ class IngestionWorker:
         row.locked_at = row.lock_token = row.locked_by = None
 
     def _remove_superseded_files(self, job: ClaimedJob) -> None:
-        """Keep the current upload and any still waiting to be processed; drop the rest."""
+        """Delete stored files of finished jobs that nothing references any more.
+
+        Only keys recorded on finished jobs are candidates, and the current upload
+        and every waiting or running job's file are kept. A file being uploaded
+        right now (or saved but not yet committed) is on no finished job, so it is
+        never touched.
+        """
         with self.session(job) as db:
             source = db.get(Source, job.source_id)
             if source is None:
                 return
-            keep = set(
-                db.scalars(
-                    select(IngestionJob.storage_key).where(
-                        IngestionJob.source_id == source.id,
-                        IngestionJob.status.in_(("queued", "running")),
-                        IngestionJob.storage_key.is_not(None),
-                    )
+            rows = db.execute(
+                select(IngestionJob.storage_key, IngestionJob.status).where(
+                    IngestionJob.source_id == source.id, IngestionJob.storage_key.is_not(None)
                 )
-            )
-            if source.storage_key:
-                keep.add(source.storage_key)
-        removed = self._storage.delete_others(
-            job.workspace_id, job.source_id, {k for k in keep if k}
-        )
+            ).all()
+            current = source.storage_key
+        active = {key for key, status in rows if status in ("queued", "running")}
+        finished = {key for key, status in rows if status in ("succeeded", "failed")}
+        stale = {key for key in finished - active if key and key != current}
+        removed = self._storage.delete_keys(stale)
         if removed:
             logger.info("Removed %d superseded upload(s) for source %s", removed, job.source_id)
 

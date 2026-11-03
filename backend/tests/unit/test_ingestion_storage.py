@@ -61,12 +61,16 @@ def test_symlink_escape_is_refused(storage: FileStorage, tmp_path: Path) -> None
         storage.path_for(f"{WORKSPACE}/{SOURCE}/{'a' * 32}.pdf")
 
 
-def test_delete_others_keeps_only_listed_keys(storage: FileStorage) -> None:
+def test_delete_keys_removes_exactly_the_given_files(storage: FileStorage) -> None:
     keys = [storage.new_key(WORKSPACE, SOURCE, "txt") for _ in range(3)]
     for key in keys:
         storage.save(key, b"x")
-    assert storage.delete_others(WORKSPACE, SOURCE, {keys[1]}) == 2
-    assert [storage.exists(k) for k in keys] == [False, True, False]
+    unlisted = storage.path_for(keys[2]).with_name("upload-in-progress.partial")
+    unlisted.write_bytes(b"still being written")
+    assert storage.delete_keys({keys[0], keys[1]}) == 2
+    assert [storage.exists(k) for k in keys] == [False, False, True]
+    assert unlisted.exists()  # anything not named is never touched
+    assert storage.delete_keys({keys[0]}) == 0  # already gone: not an error
 
 
 def test_delete_source_removes_its_directory_only(storage: FileStorage) -> None:

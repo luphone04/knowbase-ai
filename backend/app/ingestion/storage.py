@@ -7,6 +7,7 @@ and its resolved path must stay inside the upload root. Keys and paths are
 internal and never returned by the API.
 """
 
+import logging
 import os
 import re
 import secrets
@@ -16,6 +17,9 @@ from pathlib import Path
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _KEY_PATTERN = re.compile(rf"^{_UUID}/{_UUID}/[0-9a-f]{{32}}\.(pdf|docx|txt|md)$")
+
+
+logger = logging.getLogger(__name__)
 
 
 class InvalidStorageKey(ValueError):
@@ -76,18 +80,26 @@ class FileStorage:
     def delete(self, key: str) -> None:
         self.path_for(key).unlink(missing_ok=True)
 
-    def delete_others(self, workspace_id: uuid.UUID, source_id: uuid.UUID, keep: set[str]) -> int:
-        """Remove a source's superseded uploads, keeping the listed keys. Returns the count."""
-        directory = self._source_dir(workspace_id, source_id)
-        if not directory.is_dir():
-            return 0
-        keep_names = {key.rsplit("/", 1)[-1] for key in keep}
+    def delete_keys(self, keys: set[str]) -> int:
+        """Remove exactly these stored files (each key validated). Returns how many existed.
+
+        Callers pass only keys known to be superseded. Nothing else in the folder is
+        touched, so an upload still being written (or not yet committed) is safe.
+        """
         removed = 0
-        for entry in directory.iterdir():
-            if entry.is_file() and entry.name not in keep_names:
-                entry.unlink(missing_ok=True)
+        for key in keys:
+            path = self.path_for(key)
+            if path.is_file():
+                path.unlink(missing_ok=True)
                 removed += 1
         return removed
 
-    def delete_source(self, workspace_id: uuid.UUID, source_id: uuid.UUID) -> None:
-        shutil.rmtree(self._source_dir(workspace_id, source_id), ignore_errors=True)
+    def delete_source(self, workspace_id: uuid.UUID, source_id: uuid.UUID) -> bool:
+        """Remove the source's folder. False (and logged) if something could not be removed."""
+        failures: list[str] = []
+        directory = self._source_dir(workspace_id, source_id)
+        if directory.exists():
+            shutil.rmtree(directory, onexc=lambda _f, path, exc: failures.append(f"{path}: {exc}"))
+        for failure in failures:
+            logger.error("Could not remove stored upload %s", failure)
+        return not failures

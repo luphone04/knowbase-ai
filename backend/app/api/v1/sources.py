@@ -194,8 +194,9 @@ def upload_file(
         return UploadOut(source=_source_outs(db, [source])[0], job=None, unchanged=True)
 
     # The file goes to disk before the job is committed, so a committed job never
-    # points at a missing file. A failed commit only leaves an orphan, which the
-    # worker removes the next time this source is indexed.
+    # points at a missing file. A failed commit leaves an orphan that no job
+    # references; the worker never removes it while it may be in flight, and it
+    # goes when the source is deleted.
     key = storage.new_key(auth.workspace_id, source.id, upload.file_type)
     storage.save(key, upload.data)
     source.display_name = upload.original_filename
