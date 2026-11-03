@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M4 — File ingestion and durable worker** |
-| Status | **READY_FOR_REVIEW**: checks pass, live Gemini ingestion PASS, pushed to `main`; awaiting `APPROVE MILESTONE 4` |
+| Current milestone | **M5 — Website crawler and incremental indexing** |
+| Status | **READY_FOR_REVIEW**: checks pass, live crawl PASS, pushed to `main`; awaiting `APPROVE MILESTONE 5` |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one milestone, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-02 |
+| Last verified checkpoint | 2026-11-03 |
 
 ## Milestones
 
@@ -17,120 +17,125 @@
 | M1 | Database and service foundation | APPROVED_AND_MERGED | `e8d667a` | `APPROVE MILESTONE 1`, 2026-11-01 |
 | M2 | Authentication and workspace isolation | APPROVED_AND_MERGED | `e488b7b` | `APPROVE MILESTONE 2`, 2026-11-02 |
 | M3 | Gemini provider and embeddings | APPROVED_AND_MERGED | `bb36797` | `APPROVE MILESTONE 3`, 2026-11-02 |
-| M4 | File ingestion and durable worker | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 4` |
-| M5 | Website crawler and incremental indexing | NOT_STARTED | — | — |
+| M4 | File ingestion and durable worker | APPROVED_AND_MERGED | `8af4b01` | `APPROVE MILESTONE 4`, 2026-11-02 |
+| M5 | Website crawler and incremental indexing | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 5` |
 | M6 | Hybrid retrieval and RRF | NOT_STARTED | — | — |
 | M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
-## M4 checklist (SPEC.md §17.9)
+## M5 checklist (SPEC.md §17.10)
 
-Design and rationale: [ADR 0006](docs/decisions/0006-m4-file-ingestion.md).
+Design and rationale: [ADR 0007](docs/decisions/0007-m5-website-crawler.md).
 
-- [x] Source, document, chunk, job (and embedding cache) schema; migration `0003_ingestion`. It is reversible, and `alembic check` shows it matches the models
-- [x] File type, signature, size, UTF-8, and safe storage name validated; uploads are size-limited before parsing
-- [x] PDF (`pypdf`), DOCX (`python-docx`), TXT, and Markdown parsers
-- [x] PDF page numbers and document metadata preserved (title, page count, tables, chunker fingerprint, embedding model)
-- [x] Text cleaning and deterministic paragraph-aware chunking (1800 / 2400 / 250)
-- [x] Durable PostgreSQL job queue
-- [x] Atomic claiming with `FOR UPDATE SKIP LOCKED`, committed before slow work; fencing token
-- [x] Retry count with backoff, terminal failure, deferral, and stale-lock recovery with heartbeat
-- [x] Chunks embedded through the M3 Gemini provider (`RETRIEVAL_DOCUMENT`, 768, batches of 8)
-- [x] 768-dimensional normalised vectors persisted in pgvector (HNSW cosine index)
-- [x] Idempotent re-ingestion: no duplicate documents or chunks, no Gemini calls for unchanged content
-- [x] A failed replacement never deletes the last good index (tested for both embedding failure and a crash inside the publish transaction)
-- [x] Daily embedding guardrail (300 texts per UTC day, installation-wide, cached texts excluded), deferred from M3
-- [x] Unit and integration tests
+- [x] Validate HTTP/HTTPS URL input (no other schemes, no credentials, valid public host names)
+- [x] Resolve and reject private, reserved, loopback, link-local, multicast, and other non-public IPs, at submission, per request, and **on the connection itself** (DNS rebinding)
+- [x] Revalidate redirects and block cross-origin redirects (manual, at most 5, each hop re-checked)
+- [x] Parse robots.txt (RFC 9309) and respect disallowed paths; 5xx/unreachable means complete disallow
+- [x] Parse sitemap.xml and sitemap indexes when available (DTDs refused)
+- [x] Crawl same-origin pages breadth-first with depth, page, and time limits
+- [x] Rate-limit requests per host (≥1 s apart, or a longer Crawl-delay)
+- [x] Extract main/article content and preserve headings (BeautifulSoup, no LLM)
+- [x] Normalise URLs and remove tracking parameters
+- [x] Hash extracted page content
+- [x] Skip unchanged pages and re-index changed pages (M4 indexing path, atomic per page)
+- [x] SSRF, redirect, timeout, and duplicate-page tests
+- [x] Page-level crawl status and failures (`GET /sources/{id}/pages?status=failed`)
 
-## M4 acceptance evidence (2026-11-02)
+## M5 acceptance evidence (2026-11-03)
 
 | Criterion | Command | Result |
 |---|---|---|
-| Upload creates a source and a queued job | `test_sources_api.py`; live `curl` | PASS: 202 in about 1 s; the API never parses or embeds (a test fails if it calls the provider) |
-| Worker processes a real supported file | live PDF and DOCX through the real worker and Gemini | PASS (details below) |
-| Chunks and embeddings in PostgreSQL | `vector_dims`, `vector_norm` via `psql` | PASS: 768 dims, norm 1.000000 |
-| Unchanged re-upload: no duplicate chunks, no re-embedding | live: identical upload → 200 `unchanged`; reindex → `unchanged`, 0 requests; tests | PASS |
-| Malformed and unsupported files fail clearly | live: damaged PDF → job failed (1 attempt, "could not be read"); `.exe` → 415; fake PDF → 422; tests for scanned and encrypted PDFs | PASS |
-| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 480 passed, 0 skipped** (307 unit, 173 integration; **177 new in M4**) |
-| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 477 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
-| M0–M3 regression | same runs | PASS |
-| Lint / format / strict types / lock | `ruff check`, `ruff format --check`, `mypy` (strict, 85 files), `uv lock --check` | PASS |
-| Compose | `docker compose config`; migrate applied `0003_ingestion` to the dev DB | PASS |
-| Tests catch regressions (mutation check) | 20 protections broken one at a time, then restored with `git checkout` (list below) | PASS: all 20 caught after two gaps were fixed; tree clean |
-| No secrets or content in logs | 324 lines of Compose logs checked against the Gemini key, JWT secret, test password, and document text | PASS: none present |
+| A known public test site is crawled within limits | live: `www.scrapethissite.com/pages/` with `max_pages` 3 | PASS: 3 requests, `stopped_reason: page_limit` |
+| Disallowed and private targets are blocked | live: robots `/lessons/`, `/faq/`; 9 unsafe URLs via the API; tests | PASS: skipped and never requested; 422 for every unsafe URL |
+| Unchanged re-crawl doesn't duplicate chunks | live re-crawl; tests | PASS: 2 pages unchanged, identical chunk ids, 0 Gemini calls |
+| A changed page gets re-indexed | live: `quotes.toscrape.com/random` re-crawled; tests | PASS: 1 page re-indexed, 1 text embedded, chunk replaced |
+| Full suite on host (same as CI) | `uv run pytest` against throwaway pgvector | **PASS: 773 passed, 0 skipped** (540 unit, 233 integration; **293 new in M5**) |
+| Full suite in the api container | `docker compose exec api pytest -q` | PASS: 770 passed, 3 skipped (`.env.example` isn't in the image; those 3 run on host and CI) |
+| M0–M4 regression | same runs (the M4 pipeline now shares `index_document` with websites) | PASS |
+| Lint / format / strict types / lock / migrations | `ruff check`, `ruff format --check`, `mypy` (strict, 104 files), `uv lock --check`, `alembic check` | PASS |
+| Compose and CI workflow | `docker compose config`; migrate applied `0004_crawler`; `actionlint` | PASS |
+| Tests catch regressions (mutation check) | 26 protections broken one at a time, restored with `git checkout` (list below) | PASS: 25 caught (after two gaps were fixed) + 1 equivalent mutant; tree clean |
+| No secrets or content in logs | 108 lines of api/worker logs against the Gemini key, JWT secret, app secret, DB password, test password, cookies, and crawled text | PASS: none present |
 | Hygiene | `scripts/check_repo_hygiene.sh` | PASS |
 
-**Mutations caught:**
-1. Committing between the old-chunk delete and the new insert.
-2. Unchanged detection off.
-3. Claiming without a row lock.
-4. No fencing check.
-5. Recovery disabled.
-6. Budget not reserved.
-7. Cache ignored.
-8. Worker session not workspace-bound (the M2 guard fails closed).
-9. PDF signature unchecked.
-10. File names unsanitised.
-11. Storage-key pattern unchecked.
-12. Bad files retried.
-13. Deferral using an attempt.
-14. Delete keeping cache orphans.
-15. Body limit off.
-16. Source list unscoped.
-17. Identical re-upload re-queued.
-18. Chunk overlap off.
-19. Budget reservation uncapped.
-20. Vector-count check off.
+**Mutations caught** (25):
+1. Address policy allowing everything.
+2. The connection skipping its own DNS check.
+3. One public DNS answer accepted among private ones.
+4. Cross-origin redirects followed.
+5. No destination check per redirect hop.
+6. Decompressed size unchecked (memory bound).
+7. Slow-drip deadline ignored.
+8. robots.txt first match instead of longest.
+9. robots.txt 5xx treated as allow-all.
+10. robots.txt ignored for discovered links.
+11. External links queued.
+12. Depth limit ignored.
+13. Page limit ignored.
+14. No per-host delay.
+15. Sitemap DTD accepted.
+16. Boilerplate tags kept.
+17. Credentials allowed in URLs.
+18. Tracking parameters kept.
+19. Unchanged pages re-embedded.
+20. Gone pages kept in the index.
+21. Repeated blocks not removed.
+22. Identical content indexed twice.
+23. Progress write not fenced (a stale worker kept crawling).
+24. The API skipping its DNS check.
+25. Duplicate crawl allowed.
 
-### Live ingestion (real Gemini, free tier, dev stack on port 8001)
+**Equivalent mutant:** `trust_env=True` on the client. httpx never reads environment proxies when a transport is supplied (`allow_env_proxies = trust_env and transport is None`), so the setting is a second layer, not the protection that does the work. The proxy test passes either way, because the real protection holds.
+
+### Live crawl (real sites, real Gemini free tier, dev stack on port 8001)
+
+Both sites are public sandboxes built for practising scrapers.
 
 | Step | Result |
 |---|---|
-| Upload `northstar-returns.pdf` (2 pages) and `northstar-warranty.docx` (heading, paragraphs, table) | 202 each; jobs succeeded on attempt 1 |
-| PDF | title "Northstar Returns Policy (fictional demo)" (from PDF metadata); `page_count` 2; 1 chunk, pages 1–2, heading "Returns Policy"; 768 dims, norm 0.999999990; Gemini 862 ms |
-| DOCX | title from core properties; `table_count` 1; 1 chunk; 768 dims, norm 0.999999999; Gemini 524 ms |
-| Identical re-upload | 200, `unchanged: true`, no job; chunk count unchanged; budget unchanged |
-| Reindex | `outcome: unchanged`, `embedded_texts: 0`, `embedding_requests: 0` |
-| Damaged PDF (valid header) | job failed once: "The PDF could not be read; it may be damaged." |
-| Worker crash and restart | worker stopped; a job left `running` by a "crashed" worker (lock 10 min old); worker started → "Recovered stale job" → succeeded on attempt 2 |
-| Delete all four test sources via the API | 0 sources, documents, chunks, cache rows, and jobs; 0 stored files |
-| Daily budget used by the whole run | 3 texts (of 300) |
+| `POST /sources/websites` `https://www.scrapethissite.com/` (`max_pages` 4, depth 1) | 202 in 0.03 s; job succeeded on attempt 1 in 5.4 s |
+| robots.txt (`Disallow: /lessons/`, `/faq/`) | `robots: parsed`. `/lessons/` and `/faq/` skipped with reason `robots`; the worker log shows they were never requested. `/login/` skipped as `auth_page`. Only robots.txt, sitemap.xml (404 → `missing`), `/`, and `/pages/` were requested |
+| Stored | 2 documents with titles and canonical URLs; 3 chunks with URL and heading metadata; 768 dims, norm 1.000000 |
+| Re-crawl, unchanged | 2 pages `unchanged`, `embedded_texts` 0, `embedding_requests` 0; chunk ids identical; second re-crawl request while queued → 409 |
+| `https://quotes.toscrape.com/random` (a different quote per request), crawled twice | `robots: missing` (404); 2nd crawl: `pages_indexed` 1, `embedded_texts` 1, chunk replaced |
+| `https://www.scrapethissite.com/pages/` (`max_pages` 3) | 3 requests, `stopped_reason: page_limit`; `/pages/simple/` has `meta robots noindex` and was skipped as `noindex`; 2 pages indexed from the workspace embedding cache (0 Gemini calls) |
+| `http://localhost:8000`, `http://127.0.0.1:8001/...`, `10.0.0.1`, `169.254.169.254`, `db:5432`, `api:8000`, `host.docker.internal`, `ftp://`, `user:pw@` | 422 each (`blocked_url` / `invalid_url`) with a clear message; nothing created |
+| Workspace isolation (second live user) | 404 on A's source, pages, and job; reindex and delete 404; B's source list empty |
+| Delete all three sources via the API | 0 website sources, documents, chunks, and crawl pages |
+| Gemini used by the whole run | 5 texts embedded, 5 requests (daily budget 5 of 300) |
 
-The test account and its workspace were removed afterwards. Your two accounts, created before M3, are untouched.
+The two test users and their workspaces were removed afterwards. Your three accounts and their data are untouched.
 
-### Problems found and fixed during M4
+### Problems found and fixed during M5
 
-1. **Chunker defects found by a smoke run before any tests were written:**
-   - a heading could become a chunk on its own;
-   - a chunk could start with the blank-line separator;
-   - long paragraphs produced chunks near the maximum instead of the target;
-   - closing quotes could fall between chunks.
-   All four are fixed and covered by unit tests.
-2. **The PDF heading heuristic misread wrapped lines as headings,** which would split sentences across blocks and attach wrong section labels. It now accepts only clearly heading-like lines; ambiguous lines stay text.
-3. **A SQLAlchemy 2.1 deprecation** (`.distinct(col)` for `DISTINCT ON`) was caught by warnings-as-errors and replaced with `postgresql.distinct_on`.
-4. **A test-helper bug:** the PDF builder lost its `trailer` keyword. The real parser correctly rejected the file as damaged, and the helper was fixed.
+1. **A redirect to an already-seen page was fetched again.** A unit test caught it; redirect targets are now checked against the visited set before the hop is requested.
+2. **Settings leaked between integration tests.** `make_worker(env=...)` wrote to `os.environ` permanently, so a 2-text budget from one test broke the next. An autouse fixture now restores the environment after every test.
+3. **The test fake returned pre-read bodies,** which the streaming fetcher can't read. It now returns real byte streams, like a server.
+4. **A SQLAlchemy 2.1 deprecation** (`Result.tuples()`) was caught by warnings-as-errors and removed.
 5. **Two gaps found by mutation testing:**
-   - the body-limit test couldn't tell whether a request was refused up front or while streaming;
-   - the pipeline's own provider-contract check was untested.
-   Both now have tests: the handler never starts, and a misbehaving provider gets nothing published or cached.
-6. **macOS `/var` → `/private/var` symlink:** a path assertion in a test was fixed to compare resolved paths. The application already resolved paths correctly.
+   - the gzip-bomb test didn't bound memory (a final size check alone still passed);
+   - the stale-worker test didn't check that the worker stops crawling.
+   Both are asserted now.
+6. **Check order at submission:** `http://192.168.0.10/admin` was reported as an admin page instead of a private address. The destination check now runs first.
+7. **Re-adding a website that is being deleted** returned the doomed source; it now gets 409 like uploads.
 
 ## Manual review steps (owner)
 
-Full commands are in README → "Upload and index documents (curl)".
+Full commands are in README → "Crawl a website (curl)".
 
 | Step | Expected | Result |
 |---|---|---|
-| `docker compose up --build -d` (keep `API_HOST_PORT=8001` while 8000 is busy) | migrate applies `0003`; worker logs "ready" | not yet checked |
-| Sign in, then upload one real PDF and one real DOCX | 202 each, jobs `queued` | not yet checked |
-| Poll `GET /jobs/<id>` | `succeeded`; `result` shows chunks and embedded texts | not yet checked |
-| `GET /sources/<id>`: document metadata and chunk count | title, `page_count` (PDF), `table_count` (DOCX), embedding model 768 | not yet checked |
-| README step 4 (`psql`): one stored vector | 768 dims, norm 1.000000 | not yet checked |
-| Upload the same PDF again | 200, `unchanged: true`, no new job | not yet checked |
-| Upload a damaged PDF (e.g. `printf '%%PDF-1.7 broken' > bad.pdf`) and an `.exe` | job fails once with a clear message; 415 | not yet checked |
-| `docker compose stop worker`, upload, `docker compose start worker` | the job is picked up and succeeds | not yet checked |
-| `docker compose exec api pytest -q` | 477 passed, 3 skipped | not yet checked |
+| `docker compose up --build -d` (keep `API_HOST_PORT=8001` while 8000 is busy) | migrate applies `0004`; worker logs "ready" | not yet checked |
+| Add `https://www.scrapethissite.com/pages/` with `max_pages` 3 | 202; job `queued`, then `succeeded` | not yet checked |
+| `GET /jobs/<id>` | `pages_requested` 3, `stopped_reason` `page_limit`, `robots` `parsed` | not yet checked |
+| `GET /sources/<id>/pages` | `/faq/` and `/lessons/` skipped (`robots`); `/login/` skipped (`auth_page`) | not yet checked |
+| README step 4 (`psql`) | titles, text previews, 768-dim chunks | not yet checked |
+| Re-crawl (`POST /sources/<id>/reindex`) | `pages_unchanged`, `embedded_texts` 0 | not yet checked |
+| Add `quotes.toscrape.com/random` (depth 0), then re-crawl | 2nd job: `pages_indexed` 1, `embedded_texts` 1 | not yet checked |
+| Submit `http://localhost:8000` and `http://10.0.0.1/` | 422 `blocked_url` | not yet checked |
+| Bob's cookie on Alice's source | 404 | not yet checked |
+| `docker compose exec api pytest -q` | 770 passed, 3 skipped | not yet checked |
 | AI Studio: project still on the **Free** tier, no billing linked | Free tier | not yet checked |
 
 ## Commits
@@ -141,13 +146,14 @@ Full commands are in README → "Upload and index documents (curl)".
 | M1 | `2412552` … `e8d667a` | 6 commits: backend skeleton, migrations, Compose, tests, CI, docs |
 | M2 | `33199da` … `e488b7b` | 7 commits: auth schema, tenancy guard, auth, API, tests, docs, rate-limit race fix |
 | M3 | `b9f32a2` … `bb36797` | 6 commits: providers, status endpoint and redaction, smoke command, tests, timeout fix, docs |
-| M4 | `3c2095d` | feat(db): add ingestion schema for sources, documents, chunks, jobs, and embedding cache |
-| M4 | `e46b5aa` | feat(ingestion): validate, store, parse, clean, and chunk uploaded files |
-| M4 | `cf99993` | feat(worker): add the durable PostgreSQL job queue and ingestion pipeline |
-| M4 | `98db45b` | feat(api): add file upload, source inspection, reindex, delete, and job status |
-| M4 | `2f71b8a` | test: cover ingestion validation, parsing, chunking, worker, queue, and budget |
-| M4 | `bae1a64` | test: close two gaps found by mutation testing |
-| M4 | see `git log` | docs: document file ingestion and record Milestone 4 results |
+| M4 | `3c2095d` … `8af4b01` | 7 commits: schema, ingestion, worker and queue, API, tests, mutation gaps, docs |
+| M5 | `0b8fa04` | feat(db): add crawl_pages and crawler settings |
+| M5 | `d45fd09` | feat(crawler): add SSRF-safe fetching, robots.txt, sitemaps, extraction, and BFS |
+| M5 | `5ec866d` | feat(worker): index crawled pages through the M4 pipeline |
+| M5 | `8d90436` | feat(api): add website sources, page results, and re-crawl |
+| M5 | `8d48404` | test: cover the crawler, SSRF defences, incremental crawling, and website API |
+| M5 | `57d1cc0` | test: close two gaps found by mutation testing |
+| M5 | see `git log` | docs: document the website crawler and record Milestone 5 results |
 
 ## Blockers
 
@@ -161,9 +167,19 @@ None.
   - [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md) (M2);
   - [ADR 0005](docs/decisions/0005-m3-gemini-provider.md) (M3);
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
+  - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5):
+    - one page per document, keyed by canonical URL;
+    - robots.txt 4xx allows all, while 5xx/unreachable means disallow;
+    - sitemap pages at depth 1;
+    - repeated blocks across at least half the pages are boilerplate;
+    - 404/robots/noindex pages are removed from the index;
+    - re-crawling while a crawl is active gives 409;
+    - 20 crawl starts per workspace per day.
 
 ## Risks, limitations, and deferred work
 
+- **Crawler:** no JavaScript rendering (pages built in the browser come out nearly empty); boilerplate removal is heuristic, and sites without semantic tags keep some chrome; one origin per source (www vs bare domain, and http vs https, are different sites); no gzipped sitemaps or linked PDFs; no conditional requests, so every crawl re-fetches (unchanged pages still cost no embeddings); the per-host delay is per worker process; the time limit covers fetching only.
+- **Crawling in a public deployment** would need a domain allowlist and network egress controls (SPEC.md §7.3). This is a local prototype.
 - **No OCR:** scanned PDFs, legacy `.doc`, and password-protected files are rejected. PDF headings are heuristic, and multi-column PDFs may interleave.
 - **One worker, one job at a time** (MVP by design). Free-tier Gemini latency varies; jobs retry and back off.
 - **A crashed worker's job is recovered after its lease** (120 s) plus the next recovery pass. Docker's 10 s stop grace usually interrupts a running job, which is then recovered.
@@ -183,6 +199,7 @@ None.
 - **M1:** Compose stack, `/health` and `/ready`, Alembic, an internal data network, and persistent volumes. See [ADR 0003](docs/decisions/0003-m1-service-foundation.md).
 - **M2:** Argon2id, cookie sessions with revocation, Origin/CORS/Host checks, PostgreSQL rate limits, and a fail-closed workspace session guard. See [ADR 0004](docs/decisions/0004-m2-auth-and-tenancy.md).
 - **M3:** Gemini provider interfaces; generation and embeddings with validation and normalisation; bounded retries; no paid fallback; the AI status endpoint; log redaction; a live smoke test PASS. See [ADR 0005](docs/decisions/0005-m3-gemini-provider.md).
+- **M4:** uploads validated and stored safely; PDF/DOCX/TXT/MD parsing; deterministic chunking; durable PostgreSQL queue with fencing, heartbeat, and recovery; embedding cache and daily budget; atomic replacement; live Gemini ingestion PASS. See [ADR 0006](docs/decisions/0006-m4-file-ingestion.md).
 
 ## M0 summary
 

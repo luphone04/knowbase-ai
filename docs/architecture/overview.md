@@ -2,19 +2,21 @@
 
 Status: design from [SPEC.md](../../SPEC.md) §4.
 
-**Implemented as of Milestone 4:**
+**Implemented as of Milestone 5:**
 - `db`, `migrate`, `api`, and `worker` (no frontend yet).
-- The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*`, and `/api/v1/jobs/{id}`.
-- The worker processes file ingestion and deletion jobs from the PostgreSQL queue.
+- The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*` (files and websites), and `/api/v1/jobs/{id}`.
+- The worker processes file ingestion, website crawling, and deletion jobs from the PostgreSQL queue.
 - Authentication and workspace isolation ("Request flow").
 - The Gemini provider layer ("AI provider layer"). Ingestion uses it for document embeddings.
 - File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
+- Website crawling: URL → durable job → robots.txt → sitemaps → same-origin BFS (SSRF-guarded) → extract → the same clean/chunk/embed/publish path, page by page, skipping unchanged pages ("Website crawling" below).
 
-**Planned:** website crawling (M5), retrieval and RRF (M6), chat (M7), frontend (M8), and evaluation (M9). See
+**Planned:** retrieval and RRF (M6), chat (M7), frontend (M8), and evaluation (M9). See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
 [ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
-[ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3), and
-[ADR 0006](../decisions/0006-m4-file-ingestion.md) (M4).
+[ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3),
+[ADR 0006](../decisions/0006-m4-file-ingestion.md) (M4), and
+[ADR 0007](../decisions/0007-m5-website-crawler.md) (M5).
 
 ## Request flow (authenticated API call)
 
@@ -125,6 +127,49 @@ sequenceDiagram
 | Free-tier protection | Installation-wide daily text budget, reserved atomically; cached texts never count |
 | Tenant isolation | Composite `(workspace_id, …)` foreign keys plus the session guard; claim and recovery are the only explicit cross-workspace statements |
 
+## Website crawling (M5)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser / client
+    participant A as api
+    participant P as PostgreSQL
+    participant W as worker
+    participant N as GuardedTransport
+    participant S as Website (public IP only)
+    participant G as Gemini (embeddings)
+    B->>A: POST /sources/websites {url}
+    A->>A: normalise; http(s) only; no credentials; DNS → every address public
+    A->>P: source + enqueue job (one transaction)
+    A-->>B: 202 {source, job}   (no fetching, no Gemini)
+    W->>P: claim job (SKIP LOCKED, lock_token)
+    W->>N: GET /robots.txt, sitemaps, then BFS pages (≥1 s apart)
+    N->>N: resolve, validate every IP, connect to that IP only
+    N->>S: request (Host/SNI = name; redirects handled by the crawler, same origin only)
+    W->>W: extract main content → blocks; drop repeated boilerplate
+    loop each page (its own transaction)
+        alt text hash unchanged
+            W->>P: keep chunks; record fetch (0 embeddings)
+        else changed or new
+            W->>P: cache → budget
+            W->>G: embed uncached chunks
+            W->>P: swap this page's chunks + crawl record (token-fenced)
+        end
+    end
+    W->>P: record skipped/failed pages, remove gone pages, mark ready
+```
+
+| Concern | Mechanism |
+|---|---|
+| SSRF (private, loopback, metadata, Docker services) | Host-name rules + DNS check at submission and per request; the connection itself only opens to an address validated right then |
+| DNS rebinding | No second lookup: the socket connects to the validated IP literal |
+| Redirect tricks | Manual redirects, same origin only, each hop re-checked, max 5 |
+| Politeness | robots.txt (RFC 9309), Crawl-delay, ≥1 s per host, 20 pages, depth 2, 300 s, stop on 429 |
+| Hostile content | 5 MB after decompression, HTML only, DTD-free sitemaps, no JavaScript, text only |
+| Re-crawl cost | Unchanged pages: no chunking, no embeddings; changed chunks reuse cached vectors |
+| Failed page update | Previous document kept; swaps are per page and atomic |
+| Tenant isolation | `crawl_pages`, documents, chunks carry `workspace_id` with composite keys; the worker session is bound to the job's workspace |
+
 ## AI provider layer (M3)
 
 ```mermaid
@@ -157,8 +202,9 @@ flowchart LR
   inherit `WorkspaceScoped`; the session guard filters their ORM queries
   automatically and fails closed when no workspace is bound.
 - **Untrusted inputs:** uploaded files, crawled HTML, and retrieved excerpts
-  are data. The crawler enforces SSRF checks; the prompt treats excerpts as
-  evidence, not instructions.
+  are data. The crawler only connects to public addresses (checked on the
+  connection itself) and never runs page scripts; the prompt treats excerpts
+  as evidence, not instructions.
 - **No paid services:** no Redis/Celery, hosted vector DB, reranker, or
   billing fallback. When Gemini quota runs out, the user sees an error.
 

@@ -615,6 +615,11 @@ user its owner. Membership invitations can be deferred.
 > `dedupe_key`, job fencing token, job result, per-chunk embedding model), a
 > `deleting` source status, and an `embedding_cache` table. See
 > `docs/decisions/0006-m4-file-ingestion.md`.
+>
+> **Milestone 5** (migration `0004_crawler`) adds a `crawl_pages` table:
+> per-URL crawl outcomes for website sources. Website pages reuse
+> `documents` (one per canonical URL) and `chunks`. See
+> `docs/decisions/0007-m5-website-crawler.md`.
 
 #### `sources`
 
