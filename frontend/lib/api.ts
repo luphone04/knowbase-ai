@@ -5,10 +5,14 @@
 import { API_BASE_URL } from "./config";
 import type {
   AIStatus,
+  AnswerMode,
   ApiErrorBody,
   ChatTurn,
   Conversation,
   ConversationDetail,
+  EvaluationOverview,
+  EvaluationRun,
+  EvaluationRunDetail,
   Job,
   LoginInput,
   RegisterInput,
@@ -106,5 +110,15 @@ export const api = {
   },
   ai: {
     status: () => request<AIStatus>("/ai/status"),
+  },
+  evaluations: {
+    /** The dataset, whether this workspace holds its documents, and today's budget. */
+    overview: () => request<EvaluationOverview>("/evaluations/questions"),
+    /** Queue a run (202); the worker evaluates it one question at a time. */
+    start: (answerModes: AnswerMode[]) =>
+      request<EvaluationRun>("/evaluations/run", json("POST", { answer_modes: answerModes })),
+    /** The newest 50 runs in this workspace. */
+    runs: () => request<EvaluationRun[]>("/evaluations/runs"),
+    run: (id: string) => request<EvaluationRunDetail>(`/evaluations/runs/${encodeURIComponent(id)}`),
   },
 };

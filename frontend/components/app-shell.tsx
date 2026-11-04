@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpenText,
   FileText,
+  FlaskConical,
   LayoutDashboard,
   LogOut,
   MessageSquare,
@@ -21,6 +22,7 @@ const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/sources", label: "Documents", icon: FileText },
   { href: "/chat", label: "Chat", icon: MessageSquare },
+  { href: "/evaluations", label: "Evaluation", icon: FlaskConical },
 ];
 
 /** Sidebar on wide screens; a top bar with the same links on narrow ones. */
