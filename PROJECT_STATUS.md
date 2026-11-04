@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M8 — Frontend product experience** (minimal demonstration layer, [ADR 0013](docs/decisions/0013-m8-frontend-scope.md)) |
-| Status | **M8 READY_FOR_REVIEW** (2026-11-04): a minimal Next.js interface over the existing API; the Playwright acceptance flow passed with live Gemini; no backend changes. Waiting for `APPROVE MILESTONE 8`. M9 not started |
+| Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
+| Status | **M9 IN_PROGRESS** (started 2026-11-04). M8 approved by the owner on 2026-11-04 |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 acceptance passed; temporary accounts removed; original data unchanged) |
+| Last verified checkpoint | 2026-11-04 (M8 acceptance passed; temporary accounts removed; original data unchanged; M9 preflight: backend suite 746 passed, 1 skipped on the host) |
 
 ## Milestones
 
@@ -22,8 +22,37 @@
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
-| M8 | Frontend product experience (minimal; ADR 0013) | READY_FOR_REVIEW | see Commits | — |
-| M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
+| M8 | Frontend product experience (minimal; ADR 0013) | APPROVED | `a8c83a4` (see Commits) | Owner accepted M8 and authorised M9, 2026-11-04 |
+| M9 | Evaluation, hardening, and portfolio finish | IN_PROGRESS | see Commits | — |
+
+## M9 plan and checklist (SPEC.md §17.14, design in ADR 0014)
+
+Owner brief (2026-11-04): measurable, reproducible evidence of how the RAG pipeline behaves,
+an honest account of its weaknesses, focused hardening, and an accurate portfolio finish. No
+fabricated or hardcoded results. The production retrieval default (hybrid, `simple` AND) does
+not change because of this small dataset. A live evaluation runs only after the owner approves
+the estimated Gemini usage.
+
+| Step | Work | Status |
+|---|---|---|
+| 0 | M8 closeout recorded; M9 design (ADR 0014); this plan | Done |
+| 1 | Evaluation dataset (versioned file, checks against the demo corpus) | Pending |
+| 2 | Retrieval and chat refactors for reuse (embedding separate from ranking; answer step separate from saving); experimental lexical variants | Pending |
+| 3 | Schema (migration 0010), metrics, and the evaluation runner in the worker | Pending |
+| 4 | Evaluation API (`/evaluations/questions`, `/run`, `/runs`, `/runs/{id}`) | Pending |
+| 5 | Evaluation page | Pending |
+| 6 | Hardening review and fixes | Pending |
+| 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | Pending |
+| 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Pending |
+
+### M8 closeout (verified 2026-11-04)
+
+- The M8 acceptance evidence below is unchanged. The owner accepted M8 and authorised M9 on
+  2026-11-04; the manual review steps listed under M8 were the owner's to perform, and are not
+  recorded here as done.
+- **Still open from M8:** the GitHub Actions results for the M8 commits were never checked from
+  this machine (no `gh` CLI). The frontend CI job most likely failed on `949f879` … `ee826bb`
+  (fixed in `e5ad0fc`). The result for the latest commit must be confirmed during M9.
 
 ## M8 plan and checklist (SPEC.md §17.13, as scoped by ADR 0013)
 
@@ -438,7 +467,9 @@ up to `2b8513e`.
 | M8 | `1a6d76b` | feat(frontend): add chat with cited answers, a citation panel, abstention, and AI error states |
 | M8 | `ee826bb` | feat(frontend): add the dashboard: document totals and AI provider status |
 | M8 | `e5ad0fc` | fix(frontend): keep the Gemini key variable's name out of the browser bundle |
-| M8 | see `git log` | test(frontend): add the Playwright acceptance flow and record M8 results |
+| M8 | `eb13db7` | test(frontend): add the Playwright acceptance flow and record M8 results |
+| M8 | `a8c83a4` | fix(providers): log Google's error message and reasons for failed Gemini calls |
+| M9 | see `git log` | docs: record M8 approval and the M9 evaluation design (ADR 0014) |
 
 ## Blockers
 
@@ -454,6 +485,7 @@ None.
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
   - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
 - Implementation: [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md) (audit remediation): per-source serialization with source-then-job row locks; parsing in a killable child process with document limits and job deadlines; quota and rate-limit waits without attempts; budget refunds for refused calls; an installation-wide `DAILY_QUERY_EMBEDDING_LIMIT`; no DB connection held during Gemini calls.
+- Implementation: [ADR 0014](docs/decisions/0014-m9-evaluation-design.md) (M9): versioned dataset with stable, hash-checked source keys; one run compares all retrieval configurations on one corpus; source-level metrics with a chance baseline; opt-in answer evaluation per production mode; evaluation runs as a second durable queue in the worker; budgets reserved up front.
 - Owner: [ADR 0013](docs/decisions/0013-m8-frontend-scope.md) (2026-11-04): M8 is a minimal frontend over the existing API with no backend changes; the evaluation page moves to M9; `/analytics/overview` and its dashboard metrics are deferred; browser calls the API directly with the cookie, no Next.js proxy; TanStack Query; the frontend container gets no `.env`.
 - Owner: [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md) (2026-11-04): the generation model is `gemini-3.5-flash-lite`; generation retries are separate (`GEMINI_GENERATION_MAX_RETRIES`, default 0); embeddings are unchanged.
 - Implementation: [ADR 0011](docs/decisions/0011-m7-grounded-chat.md) (M7): per-user conversations with membership keys; a message `position`; an outcome and abstention reason; escaped untrusted context; abstain rather than retry on a missing citation; failed turns not saved but traced; per-user chat slots.
