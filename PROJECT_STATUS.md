@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M7 — Grounded chat, citations, and abstention** |
-| Status | **IN_PROGRESS**: M6 approved 2026-11-04 (`APPROVE MILESTONE 6`); M7 started. The M0–M6 audit remediation is complete (see below; [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md)). C1 approved |
+| Status | **READY_FOR_REVIEW** (M7): checks pass and are pushed to `main`; awaiting `APPROVE MILESTONE 7`. **Live grounded-answer verification is PENDING:** Gemini generation was unavailable, then its free-tier daily quota ran out (see "M7 live review"). M6 approved 2026-11-04 |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M6 approved) |
+| Last verified checkpoint | 2026-11-04 (M7 checks and live review attempt) |
 
 ## Milestones
 
@@ -21,9 +21,96 @@
 | M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
-| M7 | Grounded chat, citations, and abstention | IN_PROGRESS | — | — |
+| M7 | Grounded chat, citations, and abstention | READY_FOR_REVIEW (live answer check pending) | see Commits | Pending: `APPROVE MILESTONE 7` |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
+
+## M7 checklist (SPEC.md §17.12)
+
+Design and rationale: [ADR 0011](docs/decisions/0011-m7-grounded-chat.md).
+
+- [x] Conversation and message persistence (migration `0009`; tenant-safe composite keys; per-user conversations)
+- [x] Bounded conversation history (`CHAT_HISTORY_MESSAGES`, 6; 1,500 characters each; old citation ids stripped)
+- [x] Fresh evidence for every question (M6 retrieval; a follow-up adds the previous user question)
+- [x] Prompt with explicit untrusted-source instructions (SPEC.md §10.1, with all untrusted text escaped in its own element)
+- [x] Answer generation with Gemini (`gemini-3.8-flash`, thinking `low`, one request per question). **The code path is tested with a mock; live generation is unverified (Gemini unavailable, then out of quota)**
+- [x] Citation ids validated against the retrieved excerpts; invented ids and unknown URLs removed
+- [x] Citations return the source title, file name, PDF page, and excerpt (plus source, document, and chunk ids)
+- [x] Abstention when evidence is absent (`no_evidence`) or insufficient (`model_insufficient`), and when the answer has no valid citation (`no_valid_citation`)
+- [x] Provider quota and errors kept separate from abstention (429/502/503; the turn is not saved; the trace records the category)
+- [x] Prompt-injection test documents (`backend/tests/fixtures/prompt_injection/`)
+- [x] Tests for valid, invalid, missing, and fabricated citations
+- [x] Tests for conversation and workspace isolation
+
+## M7 acceptance evidence (2026-11-04)
+
+| Criterion | Evidence | Result |
+|---|---|---|
+| Answerable demo question gets an answer with a validated citation | Integration tests (mock generation, real PostgreSQL, M6 retrieval): the answer keeps `[S1]`; the citation names the real chunk, file, page, and excerpt; the source opens | PASS with a mock. **Live: PENDING** (Gemini 503/504, then its daily quota) |
+| Unsupported question gets a safe abstention | Tests for all 3 reasons; an empty workspace abstains with no Gemini call; an uncited answer is withheld | PASS with a mock. **Live: PENDING** |
+| Prompt injection in a source is treated as data | The injection documents go through the real pipeline: the injected text reaches the model only as escaped text inside one `<source>` each; a forged `S9` is not a source; obeying replies (forged citation, PWNED, a leaked system prompt) are withheld | PASS (server guarantees). **Live model behaviour: PENDING** |
+| Gemini outage or quota is not shown as an answer | Tests for quota, rate limit, unavailable, and incomplete generation, and for a refused query embedding. **Live:** 7 questions got 503 `ai_unavailable` and 2 got 429 `ai_quota`; 0 messages saved; 9 traces recorded `generation_error` | **PASS, including live** |
+| Conversation and workspace isolation | Another workspace and another member of the same workspace get 404 for read and post; lists show only one's own; database keys refuse cross-workspace rows | PASS |
+| Full suite on host | `pytest` against throwaway pgvector | **PASS: 727 passed, 1 skipped** (`RLIMIT_AS` is Linux-only); 93 new in M7 |
+| Full suite in the api container (rebuilt) | `docker compose exec api pytest -q` | PASS: 709 passed, 19 skipped (files outside the image, as before) |
+| Lint / format / strict types / migrations | `ruff check`, `ruff format --check`, `mypy` (strict, 116 files), `alembic check`, 0009 up/down/up | PASS |
+| Mutation check | 22 chat protections broken one at a time (citation gate, id validation, escaping, user filter, slots, connection release, history bound, URL check, trace links, and more) | **22 of 22 caught** |
+| Your data | Fingerprints before 0009, after 0009, and after the live review | Identical (only the Alembic revision changed); uploaded file unchanged |
+
+### M7 live review (real Gemini, temporary random account, removed afterwards)
+
+- **Indexing:** all 7 files indexed (5 demo, 2 injection; 12 chunks).
+- **Query embeddings:** succeeded for all 9 questions, about 0.7 s each; retrieval returned 5 excerpts each.
+- **Generation (`gemini-3.8-flash`):** failed on Google's side every time:
+  - 504 `DEADLINE_EXCEEDED` (90 s timeout) or 503 `UNAVAILABLE` after 3 retries;
+  - after 21 generation attempts in total, 429 `GenerateRequestsPerDayPerProjectPerModel-FreeTier`.
+- **What the app did:** every question got 503 `ai_unavailable` (7) or 429 `ai_quota` (2), within 1–156 s. 0 messages were saved, and each of the 9 traces is linked to its conversation and records `generation_error` (timeout 3, unavailable 4, quota_exhausted 2).
+- **Logs:** no key, cookie, document text, or question text.
+- **Cleanup:** the temporary sources were deleted through the API, and the account was removed by a guarded SQL block (exactly one `m7-review-…@example.com` user, no sources left).
+- **Still to verify live** after the quota resets (midnight Pacific, 08:00 UTC):
+  - a policy question;
+  - opening a citation;
+  - a follow-up;
+  - an unsupported question;
+  - the injection probes.
+
+  This needs about 10 generation requests.
+
+### Problems found and fixed during M7
+
+1. **Check constraints that passed on NULL.** `role = 'assistant' AND outcome IN (...)` is NULL when `outcome` is NULL, and PostgreSQL accepts a NULL check. Assistant rows without an outcome, and abstentions without a reason, were accepted. They now use `CASE`/`coalesce`, with tests.
+2. **The first image rebuild did nothing.** `docker compose build` reused the old image, so migration 0009 didn't run. Nothing changed; a second build produced the new image, which was verified to contain 0009 before the stack started.
+
+### Decision requests (owner; none blocks M8)
+
+- **Generation retries use the free-tier quota.** 5xx attempts appear to count toward Gemini's daily request quota: it ran out after 21 attempts over 7 questions. With `GEMINI_MAX_RETRIES=3`, one question can use 4 generation requests, and the default `DAILY_CHAT_REQUEST_LIMIT` (30) may already be above the project's free-tier daily limit for this model. Options:
+  1. keep as is;
+  2. retry generation fewer times (for example, a separate `GEMINI_GENERATION_MAX_RETRIES=1`);
+  3. lower `DAILY_CHAT_REQUEST_LIMIT`.
+
+  No change was made.
+
+### Manual review steps (owner)
+
+README → "Chat with your documents (curl)":
+1. Ask a policy question and open the citation.
+2. Ask a follow-up.
+3. Ask an unsupported question.
+4. Upload the injection documents and ask about gift wrapping.
+5. Read the persisted conversation, and the trace behind an answer.
+
+Run it when Gemini's quota is available; each question uses two Gemini requests.
+
+## Dev database migration (0008 → 0009, 2026-11-04)
+
+Backup: `/Users/richard/knowbase-backups/knowbase-before-0009-20261104T034658Z.dump`
+(`pg_dump -Fc`, mode 600, outside the repository; checked with `pg_restore --list`, 12 tables of data).
+No job was running. The `migrate` service applied 0009. Per-table fingerprints (count, plus the md5 of every row and every column) are identical before and after, for:
+- users (3), workspaces (3), memberships (3);
+- sources (1), documents (1), chunks (8), embedding cache (8), jobs (1);
+- query traces (0), and the uploaded file.
+
+Both volumes are intact; `docker compose down -v` was never used.
 
 ## M0–M6 audit remediation (2026-11-04)
 
@@ -235,6 +322,13 @@ up to `2b8513e`.
 | M6 | `4fd98a5` | feat(retrieval): add the retrieval service and POST /retrieval/search |
 | M6 | `066b081` | refactor(retrieval): break RRF ties by chunk id only |
 | M6 | see `git log` | docs: document hybrid retrieval (ADR 0009) and record Milestone 6 results |
+| M7 | `cf31709` | docs: record M6 approval and the decision to keep keyword AND (ADR 0009) |
+| M7 | `10caad2` | refactor(api): share daily Gemini slots and provider error responses |
+| M7 | `e04f8f3` | feat(db): add conversations and messages, and link traces to them (migration 0009) |
+| M7 | `6f7b053` | feat(chat): build cited context, the grounded prompt, and citation validation |
+| M7 | `3c9a56e` | feat(chat): add conversations and grounded answers with citations and abstention |
+| M7 | `a461012` | test(chat): add prompt-injection documents and prove they stay data |
+| M7 | see `git log` | docs: document grounded chat (ADR 0011) and record Milestone 7 results |
 
 ## Blockers
 
@@ -250,6 +344,7 @@ None.
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
   - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
 - Implementation: [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md) (audit remediation): per-source serialization with source-then-job row locks; parsing in a killable child process with document limits and job deadlines; quota and rate-limit waits without attempts; budget refunds for refused calls; an installation-wide `DAILY_QUERY_EMBEDDING_LIMIT`; no DB connection held during Gemini calls.
+- Implementation: [ADR 0011](docs/decisions/0011-m7-grounded-chat.md) (M7): per-user conversations with membership keys; a message `position`; an outcome and abstention reason; escaped untrusted context; abstain rather than retry on a missing citation; failed turns not saved but traced; per-user chat slots.
 - Implementation: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md) (M6):
   - two separate retrieval modes;
   - RRF on ranks only;
@@ -272,7 +367,7 @@ None.
 - **No OCR:** scanned PDFs, legacy `.doc`, and password-protected files are rejected. PDF headings are heuristic, and multi-column PDFs may interleave.
 - **One worker, one job at a time** (MVP by design). Extra workers are safe: one job per source at a time, enforced by row locks (ADR 0010). Free-tier Gemini latency varies; jobs retry and back off.
 - **A crashed worker's job is recovered after its lease** (120 s) plus the next recovery pass. Docker's 10 s stop grace usually interrupts a running job, which is then recovered.
-- **The daily embedding budget is shared by all workspaces** (one Gemini project) and resets at 00:00 UTC. Gemini's own daily quota resets at midnight Pacific; those jobs wait until 08:05 UTC. Query embeddings have their own installation-wide limit (`DAILY_QUERY_EMBEDDING_LIMIT`). The 30-chats-per-day cap arrives with chat in M7.
+- **The daily embedding budget is shared by all workspaces** (one Gemini project) and resets at 00:00 UTC. Gemini's own daily quota resets at midnight Pacific; those jobs wait until 08:05 UTC. Query embeddings have their own installation-wide limit (`DAILY_QUERY_EMBEDDING_LIMIT`). Chat is limited to 30 questions per user per day (`DAILY_CHAT_REQUEST_LIMIT`); there is no installation-wide generation limit, so many users together can exhaust Gemini's daily quota.
 - **Deleting a source also removes its job history.**
 - **Parsing runs in a child process** with a timeout and (on Linux) a memory cap, not a full sandbox: a parser exploit would still run as the worker's user.
 - **Deferred from the audit** (ADR 0010):
@@ -283,7 +378,10 @@ None.
   - several low items.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
 - **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`). Kept by owner decision (2026-11-04); M9 evaluates AND vs OR vs `english`.
-- **Retrieval has no relevance threshold:** an unanswerable question still returns the nearest chunks. Abstention arrives with chat in M7.
+- **No relevance threshold:** an unanswerable question still retrieves the nearest chunks. Chat relies on the model saying the excerpts are not enough, and on the citation check (SPEC.md §10.3: calibrate any threshold in M9).
+- **Citation checks are per answer, not per claim:** one valid citation is enough for an answer to be shown; whether each sentence is supported is for M9's evaluation (citation precision and recall).
+- **A URL quoted from an uploaded document survives validation,** because it is in an excerpt. Whether the model repeats an injected link is model behaviour (live check pending).
+- **A chat question can take up to about 2.5 minutes** when Gemini is slow (90 s timeout, plus retries within `GEMINI_CALL_DEADLINE_SECONDS`), and the HTTP request waits that long. Streaming is not implemented.
 - **Small demo corpus:** each document is 1–2 chunks, so retrieval is checked at document level. Chunk-size tuning and recall metrics come in M9.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
 - Frontend and the CI frontend job: M8.

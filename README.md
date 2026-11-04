@@ -13,9 +13,11 @@ This is a well-engineered prototype for local demos, not production software.
 > and upload PDF, DOCX, TXT, and Markdown files. The worker indexes them into
 > pgvector with Gemini embeddings, and content that hasn't changed isn't
 > embedded again. Website crawling (Milestone 5) was built and then removed;
-> it is descoped. **Milestone 6 (hybrid retrieval)** is implemented and awaiting
-> review: you can search your documents in vector-only or hybrid mode and
-> inspect ranks, scores, and traces. Chat with answers (M7) is not built yet.
+> it is descoped. **Milestone 6 (hybrid retrieval)** is approved: you can search in
+> vector-only or hybrid mode and inspect ranks, scores, and traces.
+> **Milestone 7 (grounded chat)** is implemented and awaiting review: conversations
+> with answers that cite your documents, abstention when they don't support an
+> answer, and clear errors when Gemini is unavailable. There is no frontend yet (M8).
 > See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
@@ -181,7 +183,7 @@ docker compose logs -f worker   # ids, counts, and timings only, never document 
 
 ## Search your documents (curl)
 
-Retrieval is inspectable before chat exists. Upload the fictional demo
+Retrieval can be inspected on its own. Upload the fictional demo
 documents in [`sample_data/demo_store/`](sample_data/README.md), then search.
 Each search makes one Gemini request, to embed the query. Searches are limited
 per workspace per day (`DAILY_RETRIEVAL_REQUEST_LIMIT`, 100), and in total for
@@ -215,6 +217,51 @@ curl -s -b alice.jar $API/retrieval/traces/<trace-id>
 Lexical scores come from PostgreSQL `ts_rank_cd`, which is not BM25. Fusion uses
 ranks only (`1/(60 + rank)` per list), never the raw scores. Details:
 [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md).
+
+## Chat with your documents (curl)
+
+Each question retrieves fresh evidence (as in search), then asks Gemini for an
+answer that may only use the numbered excerpts `[S1]`, `[S2]`, ... It makes two
+Gemini requests: one query embedding and one answer. Only answers that cite
+at least one excerpt they were given are shown. Otherwise the reply is
+"I couldn't find enough information in this knowledge base to answer that.",
+with a reason. Questions are limited per user per day (`DAILY_CHAT_REQUEST_LIMIT`, 30).
+
+```bash
+# 1. A conversation (the first question becomes its title)
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations -d '{}'
+#    -> {"id": "<conversation-id>", "title": "New conversation", ...}
+
+# 2. A policy question: an answer with validated citations
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
+  -d '{"content": "Can I return a laptop after 20 days?"}'
+#    -> 201: assistant_message.outcome "answered", content with [S1], and
+#       citations[]: id, filename, page_start, excerpt, source_id, chunk_id
+
+# 3. Open a citation's source
+curl -s -b alice.jar $API/sources/<source-id>
+
+# 4. A follow-up (retrieves with the previous question too)
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
+  -d '{"content": "And the warranty?"}'
+
+# 5. An unsupported question: outcome "abstained", abstain_reason "model_insufficient"
+#    ("no_evidence" when nothing is indexed; "no_valid_citation" when the model cited nothing valid)
+curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
+  -d '{"content": "Who is the CEO of Northstar Outfitters?"}'
+
+# 6. The persisted conversation, and the trace behind an answer
+curl -s -b alice.jar $API/conversations/<conversation-id>
+curl -s -b alice.jar $API/retrieval/traces/<assistant_message.metadata.trace_id>
+```
+
+When Gemini is unavailable or out of quota, a question gets an error response,
+never an answer or an abstention: 429 `ai_quota`, 503 `ai_unavailable`, or 502
+`ai_incomplete`. Nothing is saved. To check that uploaded documents are treated
+as data, upload the prompt-injection documents in
+[`backend/tests/fixtures/prompt_injection/`](backend/tests/fixtures/prompt_injection/README.md)
+and ask "How much does gift wrapping cost?". Details:
+[ADR 0011](docs/decisions/0011-m7-grounded-chat.md).
 
 ## Gemini (AI provider)
 

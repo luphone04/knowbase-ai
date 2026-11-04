@@ -687,6 +687,12 @@ GIN trigram index for fuzzy text search if performance warrants it.
 -   Index `(status, next_run_at, created_at)`.
 -   Tenant-safe composite foreign key to source.
 
+> **Implemented in Milestone 7** (migration `0009_conversations`). The two
+> tables below gain a per-conversation `position`, an assistant `outcome`
+> (`answered`, `abstained`), an `abstain_reason`, and `metadata`, and
+> `query_traces` gains tenant-safe foreign keys to them. See
+> `docs/decisions/0011-m7-grounded-chat.md`.
+
 #### `conversations`
 
 -   `id UUID PRIMARY KEY`

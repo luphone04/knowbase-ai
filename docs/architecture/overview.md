@@ -6,13 +6,14 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 - `db`, `migrate`, `api`, and `worker` (no frontend yet).
 - The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*` (file sources), `/api/v1/jobs/{id}`, and `/api/v1/retrieval/*` (M6).
 - Retrieval (M6): workspace-scoped pgvector search and PostgreSQL full-text search, fused with RRF, with a trace per search ("Retrieval" below).
+- Grounded chat (M7): `/api/v1/conversations*`, with per-user conversations, fresh retrieval for every question, cited answers or abstention, and provider errors kept separate ("Grounded chat" below).
 - The worker processes file ingestion and deletion jobs from the PostgreSQL queue, dispatching by source kind (`file` is the only kind).
 - Authentication and workspace isolation ("Request flow").
 - The Gemini provider layer ("AI provider layer"). Ingestion uses it for document embeddings.
 - File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
 - Website crawling was built in M5 and removed by owner decision (M5 is descoped). The server never fetches user-supplied URLs.
 
-**Planned:** chat (M7), frontend (M8), and evaluation (M9). See
+**Planned:** frontend (M8) and evaluation (M9). See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
 [ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
 [ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3),
@@ -20,7 +21,8 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 [ADR 0007](../decisions/0007-m5-website-crawler.md) (M5, superseded), and
 [ADR 0008](../decisions/0008-file-upload-only-scope.md) (file-upload-only scope), and
 [ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval), and
-[ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation).
+[ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation), and
+[ADR 0011](../decisions/0011-m7-grounded-chat.md) (M7 grounded chat).
 
 ## Request flow (authenticated API call)
 
@@ -157,6 +159,35 @@ flowchart LR
 | Gemini cost | `DAILY_RETRIEVAL_REQUEST_LIMIT` (per workspace) and `DAILY_QUERY_EMBEDDING_LIMIT` (installation) reserved before the query embedding, and given back if Gemini refuses it; no DB connection held during the call; clear 429/503 on provider errors (ADR 0010) |
 | Observability | One trace per search: candidates with ranks and raw scores, fused scores, settings, latency |
 
+## Grounded chat (M7)
+
+```mermaid
+flowchart LR
+    Q["POST /conversations/{id}/messages"] --> O["own conversation?<br/>(workspace + user, else 404)"]
+    O --> S["daily slots: chat per user,<br/>query embeddings per installation"]
+    S --> R["retrieval (M6)<br/>previous user question for follow-ups"]
+    R --> TR[("query_traces<br/>conversation_id")]
+    R --> C["excerpts S1..Sn<br/>dedupe, char budget"]
+    C -->|"none usable"| AB["abstain: no_evidence<br/>(no generation call)"]
+    C --> P["prompt: escaped &lt;source&gt; elements,<br/>bounded history, question"]
+    P --> G["Gemini generate (1 request)<br/>no DB connection held"]
+    G --> V["validate: keep given ids only,<br/>drop unknown URLs"]
+    V -->|"valid citation"| AN["answered + citations"]
+    V -->|"none"| AB2["abstain: model_insufficient<br/>or no_valid_citation"]
+    AN --> M[("messages: question + reply<br/>trace.message_id")]
+    AB --> M
+    AB2 --> M
+    G -->|"429 / 5xx / incomplete"| E["error response, turn not saved,<br/>trace.generation_error"]
+```
+
+| Concern | Mechanism |
+|---|---|
+| Reading another user's chat | Workspace guard **and** a `user_id` filter on every conversation query; composite keys to the owner's membership; 404 for foreign and random ids alike |
+| Prompt injection in documents | Excerpts, titles, file names, history, and the question are escaped inside their own elements; the system instruction says excerpts are evidence, not instructions |
+| Fabricated citations and links | Only ids the server assigned survive; URLs not in an excerpt are removed; no valid citation means no answer |
+| Outage or quota shown as an answer | Provider errors are 429/502/503 responses; nothing is saved; the trace records the category |
+| Gemini cost | `DAILY_CHAT_REQUEST_LIMIT` per user and `DAILY_QUERY_EMBEDDING_LIMIT` reserved first, given back when Gemini refuses the call; an empty workspace makes no call |
+
 ## AI provider layer (M3)
 
 ```mermaid
@@ -200,6 +231,6 @@ flowchart LR
 1. Ingest: parse the uploaded file, then clean, chunk, embed (`RETRIEVAL_DOCUMENT`, 768 dims, normalized), and store.
 2. Retrieve: vector (`<=>` cosine) and lexical (`websearch_to_tsquery` + `ts_rank_cd`, not BM25).
 3. Fuse: Reciprocal Rank Fusion with `k=60`, top 5.
-4. Generate: Gemini answer from `[S#]`-keyed excerpts.
-5. Validate: drop unknown citation IDs; abstain when there is no valid evidence.
+4. Generate: Gemini answer from `[S#]`-keyed, escaped excerpts with bounded history (M7).
+5. Validate: drop unknown citation IDs and URLs; abstain when no valid citation is left (M7).
 6. Evaluate: compare vector-only and hybrid modes on the seeded dataset.
