@@ -37,12 +37,14 @@ class AppError(Exception):
         message: str,
         *,
         headers: Mapping[str, str] | None = None,
+        details: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.headers = dict(headers or {})
+        self.details = details
 
 
 def error_response(
@@ -61,7 +63,9 @@ def error_response(
 
 async def _app_error(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, AppError)
-    return error_response(exc.status_code, exc.code, exc.message, headers=exc.headers)
+    return error_response(
+        exc.status_code, exc.code, exc.message, details=exc.details, headers=exc.headers
+    )
 
 
 async def _http_error(_: Request, exc: Exception) -> JSONResponse:

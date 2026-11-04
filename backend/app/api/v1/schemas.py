@@ -300,3 +300,144 @@ class ChatTurnOut(BaseModel):
     user_message: MessageOut
     assistant_message: MessageOut
     retrieval: TurnRetrievalOut
+
+
+# --- evaluation (M9, ADR 0014) ---------------------------------------------------------------
+
+
+class EvaluationRunIn(StrictRequest):
+    # Production modes to answer with (one generation per question each); [] = retrieval only.
+    answer_modes: list[Literal["vector", "hybrid"]] = Field(default=["hybrid"], max_length=2)
+
+    @field_validator("answer_modes")
+    @classmethod
+    def _unique_modes(cls, modes: list[str]) -> list[str]:
+        if len(set(modes)) != len(modes):
+            raise ValueError("each answer mode at most once")
+        return [mode for mode in ("vector", "hybrid") if mode in modes]
+
+
+class EvidenceOut(BaseModel):
+    source_key: str
+    quote: str
+
+
+class EvaluationQuestionOut(BaseModel):
+    id: uuid.UUID
+    key: str
+    position: int
+    category: str
+    question: str
+    previous_question: str | None
+    answerable: bool
+    expected_source_keys: list[str]
+    expected_answer: str | None
+    evidence: list[EvidenceOut]
+    absent_terms: list[str]
+    notes: str | None
+
+
+class DatasetOut(BaseModel):
+    name: str
+    version: str
+    sha256: str
+    description: str
+    questions: int
+    answerable: int
+    unanswerable: int
+    source_keys: list[str]
+
+
+class CorpusSourceOut(BaseModel):
+    key: str
+    status: str  # ready, missing, not_ready, content_differs
+    chunks: int
+
+
+class OtherSourceOut(BaseModel):
+    name: str
+    chunks: int
+    status: str
+
+
+class CorpusOut(BaseModel):
+    ready: bool
+    sources: list[CorpusSourceOut]
+    other_sources: list[OtherSourceOut]
+    total_chunks: int
+    indexing: int
+
+
+class EvaluationLimitsOut(BaseModel):
+    """What one run would use, and what is left today (UTC) in each budget."""
+
+    query_embeddings_per_run: int
+    generations_per_answer_mode: int
+    runs_left: int
+    query_embeddings_left: int
+    generations_left: int
+    question_interval_seconds: float
+
+
+class EvaluationOverviewOut(BaseModel):
+    dataset: DatasetOut
+    corpus: CorpusOut
+    limits: EvaluationLimitsOut
+    questions: list[EvaluationQuestionOut]
+
+
+class EvaluationRunOut(BaseModel):
+    id: uuid.UUID
+    status: str  # queued, running, succeeded, failed
+    dataset_name: str
+    dataset_version: str
+    dataset_sha256: str
+    questions_total: int
+    questions_done: int
+    answer_modes: list[str]
+    error_message: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    config: dict[str, Any]
+    corpus: dict[str, Any]
+    summary: dict[str, Any]
+
+
+class EvaluationResultOut(BaseModel):
+    variant: str
+    retrieval_mode: str
+    retrieval_query: str
+    retrieved: list[dict[str, Any]]
+    retrieved_sources: list[dict[str, Any]]
+    vector_candidates: int | None
+    lexical_candidates: int | None
+    top_vector_distance: float | None
+    hit_at_5: bool | None
+    recall_at_5: float | None
+    reciprocal_rank: float | None
+    embedding_latency_ms: int | None
+    retrieval_latency_ms: int | None
+    answer_evaluated: bool
+    outcome: str | None  # answered, abstained, provider_error
+    abstain_reason: str | None
+    answer: str | None
+    citations: list[dict[str, Any]]
+    citation_precision: float | None
+    citation_recall: float | None
+    abstention_correct: bool | None
+    answer_latency_ms: int | None
+    token_usage: dict[str, Any]
+    details: dict[str, Any]
+    error_stage: str | None
+    error_category: str | None
+    error_message: str | None
+
+
+class EvaluationQuestionResultOut(BaseModel):
+    question: EvaluationQuestionOut
+    results: list[EvaluationResultOut]  # one per configuration evaluated so far
+
+
+class EvaluationRunDetailOut(EvaluationRunOut):
+    questions: list[EvaluationQuestionResultOut]
