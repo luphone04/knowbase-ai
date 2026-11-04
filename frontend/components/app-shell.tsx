@@ -1,7 +1,14 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BookOpenText, FileText, LayoutDashboard, LogOut, type LucideIcon } from "lucide-react";
+import {
+  BookOpenText,
+  FileText,
+  LayoutDashboard,
+  LogOut,
+  MessageSquare,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -13,6 +20,7 @@ import { cn } from "@/lib/utils";
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/sources", label: "Documents", icon: FileText },
+  { href: "/chat", label: "Chat", icon: MessageSquare },
 ];
 
 /** Sidebar on wide screens; a top bar with the same links on narrow ones. */
@@ -49,7 +57,7 @@ export function AppShell({ session, children }: { session: Session; children: Re
 
   return (
     <div className="flex min-h-svh flex-1 flex-col md:flex-row">
-      <aside className="flex shrink-0 flex-col gap-3 border-b bg-muted/30 p-3 md:w-60 md:border-r md:border-b-0 md:p-4">
+      <aside className="flex shrink-0 flex-col gap-3 border-b bg-muted/30 p-3 md:sticky md:top-0 md:h-svh md:w-60 md:border-r md:border-b-0 md:p-4">
         <div className="flex items-center justify-between gap-2">
           <Link href="/dashboard" className="flex items-center gap-2 px-1 font-semibold tracking-tight">
             <BookOpenText className="size-5" aria-hidden />

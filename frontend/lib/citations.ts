@@ -33,6 +33,17 @@ export function isSafeExternalUrl(href: string | undefined): boolean {
   return !!href && /^https?:\/\/[^\s]+$/i.test(href);
 }
 
+/**
+ * The excerpt's paragraphs for display. Source files are often hard-wrapped, so single
+ * line breaks are joined; blank lines still separate paragraphs. The text is unchanged.
+ */
+export function excerptParagraphs(excerpt: string): string[] {
+  return excerpt
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean);
+}
+
 /** "Page 3", "Pages 3–4", or null when the source has no pages (TXT, MD, DOCX). */
 export function pageLabel(citation: Pick<Citation, "page_start" | "page_end">): string | null {
   const { page_start: start, page_end: end } = citation;

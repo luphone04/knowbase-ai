@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { citationIdFromHref, isSafeExternalUrl, linkCitations, pageLabel } from "./citations";
+import {
+  citationIdFromHref,
+  excerptParagraphs,
+  isSafeExternalUrl,
+  linkCitations,
+  pageLabel,
+} from "./citations";
 
 const cited = [{ id: "S1" }, { id: "S2" }];
 
@@ -56,5 +62,15 @@ describe("pageLabel", () => {
     expect(pageLabel({ page_start: 3, page_end: null })).toBe("Page 3");
     expect(pageLabel({ page_start: 3, page_end: 4 })).toBe("Pages 3–4");
     expect(pageLabel({ page_start: null, page_end: null })).toBeNull();
+  });
+});
+
+describe("excerptParagraphs", () => {
+  it("joins hard-wrapped lines and keeps paragraph breaks", () => {
+    expect(excerptParagraphs("Laptops can be returned\nwithin 14 days.\n\nOpened laptops\n  pay a fee.")).toEqual([
+      "Laptops can be returned within 14 days.",
+      "Opened laptops pay a fee.",
+    ]);
+    expect(excerptParagraphs("\n\n")).toEqual([]);
   });
 });
