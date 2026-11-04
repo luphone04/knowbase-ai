@@ -32,7 +32,11 @@ export function AssistantMessage({
 }) {
   if (message.outcome === "abstained") {
     return (
-      <div className="max-w-[85%] rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3">
+      <div
+        data-testid="assistant-message"
+        data-outcome="abstained"
+        className="max-w-[85%] rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3"
+      >
         <p className="flex items-center gap-2 text-sm font-semibold text-amber-900">
           <SearchX className="size-4" aria-hidden />
           Not found in your documents
@@ -47,7 +51,11 @@ export function AssistantMessage({
   }
 
   return (
-    <div className="max-w-[85%] rounded-lg border bg-card px-3.5 py-3">
+    <div
+      data-testid="assistant-message"
+      data-outcome="answered"
+      className="max-w-[85%] rounded-lg border bg-card px-3.5 py-3"
+    >
       <AnswerMarkdown content={message.content} citations={message.citations} onCite={onCite} />
       {message.citations.length > 0 ? (
         <div className="mt-3 border-t pt-2">

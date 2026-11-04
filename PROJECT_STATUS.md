@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M8 — Frontend product experience** (minimal demonstration layer, [ADR 0013](docs/decisions/0013-m8-frontend-scope.md)) |
-| Status | **M8 IN_PROGRESS** (started 2026-11-04 after the owner approved the revised plan). M7 approved (`APPROVE MILESTONE 7`, 2026-11-04) |
+| Status | **M8 READY_FOR_REVIEW** (2026-11-04): a minimal Next.js interface over the existing API; the Playwright acceptance flow passed with live Gemini; no backend changes. Waiting for `APPROVE MILESTONE 8`. M9 not started |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 step 6: dashboard) |
+| Last verified checkpoint | 2026-11-04 (M8 acceptance passed; temporary accounts removed; original data unchanged) |
 
 ## Milestones
 
@@ -22,7 +22,7 @@
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
-| M8 | Frontend product experience (minimal; ADR 0013) | IN_PROGRESS | see Commits | — |
+| M8 | Frontend product experience (minimal; ADR 0013) | READY_FOR_REVIEW | see Commits | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
 ## M8 plan and checklist (SPEC.md §17.13, as scoped by ADR 0013)
@@ -41,21 +41,56 @@ abstention.
 | 4 | Documents: list, upload, live status, detail, re-index, delete | Done: browser check against the live API and worker passed (empty state; `.doc` refused before upload; a fake PDF shows the server's 422 message; upload polled Queued → Processing → Ready; detail with chunks and job result; re-index finishes as unchanged; identical re-upload reports nothing changed; confirmed delete leaves the list; PDF page count on the detail page; no horizontal scroll at 390 px). 25 unit tests. Used 10 embedding texts (2 Markdown, 8 PDF) in a temporary workspace; no generation |
 | 5 | Chat and citations: conversations, answers with citation chips, citation panel, abstention, AI errors | Done: live Gemini check in a temporary workspace with the 5 Northstar documents: the laptop question got a cited answer (`returns-policy.md`); the citation panel shows the saved excerpt; the packaging follow-up was answered in the same conversation (contextualized, `shipping-policy.md`); an unrelated question showed the abstention card (`model_insufficient`); an intercepted 503 `ai_unavailable` showed the error and kept the question; reload shows 3 saved turns; usable at 390 px. 3 generation requests. 26 unit tests |
 | 6 | Dashboard: workspace, AI status, document counts | Done: counts (documents, ready, queued or processing, failed, indexed chunks) checked equal to totals computed from `GET /sources`; the 5 most recently updated documents; AI status from `GET /ai/status` (no Gemini call); no horizontal scroll at 390 px |
-| 7 | Acceptance: Playwright flow (live Gemini), desktop and narrow widths, key not in the build, docs → READY_FOR_REVIEW | Not started |
+| 7 | Acceptance: Playwright flow (live Gemini), desktop and narrow widths, key not in the build, docs → READY_FOR_REVIEW | Done: see "M8 acceptance evidence" |
 
 Checklist:
-- [ ] Login and register pages; logout
-- [ ] Dashboard with real counts (summed from `GET /sources`, which returns every source) and AI status
-- [ ] Source list and file upload
-- [ ] Source detail with job progress and errors; re-index and delete
-- [ ] Chat with citations and follow-up history
-- [ ] No-answer and provider-error states
-- [ ] Loading, empty, success, and error states
-- [ ] Responsive layout (usable at narrow widths) and basic accessibility
-- [ ] All buttons wired to real API calls
-- [ ] Frontend lint, typecheck, unit tests, and production build in CI
-- [ ] Browser smoke test through the whole acceptance flow
+- [x] Login and register pages; logout
+- [x] Dashboard with real counts (summed from `GET /sources`, which returns every source) and AI status
+- [x] Source list and file upload
+- [x] Source detail with job progress and errors; re-index and delete
+- [x] Chat with citations and follow-up history
+- [x] No-answer and provider-error states
+- [x] Loading, empty, success, and error states
+- [x] Responsive layout (usable at 390 px) and basic accessibility (labelled fields, status as icon plus text, live regions for upload and chat updates, keyboard-usable citation buttons and dialogs)
+- [x] All buttons wired to real API calls
+- [x] Frontend lint, typecheck, unit tests, production build, and bundle key scan in CI (job added; all pass locally and inside the Docker build; the CI run result could not be checked from this machine, see "Problems found")
+- [x] Browser smoke test through the whole acceptance flow (`frontend/e2e/acceptance.spec.ts`)
 - [x] ~~Evaluation page shell~~: moved to M9 (ADR 0013)
+
+## M8 acceptance evidence (2026-11-04)
+
+| Criterion | Evidence | Result |
+|---|---|---|
+| Register → upload → index → ask → grounded answer → open citation → follow-up → abstention, in the browser | `npm run e2e` against the Compose production frontend, the live API and worker, and live `gemini-3.5-flash-lite`: register; 5 Northstar documents uploaded and polled to Ready; "I bought a laptop 20 days ago. Can I return it?" answered with a `returns-policy.md` citation; the panel shows the excerpt ("14 days"); "What if the packaging is damaged?" answered in the same conversation, marked as a follow-up; "Who won the 1998 football World Cup?" shows the abstention card; reload keeps 3 turns; logout | **PASS** (1 test, 32.6 s) |
+| No hardcoded metrics or fake chat responses | Dashboard totals compared with totals computed from `GET /sources`; answers, citations, and abstentions are rendered from API responses only. The one simulated response (a 503 `ai_unavailable`) was injected by the check script in the browser to test the error state, not by the app | PASS |
+| No Gemini key in the browser or network responses | `npm run check:bundle` (also run inside the Docker build): 364 build files, no key-shaped strings, no variable name, and not the configured key itself; the e2e test checked every `/api/v1` response for key-shaped strings and the configured key; the frontend container's environment has no backend settings | PASS |
+| Desktop and narrow widths | 1440 px and 390 px: no horizontal scroll on the dashboard, documents, document detail, and chat; navigation becomes a top bar; conversations open in a side panel on narrow screens | PASS |
+| Errors and abstention are clear | Upload rejected before sending (`.doc`) and by the server (fake PDF, 422 message); failed jobs show `last_error`; AI errors say nothing was saved and keep the question; abstentions show the reason (`no_evidence`, `model_insufficient`, or `no_valid_citation`) | PASS |
+| Backend unchanged | `git diff 6d81d00 -- backend` is empty; `docker compose exec api pytest -q`: 725 passed, 19 skipped (integration tests use their own temporary database) | PASS |
+| Data preserved | Backup `~/knowbase-backups/knowbase-before-m8-frontend-20261104T111234Z.dump` before Compose changes; after all checks and cleanup, per-table fingerprints (users, workspaces, memberships, sources, documents, chunks with vectors, jobs, conversations, messages) and the uploads checksum match the pre-M8 snapshot; `test.pdf` untouched | PASS |
+
+Gemini use for all M8 checks: 6 answer requests (3 in the step 5 check, 3 in the acceptance run) and about 30 document embeddings (2 + 8 in step 4, 10 in step 5, 10 in the acceptance run) plus one query embedding per question, all in temporary workspaces.
+
+**Temporary accounts:** `m8-check-…` (steps 3–6) and `m8-e2e-…` (acceptance). Their documents were deleted through the API (files, chunks, and cached vectors removed by the delete jobs), both sessions were logged out, and a guarded SQL block (exactly these 2 users, each the only member of its own workspace, no sources left) removed the 2 workspaces (with their conversations and traces) and the 2 users.
+
+### Problems found and fixed during M8
+
+- **The build's key scan failed from step 3 to step 6.** The not-configured error message named `GEMINI_API_KEY`; once `lib/errors.ts` was bundled (from the auth pages on), `npm run check:bundle` rightly failed. It was found when the Docker build ran the scan (a rebuild before the acceptance run). Fixed in `e5ad0fc` (the message no longer names the variable; the scan stays strict). **The CI frontend job most likely failed on `949f879`, `362245a`, `1a6d76b`, and `ee826bb`.** The `gh` CLI isn't installed here, so CI results weren't checked; the owner should confirm the run for the final commit is green.
+- GitHub had a Git Operations incident (githubstatus.com) during step 2: two pushes were rejected with server errors. The commit stayed local and was pushed with step 3. Nothing was forced.
+- `create-next-app` pinned `@types/node` 20, which conflicts with Vitest 5 and with Node 24; it is now `^24`.
+- The scaffold enabled Cache Components and partial prefetching; both are off, since every page renders in the browser (ADR 0013).
+- Layout fixes found in screenshots: a long conversation title widened its column; the scroll to the newest message left an error under the sticky question box; the sidebar scrolled away with long chats; hard-wrapped excerpts read poorly (now shown as paragraphs, text unchanged).
+
+### Manual review steps (owner)
+
+1. `docker compose up --build -d` (builds the frontend with `NEXT_PUBLIC_API_BASE_URL=http://localhost:8001/api/v1` from `.env`), then open http://localhost:3000. Use `localhost`, not `127.0.0.1`.
+2. Register a new account (or sign in), go to Documents, and upload the files in `sample_data/demo_store/`. Watch each go Queued → Processing → Ready.
+3. Open a document: details, indexed content, recent jobs. Try Re-index (finishes as unchanged).
+4. Chat: ask "I bought a laptop 20 days ago. Can I return it?", click the `S1` chip, then ask "What if the packaging is damaged?" and an unrelated question.
+5. Check the dashboard totals against the Documents page, and the AI status card.
+6. Narrow the window to phone width and repeat a few steps.
+7. Optional: `cd frontend && npm run e2e` (see README; remove the account it creates afterwards).
+8. Confirm the GitHub Actions run for the latest commit is green (see "Problems found").
 
 Local setup (owner, 2026-11-04): the API is published on `127.0.0.1:8001` (`API_HOST_PORT=8001`), so
 the local `.env` has `NEXT_PUBLIC_API_BASE_URL=http://localhost:8001/api/v1`; the frontend runs on
@@ -390,11 +425,13 @@ up to `2b8513e`.
 | M7 | see `git log` | docs: record M7 approval |
 | M8 | `8713e45` | docs: record the M8 frontend scope (ADR 0013) and start Milestone 8 |
 | M8 | `cbdcecc` | feat(frontend): scaffold the Next.js app with the API client, types, unit tests, and CI job |
-| M8 | see `git log` | feat(compose): add the frontend service (standalone Next.js, no backend env) |
+| M8 | see `git log` (pushed with `949f879`) | feat(compose): add the frontend service (standalone Next.js, no backend env) |
 | M8 | `949f879` | feat(frontend): add register, login, logout, and the signed-in app shell |
 | M8 | `362245a` | feat(frontend): add documents: upload, live status, detail, re-index, and delete |
 | M8 | `1a6d76b` | feat(frontend): add chat with cited answers, a citation panel, abstention, and AI error states |
-| M8 | see `git log` | feat(frontend): add the dashboard: document totals and AI provider status |
+| M8 | `ee826bb` | feat(frontend): add the dashboard: document totals and AI provider status |
+| M8 | `e5ad0fc` | fix(frontend): keep the Gemini key variable's name out of the browser bundle |
+| M8 | see `git log` | test(frontend): add the Playwright acceptance flow and record M8 results |
 
 ## Blockers
 
@@ -457,6 +494,7 @@ None.
 - **Small demo corpus:** each document is 1–2 chunks, so retrieval is checked at document level. Chunk-size tuning and recall metrics come in M9.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
 - **Deferred from M8 (ADR 0013), not scheduled:** `GET /analytics/overview` and the dashboard metrics that need it (job totals across history, a recent-jobs list, chat request counts, token usage). Not built: streaming, conversation rename/delete, workspace settings and members, a retrieval-mode switch, dark mode, multi-file upload, a file viewer.
+- **Frontend limitations (M8):** a question waits for the whole answer (no streaming; up to about 90 s when Gemini is slow); a new chat whose first question fails leaves an empty "New conversation" (there is no conversation deletion); the conversation list shows the newest 100; the dashboard's "last call" and "last error" are what the API process has seen since it started (not the worker's); citations show the excerpt saved with the answer, which can differ from a document re-indexed later; the app must be opened at the exact `FRONTEND_ORIGIN`; light theme only. The acceptance test needs live Gemini, so CI runs only lint, types, unit tests, build, and the key scan.
 - **Oversized uploads in the browser:** the body-size middleware's 413 has no CORS headers (ADR 0010 deferred item), so the frontend checks the size itself before uploading. The backend item stays open.
 - `uv` isn't installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6.
 - Port 8000 is used by another local project; use `API_HOST_PORT`.

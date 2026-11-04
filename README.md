@@ -18,7 +18,8 @@ This is a well-engineered prototype for local demos, not production software.
 > **Milestone 7 (grounded chat)** is approved: conversations with answers that
 > cite your documents, abstention when they don't support an answer, and clear
 > errors when Gemini is unavailable. **Milestone 8 (a minimal web interface over
-> this API)** is in progress.
+> this API)** is ready for review: register, upload and index documents, and chat
+> with cited answers at http://localhost:3000.
 > See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
@@ -112,6 +113,26 @@ npm run lint && npm run typecheck && npm test && npm run build && npm run check:
 
 Stop the Compose `frontend` container first (`docker compose stop frontend`),
 since both use port 3000.
+
+### Acceptance test (browser, live stack)
+
+One Playwright test walks the whole flow against the running app: register,
+upload the five Northstar documents, wait until they are Ready, ask the laptop
+question, open its citation, ask a follow-up, ask an unrelated question and see
+the abstention, then log out. It also checks every API response for Gemini key
+material and the pages at 390 px.
+
+```bash
+cd frontend
+npx playwright install chromium   # once
+npm run e2e                       # http://localhost:3000; set E2E_BASE_URL to change
+```
+
+It needs the full stack with a Gemini key and uses about 3 answer requests and
+10 document embeddings per run, so it is not part of CI. Each run creates an
+`m8-e2e-…@example.com` account; the app has no account deletion, so remove it
+afterwards (delete its documents in the UI, then remove the user and workspace
+in the database).
 
 ## Try authentication and workspace isolation (curl)
 
