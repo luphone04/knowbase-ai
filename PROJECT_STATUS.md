@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M6 — Hybrid retrieval and RRF** |
-| Status | **READY_FOR_REVIEW**: checks pass, live retrieval review PASS (7/7 known queries in both modes), pushed to `main`; awaiting `APPROVE MILESTONE 6`. C1 approved. M7 not started |
+| Status | **READY_FOR_REVIEW**: checks pass, live retrieval review PASS (7/7 known queries in both modes), pushed to `main`; awaiting `APPROVE MILESTONE 6`. The M0–M6 audit remediation is complete (see below; [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md)). C1 approved. M7 not started |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-03 |
+| Last verified checkpoint | 2026-11-04 (audit remediation) |
 
 ## Milestones
 
@@ -24,6 +24,40 @@
 | M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
+
+## M0–M6 audit remediation (2026-11-04)
+
+The audit found 0 critical, 3 high, and about 20 medium findings. All high findings and every
+medium finding except M15 (an owner decision) and the deferred items are fixed. Decisions and the
+deferred list: [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md). Every fix has a
+regression test that failed on the previous code, or a mutation check for coverage-only tests.
+
+| Area | Findings | Commits |
+|---|---|---|
+| Untrusted documents | H1, H2, H3, M12, M13 | `cebf68d`, `858ca84`, `05ecb18`, `4625bc9` |
+| Uploads, deletes, workers on one source | M1, M2, M3, M4, queue edge cases | `c001064`, `c6b6021`, `0beb44f` (migration 0008) |
+| Gemini cost and reliability | M6 (SDK continuation), M7, M8, 408/unknown errors, overall deadline | `c691e58`, `1584893`, `feeaed1`, `7a61af4` |
+| DB connections, query budget | M5, M9, retriever commit, no-key and empty-workspace slots | `8880081` |
+| Logging | M10 | `c7f0035` |
+| Retrieval | M14, NUL, deterministic cut-off, M16 | `55bf496`, `5c77929` |
+| Hygiene and security | M11, 413, token lifetime, secrets differ, base URL, proxy headers, test pins | `f46a4d2`, `517f212`, `095e823`, `c7c7285`, `26f1c2d` |
+
+**Verification:**
+- Host: 634 passed, 1 skipped (`RLIMIT_AS` is Linux only), in two runs in a row.
+- `api` container after a rebuild: 616 passed, 19 skipped (files outside the image); the
+  memory-limit test passes there.
+- ruff, format, mypy (strict), and `uv lock --check` are clean.
+- `alembic check` is clean, and base → head → base → head passes on a throwaway database.
+- `compose config` and the hygiene check pass.
+
+**Dev data:** migration 0008 was applied to the dev database after a `pg_dump` backup. Row
+fingerprints (users, workspaces, memberships, sources, documents, chunks, cache, jobs) and the
+uploaded file are identical before and after; only the Alembic version changed.
+
+### Decision needed (owner): keyword search, AND or OR
+
+Still open (M15; ADR 0009). `websearch_to_tsquery` requires every word, so natural questions rarely
+match lexically. The remediation fixed the dash-as-NOT bug only.
 
 ## M6 checklist (SPEC.md §17.11)
 
@@ -214,6 +248,7 @@ None.
   - [ADR 0005](docs/decisions/0005-m3-gemini-provider.md) (M3);
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
   - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
+- Implementation: [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md) (audit remediation): per-source serialization with source-then-job row locks; parsing in a killable child process with document limits and job deadlines; quota and rate-limit waits without attempts; budget refunds for refused calls; an installation-wide `DAILY_QUERY_EMBEDDING_LIMIT`; no DB connection held during Gemini calls.
 - Implementation: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md) (M6):
   - two separate retrieval modes;
   - RRF on ranks only;
@@ -234,11 +269,17 @@ None.
 - **File uploads only** (ADR 0008). Bringing back any URL-based ingestion would be a new milestone, with SSRF protection required (see ADR 0007 and git history for the earlier design).
 - **The pre-0006 backup restores only to revision 0005,** with the old code. After 0006, a downgrade recreates an empty `crawl_pages` table but cannot bring back purged website data (there was none on the dev database).
 - **No OCR:** scanned PDFs, legacy `.doc`, and password-protected files are rejected. PDF headings are heuristic, and multi-column PDFs may interleave.
-- **One worker, one job at a time** (MVP by design). Free-tier Gemini latency varies; jobs retry and back off.
+- **One worker, one job at a time** (MVP by design). Extra workers are safe: one job per source at a time, enforced by row locks (ADR 0010). Free-tier Gemini latency varies; jobs retry and back off.
 - **A crashed worker's job is recovered after its lease** (120 s) plus the next recovery pass. Docker's 10 s stop grace usually interrupts a running job, which is then recovered.
-- **The daily embedding budget is shared by all workspaces** (one Gemini project) and resets at 00:00 UTC. Gemini's own daily quota resets at midnight Pacific; those deferrals retry hourly. Whether queries share the budget is decided in M7. The 30-chats-per-day cap arrives with chat in M7.
+- **The daily embedding budget is shared by all workspaces** (one Gemini project) and resets at 00:00 UTC. Gemini's own daily quota resets at midnight Pacific; those jobs wait until 08:05 UTC. Query embeddings have their own installation-wide limit (`DAILY_QUERY_EMBEDDING_LIMIT`). The 30-chats-per-day cap arrives with chat in M7.
 - **Deleting a source also removes its job history.**
-- **`pypdf` runs inside the worker process,** with no separate sandbox.
+- **Parsing runs in a child process** with a timeout and (on Linux) a memory cap, not a full sandbox: a parser exploit would still run as the worker's user.
+- **Deferred from the audit** (ADR 0010):
+  - CORS headers on middleware errors (M8);
+  - missing indexes;
+  - offline SQL for migration 0006;
+  - container and CI hardening;
+  - several low items.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
 - **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`; decision pending, see M6 above).
 - **Retrieval has no relevance threshold:** an unanswerable question still returns the nearest chunks. Abstention arrives with chat in M7.

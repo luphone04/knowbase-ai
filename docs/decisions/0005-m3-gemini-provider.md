@@ -43,3 +43,12 @@
 
 - **Daily guardrails from SPEC.md §2.5:** 30 chat requests per user, 300 embedded texts per day. They count real usage, so they belong where usage happens: embeddings in M4 (after deduplication, so cached texts don't count) and chat in M7. The PostgreSQL limiter from M2 supports daily windows since its per-rule pruning fix.
 - **Overall retry time budget:** the worst case is about 90 s for a timeout, or up to 4 attempts for overload errors (seen live: 41.6 s with 3 × 503). Chat (M7) may want a lower retry count than background ingestion; both are configurable.
+
+## Amendment (4 November 2026, ADR 0010)
+
+- "Exactly one request" was not true: google-genai 2.x also follows continuation tokens
+  automatically. That is now disabled (`automatic_continuation=False`), which makes the claim hold.
+- "About 90 s" was the per-attempt time. One call could take about 6 minutes (4 attempts plus
+  backoff). `GEMINI_CALL_DEADLINE_SECONDS` (120) now bounds it: no retry starts after the
+  deadline.
+- 408 and 499 are retried; unreadable responses are `InvalidProviderResponse`.

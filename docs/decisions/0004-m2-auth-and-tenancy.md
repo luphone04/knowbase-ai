@@ -63,3 +63,9 @@ Plus database constraints: the `workspace_members` composite primary key, cascad
 - Behind Docker Desktop's port forwarding, all browser traffic shares one peer address, so the per-IP limits act globally on a local machine.
 - No password reset, email verification, refresh tokens, MFA, or invitations (memberships beyond the owner are only created in tests).
 - **Fixed windows are clock-aligned** (every 15 minutes). Attempts just before and just after a rollover land in different windows, so up to 2 × limit (10) can be verified within moments. `test_fixed_window_rollover_grants_a_fresh_allowance` records this behaviour. The sustained rate is still 5 per 15 minutes. A strict "at most 5 in any rolling 15 minutes" would need a sliding-log limiter (one row per attempt, with a per-key lock), which means a schema change.
+
+## Amendment (4 November 2026, ADR 0010)
+
+"Exactly two places" no longer holds: the job queue's cross-workspace claim and recovery
+statements (`app/worker/queue.py`) also opt out with `SKIP_WORKSPACE_SCOPE`, each filtering by
+the job's own workspace explicitly. The bypass is still per statement and greppable.

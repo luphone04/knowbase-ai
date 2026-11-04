@@ -19,7 +19,8 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 [ADR 0006](../decisions/0006-m4-file-ingestion.md) (M4),
 [ADR 0007](../decisions/0007-m5-website-crawler.md) (M5, superseded), and
 [ADR 0008](../decisions/0008-file-upload-only-scope.md) (file-upload-only scope), and
-[ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval).
+[ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval), and
+[ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation).
 
 ## Request flow (authenticated API call)
 
@@ -104,7 +105,7 @@ sequenceDiagram
     A-->>B: 202 {source, job}   (no parsing, no Gemini)
     W->>P: claim job: FOR UPDATE SKIP LOCKED, new lock_token, commit
     W->>V: read file
-    W->>W: parse (pypdf / python-docx / text) → clean → hash
+    W->>W: parse in a child process (pypdf / python-docx / text; time, memory, page, and size limits) → clean → hash
     alt content unchanged
         W->>P: mark ready (0 embeddings)
     else changed or new
@@ -121,12 +122,14 @@ sequenceDiagram
 | Concern | Mechanism |
 |---|---|
 | Two workers, one job | `FOR UPDATE SKIP LOCKED` claim, committed before slow work |
+| Two jobs, one source | A source with a running job is not claimed; uploads, deletes, and the worker lock the source row first (then the job); a superseded job never publishes |
+| Hostile document | Parsing in a killable child process (`PARSE_TIMEOUT_SECONDS`, `PARSE_MEMORY_LIMIT_MB`); page, text, and chunk limits checked while parsing; every job has a deadline (`JOB_MAX_RUNTIME_SECONDS`) |
 | Worker crash | Lease lapses; recovery requeues the job (or fails it when out of attempts) |
 | Stale worker wakes up | Fencing `lock_token` on every write; its publish and heartbeat are refused |
 | Re-upload or reindex of unchanged content | Same hash, chunker, and model: no chunking, no Gemini calls |
 | Changed content | Chunks rebuilt; unchanged chunk texts reuse cached vectors |
 | Failed replacement | Old chunks untouched until a single publish transaction; any failure rolls back |
-| Free-tier protection | Installation-wide daily text budget, reserved atomically; cached texts never count |
+| Free-tier protection | Installation-wide daily text budget, reserved atomically and refunded when Gemini refuses a call; cached texts never count; quota and rate-limit waits don't use attempts |
 | Tenant isolation | Composite `(workspace_id, …)` foreign keys plus the session guard; claim and recovery are the only explicit cross-workspace statements |
 
 ## Retrieval (M6)
@@ -151,7 +154,7 @@ flowchart LR
 | Mixing embedding models | Vector search compares only chunks with the configured `embedding_model` |
 | Score scales | RRF combines ranks only; raw distances and `ts_rank_cd` are reported, never added |
 | Filtered ANN under-returning | `hnsw.iterative_scan = strict_order` |
-| Gemini cost | `DAILY_RETRIEVAL_REQUEST_LIMIT` reserved before the query embedding; clear 429/503 on provider errors |
+| Gemini cost | `DAILY_RETRIEVAL_REQUEST_LIMIT` (per workspace) and `DAILY_QUERY_EMBEDDING_LIMIT` (installation) reserved before the query embedding, and given back if Gemini refuses it; no DB connection held during the call; clear 429/503 on provider errors (ADR 0010) |
 | Observability | One trace per search: candidates with ranks and raw scores, fused scores, settings, latency |
 
 ## AI provider layer (M3)

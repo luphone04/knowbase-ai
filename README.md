@@ -153,7 +153,17 @@ What goes wrong, and how it shows:
 - **Unsupported type or fake content:** `415` / `422` immediately. Nothing is stored.
 - **Damaged, scanned (no text), or password-protected PDF:** the job fails once
   with a clear `last_error`. It isn't retried, and no OCR is attempted.
-- **Gemini busy:** the job retries with backoff (shown in `last_error`).
+- **Too big to index:** more than `MAX_PDF_PAGES` (500) pages, `MAX_DOCUMENT_CHARS`
+  (2,000,000) characters of text, or `MAX_DOCUMENT_CHUNKS` (1,500) chunks. These
+  are checked while parsing, so a small file that expands hugely stops early.
+  The job fails once, naming the setting.
+- **A document that hangs or exhausts the parser:** parsing runs in a separate
+  process. It is stopped after `PARSE_TIMEOUT_SECONDS` (120) or at
+  `PARSE_MEMORY_LIMIT_MB` (1536, Linux), and no job runs longer than
+  `JOB_MAX_RUNTIME_SECONDS` (900).
+- **Gemini busy:** the job retries with backoff (shown in `last_error`). A
+  per-minute rate limit waits without using an attempt. Gemini's daily quota
+  waits until 08:05 UTC, after the midnight-Pacific reset.
 - **Daily limit reached** (`DAILY_EMBEDDING_TEXT_LIMIT`, 300 texts per UTC day,
   all workspaces): the job waits until 00:00 UTC. Finished batches are kept,
   and cached or unchanged text never counts.
@@ -174,7 +184,9 @@ docker compose logs -f worker   # ids, counts, and timings only, never document 
 Retrieval is inspectable before chat exists. Upload the fictional demo
 documents in [`sample_data/demo_store/`](sample_data/README.md), then search.
 Each search makes one Gemini request, to embed the query. Searches are limited
-per workspace per day (`DAILY_RETRIEVAL_REQUEST_LIMIT`, 100).
+per workspace per day (`DAILY_RETRIEVAL_REQUEST_LIMIT`, 100), and in total for
+the installation (`DAILY_QUERY_EMBEDDING_LIMIT`, 500). A search spends nothing
+without a key, in an empty workspace, or when Gemini refuses the request.
 
 ```bash
 API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
@@ -228,6 +240,8 @@ The backend talks to Gemini only through `app/providers`:
     at midnight Pacific.
   - A request that misses its deadline (504) is not retried; raise
     `GEMINI_REQUEST_TIMEOUT_SECONDS` (default 90) instead.
+  - No retry starts after `GEMINI_CALL_DEADLINE_SECONDS` (120), so one call
+    lasts at most that plus one request timeout.
   - Invalid requests are never retried, and **nothing ever falls back to
     another model, a paid tier, or Vertex AI.**
 - The key is read only from the backend `.env`. It never appears in
@@ -286,7 +300,8 @@ against a pgvector service container.
 ## Milestone 0 preflight tools
 
 ```bash
-# Repository hygiene: fails if secrets or local data are tracked or staged
+# Repository hygiene: fails if secrets, session tokens, cookie jars (*.jar), or
+# local data are tracked or staged (it reads the git index, archives included)
 bash scripts/check_repo_hygiene.sh
 
 # Live Gemini smoke test (needs GEMINI_API_KEY in .env; makes 5 API requests)

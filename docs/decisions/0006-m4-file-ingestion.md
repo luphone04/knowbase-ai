@@ -87,3 +87,11 @@ Deterministic and paragraph-aware: target 1,800, maximum 2,400, overlap 250, all
 - **The daily budget uses UTC days,** while Gemini's own daily quota resets at midnight Pacific. Gemini quota deferrals retry hourly.
 - **Deleting a source removes its job history,** so `GET /jobs/{id}` for a finished delete job returns 404.
 - The API trusts the PDF signature check plus worker-side parsing. A PDF that crashes `pypdf` fails its job cleanly, but `pypdf` itself runs in the worker process. There is no separate sandbox.
+
+## Amendment (4 November 2026, ADR 0010)
+
+- Parsing now runs in a killable child process, within per-document limits. Jobs have a deadline.
+  Work on one source is serialized with row locks, and cleanup deletes only finished jobs' files.
+  Cache rows record their source (migration 0008). Daily-quota deferrals wait for the Pacific reset.
+- Known limitation, not yet fixed: a heading longer than about 280 characters can still become a
+  chunk on its own, contrary to "a heading is never a chunk on its own" above.

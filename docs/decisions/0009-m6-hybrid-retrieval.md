@@ -93,3 +93,15 @@ query):
 2. use the `english` configuration (stop-words and stemming) for the query
    and the generated column, which would need a migration;
 3. leave it as it is, and let M9's evaluation measure it.
+
+## Amendment (4 November 2026, ADR 0010)
+
+- The demo corpus is **10 chunks**; the "18 chunks" above also counted another uploaded file.
+- The iterative-scan guarantee is now tested through the HNSW index. A leading dash is no longer
+  negation. Exact ties at the cut-off are settled by chunk id.
+- The cost guardrail changed:
+  - searches also count against an installation-wide `DAILY_QUERY_EMBEDDING_LIMIT` (500);
+  - no slot is spent without a key, for an empty workspace, or when Gemini refused the call;
+  - no database connection is held during the query embedding;
+  - the Retriever no longer commits.
+- The keyword AND/OR decision below is still open.
