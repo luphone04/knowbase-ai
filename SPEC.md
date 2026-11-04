@@ -2,9 +2,9 @@
 
 **Document type:** Product + engineering build specification\
 **Project name:** Knowbase AI\
-**Version:** 1.4 (generation model `gemini-3.5-flash-lite` and separate
-generation retries, owner decision 4 November 2026; see
-`docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md`). 1.3:
+**Version:** 1.5 (Milestone 8 frontend scope, owner decision 4 November
+2026; see `docs/decisions/0013-m8-frontend-scope.md`). 1.4: generation
+model `gemini-3.5-flash-lite` and separate generation retries (ADR 0012). 1.3:
 Milestone 0 decisions and main-branch workflow (ADRs 0001 and 0002)\
 **Prepared:** 1 November 2026\
 **Primary goal:** Build a working, demonstrable, zero-subscription-cost
@@ -17,6 +17,13 @@ open-source infrastructure.
 > decision; it is not part of the product. The source model stays generic
 > (`sources.kind`), so another ingestion method can be added later through
 > a new milestone and migration.
+
+> **Scope change (4 November 2026, ADR 0013):** The frontend is a
+> minimal demonstration layer for the backend, not a full SaaS product.
+> Milestone 8 builds authentication, a minimal dashboard, documents,
+> chat, and citations using only the existing API. The evaluation page
+> moves to Milestone 9; `GET /analytics/overview` and the dashboard
+> metrics that need it are deferred. See §11, §12, §16, and §17.13.
 
 ------------------------------------------------------------------------
 
@@ -1086,6 +1093,10 @@ random id both return the same 404. See
 
 ### Evaluation and analytics
 
+> **Deferred (ADR 0013):** `GET /analytics/overview` was not built in
+> any milestone up to M8 and is not scheduled. The evaluation endpoints
+> belong to Milestone 9.
+
 -   `GET /analytics/overview` --- counts for sources, documents, chunks,
     jobs, chat requests, and token usage.
 -   `GET /evaluations/questions` --- list the seeded evaluation set.
@@ -1112,6 +1123,17 @@ app/provider rate limits, and 503 for provider unavailability.
 
 Create a clean, credible SaaS dashboard. The UI should be polished but
 must not take priority over working backend behavior.
+
+> **Milestone 8 scope (ADR 0013):** a simple, functional interface over
+> the existing API, with no backend changes. Differences from this
+> section: the dashboard shows the workspace, AI status, and document
+> counts summed from `GET /sources` (job totals, recent jobs, chat
+> request counts, and token usage are deferred with
+> `/analytics/overview`); the PDF page count is shown on the source
+> detail page only; citations open an in-app panel with the excerpt (no
+> file viewer); the evaluation page (item 5) is built in Milestone 9;
+> streaming, conversation rename/delete, workspace settings, dark mode,
+> and mobile-specific polish are out of scope.
 
 ### 12.1 Pages
 
@@ -1403,7 +1425,7 @@ Claude Code must create and run tests. At minimum:
 -   Start a conversation and receive a cited answer.
 -   Ask a follow-up question.
 -   Ask an unsupported question and see abstention.
--   Run evaluation and view actual results.
+-   Run evaluation and view actual results (Milestone 9; ADR 0013).
 
 ### Final acceptance criteria
 
@@ -1941,6 +1963,11 @@ states. - \[ \] Evaluation page shell connected to evaluation APIs. - \[
 and basic accessibility. - \[ \] All buttons wired to real API calls. -
 \[ \] Frontend lint, typecheck, and production build. - \[ \] Browser
 smoke test through the whole happy path.
+
+> **Scope (ADR 0013):** the "Evaluation page shell" item moves to
+> Milestone 9; the dashboard shows only what the existing API returns;
+> the mobile check is a usable narrow layout, not mobile-specific
+> polish. Commits go to `main` (ADR 0002), not a branch and PR.
 
 **Acceptance evidence:** - User can register, upload a file, wait for
 indexing, chat, and open a citation through the UI. - No hardcoded

@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M7 — Grounded chat, citations, and abstention** |
-| Status | **M7 APPROVED** (`APPROVE MILESTONE 7`, 2026-11-04): grounded chat, citations, and abstention, with live acceptance passed on `gemini-3.5-flash-lite` (the permanent generation model, [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md)) and CI green on `56a90d7`. M8 not started; it waits for the owner's go-ahead |
+| Current milestone | **M8 — Frontend product experience** (minimal demonstration layer, [ADR 0013](docs/decisions/0013-m8-frontend-scope.md)) |
+| Status | **M8 IN_PROGRESS** (started 2026-11-04 after the owner approved the revised plan). M7 approved (`APPROVE MILESTONE 7`, 2026-11-04) |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M7 approved) |
+| Last verified checkpoint | 2026-11-04 (M8 step 0: scope recorded) |
 
 ## Milestones
 
@@ -22,8 +22,44 @@
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
-| M8 | Frontend product experience | NOT_STARTED | — | — |
+| M8 | Frontend product experience (minimal; ADR 0013) | IN_PROGRESS | see Commits | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
+
+## M8 plan and checklist (SPEC.md §17.13, as scoped by ADR 0013)
+
+Scope (owner, 2026-11-04): a simple, clean, functional interface that demonstrates the backend.
+**No backend changes**; if a requirement can't be met with the existing API, stop and ask.
+Acceptance flow: register → upload → index → ask → grounded answer → open citation → follow-up →
+abstention.
+
+| Step | Work | Status |
+|---|---|---|
+| 0 | Scope recorded: ADR 0013, SPEC.md 1.5 notes, this plan | Done |
+| 1 | Scaffold: Next.js, TypeScript, Tailwind, shadcn/ui, ESLint, Vitest, `lib/api.ts`, `lib/types.ts`, CI frontend job | Not started |
+| 2 | Docker: frontend image, Compose service (no `.env`), README run instructions; existing data checked unchanged | Not started |
+| 3 | Auth and app shell: register, login, logout, route guard, navigation | Not started |
+| 4 | Documents: list, upload, live status, detail, re-index, delete | Not started |
+| 5 | Chat and citations: conversations, answers with citation chips, citation panel, abstention, AI errors | Not started |
+| 6 | Dashboard: workspace, AI status, document counts | Not started |
+| 7 | Acceptance: Playwright flow (live Gemini), desktop and narrow widths, key not in the build, docs → READY_FOR_REVIEW | Not started |
+
+Checklist:
+- [ ] Login and register pages; logout
+- [ ] Dashboard with real counts (summed from `GET /sources`, which returns every source) and AI status
+- [ ] Source list and file upload
+- [ ] Source detail with job progress and errors; re-index and delete
+- [ ] Chat with citations and follow-up history
+- [ ] No-answer and provider-error states
+- [ ] Loading, empty, success, and error states
+- [ ] Responsive layout (usable at narrow widths) and basic accessibility
+- [ ] All buttons wired to real API calls
+- [ ] Frontend lint, typecheck, unit tests, and production build in CI
+- [ ] Browser smoke test through the whole acceptance flow
+- [x] ~~Evaluation page shell~~: moved to M9 (ADR 0013)
+
+Local setup (owner, 2026-11-04): the API is published on `127.0.0.1:8001` (`API_HOST_PORT=8001`), so
+the local `.env` has `NEXT_PUBLIC_API_BASE_URL=http://localhost:8001/api/v1`; the frontend runs on
+`http://localhost:3000` (`FRONTEND_ORIGIN`).
 
 ## M7 checklist (SPEC.md §17.12)
 
@@ -367,6 +403,7 @@ None.
   - [ADR 0006](docs/decisions/0006-m4-file-ingestion.md) (M4): same-name upload as a new version of one source; one waiting job per source; an installation-wide daily budget in UTC days; deletion as a job; schema extensions.
   - [ADR 0007](docs/decisions/0007-m5-website-crawler.md) (M5): superseded by ADR 0008.
 - Implementation: [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md) (audit remediation): per-source serialization with source-then-job row locks; parsing in a killable child process with document limits and job deadlines; quota and rate-limit waits without attempts; budget refunds for refused calls; an installation-wide `DAILY_QUERY_EMBEDDING_LIMIT`; no DB connection held during Gemini calls.
+- Owner: [ADR 0013](docs/decisions/0013-m8-frontend-scope.md) (2026-11-04): M8 is a minimal frontend over the existing API with no backend changes; the evaluation page moves to M9; `/analytics/overview` and its dashboard metrics are deferred; browser calls the API directly with the cookie, no Next.js proxy; TanStack Query; the frontend container gets no `.env`.
 - Owner: [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md) (2026-11-04): the generation model is `gemini-3.5-flash-lite`; generation retries are separate (`GEMINI_GENERATION_MAX_RETRIES`, default 0); embeddings are unchanged.
 - Implementation: [ADR 0011](docs/decisions/0011-m7-grounded-chat.md) (M7): per-user conversations with membership keys; a message `position`; an outcome and abstention reason; escaped untrusted context; abstain rather than retry on a missing citation; failed turns not saved but traced; per-user chat slots.
 - Implementation: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md) (M6):
@@ -412,7 +449,8 @@ None.
 - **PDF citations name the chunk's page range,** not the exact page, when a chunk spans pages.
 - **Small demo corpus:** each document is 1–2 chunks, so retrieval is checked at document level. Chunk-size tuning and recall metrics come in M9.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
-- Frontend and the CI frontend job: M8.
+- **Deferred from M8 (ADR 0013), not scheduled:** `GET /analytics/overview` and the dashboard metrics that need it (job totals across history, a recent-jobs list, chat request counts, token usage). Not built: streaming, conversation rename/delete, workspace settings and members, a retrieval-mode switch, dark mode, multi-file upload, a file viewer.
+- **Oversized uploads in the browser:** the body-size middleware's 413 has no CORS headers (ADR 0010 deferred item), so the frontend checks the size itself before uploading. The backend item stays open.
 - `uv` isn't installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6.
 - Port 8000 is used by another local project; use `API_HOST_PORT`.
 

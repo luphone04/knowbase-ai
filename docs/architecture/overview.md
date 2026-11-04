@@ -23,7 +23,8 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 [ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval), and
 [ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation), and
 [ADR 0011](../decisions/0011-m7-grounded-chat.md) (M7 grounded chat), and
-[ADR 0012](../decisions/0012-generation-model-gemini-3.5-flash-lite.md) (generation model `gemini-3.5-flash-lite`, separate generation retries).
+[ADR 0012](../decisions/0012-generation-model-gemini-3.5-flash-lite.md) (generation model `gemini-3.5-flash-lite`, separate generation retries), and
+[ADR 0013](../decisions/0013-m8-frontend-scope.md) (M8 minimal frontend scope).
 
 ## Request flow (authenticated API call)
 
