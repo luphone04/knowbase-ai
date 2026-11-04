@@ -6,6 +6,9 @@
 *.key
 *.p12
 secrets/
+# Session cookie jars (curl -c, httpie sessions) hold live login tokens.
+*.jar
+cookies*.txt
 
 # --- Python ---
 .venv/
