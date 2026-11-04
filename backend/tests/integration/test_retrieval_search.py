@@ -7,11 +7,13 @@ about 0.29, and e1 exactly 1.
 
 import math
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
+from app.db import tenancy
 from app.db.session import get_engine, get_sessionmaker
 from app.db.tenancy import TenantScopeError, bind_workspace
 from app.retrieval.search import lexical_search, vector_search
@@ -180,6 +182,80 @@ def test_asking_for_another_workspace_through_a_bound_session_returns_nothing(
         == []
     )
     assert lexical_search(scoped, workspace_id=tenant_b.workspace_id, query="tent", limit=10) == []
+
+
+def test_the_explicit_workspace_filters_isolate_on_their_own(
+    tenant_a: Tenant, tenant_b: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second barrier: with the session guard switched off, the SQL still filters."""
+    (mine,) = add_source(tenant_a.workspace_id, "a.md", [("tent", basis((1, 1)))])
+    add_source(tenant_b.workspace_id, "b.md", [("tent secret", basis((0, 1)))])
+    event.remove(Session, "do_orm_execute", tenancy._apply_workspace_scope)
+    try:
+        with get_sessionmaker()() as unguarded:
+            vector = vector_search(
+                unguarded,
+                workspace_id=tenant_a.workspace_id,
+                query_vector=basis((0, 1)),
+                model=MODEL,
+                limit=10,
+            )
+            lexical = lexical_search(
+                unguarded, workspace_id=tenant_a.workspace_id, query="tent", limit=10
+            )
+    finally:
+        event.listen(Session, "do_orm_execute", tenancy._apply_workspace_scope)
+    assert [h.chunk_id for h in vector] == [mine]
+    assert [h.chunk_id for h in lexical] == [mine]
+
+
+def test_vector_search_through_the_hnsw_index_still_fills_the_limit(
+    tenant_a: Tenant, tenant_b: Tenant, scoped: Session
+) -> None:
+    """Another workspace's 60 chunks are all nearer than this one's 5. Through the HNSW
+    index (ef_search 10), only iterative scanning finds this workspace's chunks."""
+    add_source(
+        tenant_b.workspace_id, "b.md", [(f"b{i}", basis((0, 1), (i + 1, 0.01))) for i in range(60)]
+    )
+    mine = add_source(
+        tenant_a.workspace_id, "a.md", [(f"a{i}", basis((1, 1), (i + 100, 0.01))) for i in range(5)]
+    )
+    statements: list[tuple[str, Any]] = []
+
+    def capture(conn: Any, cursor: Any, statement: str, params: Any, *args: Any) -> None:
+        if "<=>" in statement:
+            statements.append((statement, params))
+
+    # Small tables favour the B-trees, so take them away (rolled back below) to force
+    # the plan a large corpus gets: the HNSW scan, then the workspace filter.
+    scoped.execute(text("DROP INDEX ix_chunks_workspace_document"))
+    scoped.execute(text("ALTER TABLE chunks DROP CONSTRAINT uq_chunks_document_chunk_index"))
+    scoped.execute(text("ANALYZE chunks"))
+    scoped.execute(text("SET LOCAL enable_seqscan = off"))
+    scoped.execute(text("SET LOCAL hnsw.ef_search = 10"))
+    event.listen(get_engine(), "before_cursor_execute", capture)
+    try:
+        hits = vector_search(
+            scoped,
+            workspace_id=tenant_a.workspace_id,
+            query_vector=basis((0, 1)),
+            model=MODEL,
+            limit=5,
+        )
+    finally:
+        event.remove(get_engine(), "before_cursor_execute", capture)
+    cursor = scoped.connection().connection.cursor()
+    statement, params = statements[-1]
+    cursor.execute("EXPLAIN " + statement, params)
+    plan = "\n".join(row[0] for row in cursor.fetchall())
+    cursor.execute("SET LOCAL hnsw.iterative_scan = off")
+    cursor.execute(statement, params)
+    without_iterative_scan = len(cursor.fetchall())
+    scoped.rollback()
+
+    assert "ix_chunks_embedding_hnsw" in plan, plan
+    assert sorted(h.chunk_id for h in hits) == sorted(mine)
+    assert without_iterative_scan < 5  # the setting is what fills the limit
 
 
 def test_an_unbound_session_fails_closed(tenant_a: Tenant) -> None:
