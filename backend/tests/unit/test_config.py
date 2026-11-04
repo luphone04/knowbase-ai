@@ -53,6 +53,8 @@ def test_defaults_match_spec() -> None:
     assert settings.gemini_embedding_batch_size == 8
     assert settings.max_upload_mb == 10
     assert settings.daily_chat_request_limit == 30
+    assert settings.chat_context_max_chars == 12_000
+    assert settings.chat_history_messages == 6
     assert settings.cookie_secure is False
     assert settings.allowed_host_list == ["localhost", "127.0.0.1"]
 

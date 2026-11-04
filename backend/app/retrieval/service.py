@@ -106,6 +106,7 @@ class Retriever:
         mode: RetrievalMode,
         previous_question: str | None = None,
         embed: bool = True,
+        conversation_id: uuid.UUID | None = None,
     ) -> RetrievalResult:
         """Search the workspace. With `embed=False` (nothing indexed) no Gemini call is made."""
         started = time.perf_counter()
@@ -178,6 +179,7 @@ class Retriever:
         latency_ms = round((time.perf_counter() - started) * 1000)
         trace = QueryTrace(
             workspace_id=workspace_id,
+            conversation_id=conversation_id,
             retrieval_mode=mode,
             query_text=query,
             retrieved_chunk_ids=[str(r.hit.chunk_id) for r in results],

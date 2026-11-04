@@ -80,7 +80,12 @@ class Settings(BaseSettings):
 
     frontend_origin: str = "http://localhost:3000"
 
+    # Chat (SPEC.md §9.6, §10.4): questions per user per UTC day (each embeds the
+    # question and asks Gemini for one answer), the excerpt budget, and the earlier
+    # messages sent with each question.
     daily_chat_request_limit: int = Field(default=30, ge=0)
+    chat_context_max_chars: int = Field(default=12_000, ge=1_000, le=100_000)
+    chat_history_messages: int = Field(default=6, ge=0, le=20)
     daily_embedding_text_limit: int = Field(default=300, ge=0)
 
     worker_poll_seconds: float = Field(default=5, gt=0)

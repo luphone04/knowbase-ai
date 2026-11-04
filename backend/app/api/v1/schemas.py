@@ -216,3 +216,87 @@ class TraceOut(BaseModel):
     latency_ms: int
     token_usage: dict[str, Any]
     created_at: datetime
+
+
+# --- conversations and chat (M7) ---------------------------------------------------------------
+
+
+class ConversationCreateIn(StrictRequest):
+    title: str | None = Field(default=None, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def _title_is_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        _no_control_characters(value)
+        return _not_blank(value).strip()
+
+
+class MessageIn(StrictRequest):
+    content: str = Field(min_length=1, max_length=1000)
+    mode: Literal["vector", "hybrid"] = "hybrid"
+
+    @field_validator("content")
+    @classmethod
+    def _content_not_blank(cls, value: str) -> str:
+        _no_control_characters(value)
+        return _not_blank(value)
+
+
+class CitationOut(BaseModel):
+    """A validated citation: the id used in the answer and the excerpt it points to."""
+
+    id: str
+    rank: int
+    chunk_id: uuid.UUID
+    chunk_index: int
+    document_id: uuid.UUID
+    document_title: str
+    source_id: uuid.UUID
+    source_name: str
+    filename: str | None
+    heading: str | None
+    page_start: int | None
+    page_end: int | None
+    excerpt: str
+
+
+class MessageOut(BaseModel):
+    id: uuid.UUID
+    position: int
+    role: str
+    content: str
+    outcome: str | None  # assistant only: "answered" or "abstained"
+    abstain_reason: str | None  # "no_evidence", "model_insufficient", "no_valid_citation"
+    citations: list[CitationOut]
+    token_usage: dict[str, Any]
+    latency_ms: int | None
+    metadata: dict[str, Any]
+    created_at: datetime
+
+
+class ConversationOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationDetailOut(ConversationOut):
+    messages: list[MessageOut]
+
+
+class TurnRetrievalOut(BaseModel):
+    mode: str
+    retrieval_query: str
+    contextualized: bool
+    trace_id: uuid.UUID
+    results: int
+
+
+class ChatTurnOut(BaseModel):
+    conversation: ConversationOut
+    user_message: MessageOut
+    assistant_message: MessageOut
+    retrieval: TurnRetrievalOut

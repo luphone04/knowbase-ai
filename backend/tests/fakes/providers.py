@@ -6,7 +6,7 @@ use them, so a mock can never pass for the live Gemini integration
 (SPEC.md §2.4).
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from app.providers.interfaces import (
@@ -28,6 +28,11 @@ class MockGenerationProvider:
     reply: str = "Mock answer [S1]."
     model: str = "mock-generation"
     prompts: list[str] = field(default_factory=list)
+    system_instructions: list[str | None] = field(default_factory=list)
+    # Raised (in order) by the next calls, to simulate provider failures.
+    failures: list[Exception] = field(default_factory=list)
+    # Runs inside the "Gemini call" (e.g. to check no database connection is held).
+    on_call: Callable[[], None] | None = None
 
     def generate(
         self,
@@ -36,7 +41,12 @@ class MockGenerationProvider:
         system_instruction: str | None = None,
         max_output_tokens: int | None = None,
     ) -> GenerationResult:
+        if self.on_call is not None:
+            self.on_call()
+        if self.failures:
+            raise self.failures.pop(0)
         self.prompts.append(prompt)
+        self.system_instructions.append(system_instruction)
         return GenerationResult(
             text=self.reply,
             model=self.model,
