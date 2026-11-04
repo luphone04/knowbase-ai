@@ -56,7 +56,7 @@ jobs:
       # Throwaway CI-only values; nothing here is a real secret.
       APP_ENV: test
       APP_SECRET_KEY: ci-only-not-a-real-secret-0123456789abcdef
-      JWT_SECRET: ci-only-not-a-real-secret-0123456789abcdef
+      JWT_SECRET: ci-only-not-a-real-jwt-secret-0123456789abcdef
       DATABASE_URL: postgresql+psycopg://knowbase:ci-only-password@localhost:5432/knowbase
       UV_PYTHON: "3.12"
     defaults:
