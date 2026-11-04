@@ -11,11 +11,14 @@ const AI_MESSAGES: Record<string, string> = {
   ai_not_configured:
     "The backend has no Gemini API key, so AI features are unavailable. Add the key to the backend .env.",
   ai_incomplete: "Gemini returned an incomplete answer. Nothing was saved. Try again.",
-  ai_error: "Gemini returned an invalid response. Nothing was saved. Try again.",
 };
 
+// ai_error covers different refusals (key or project rejected, a precondition such as
+// the free tier being unavailable, an unreadable response); the API's message says which.
+const AI_ERROR_CODES = new Set([...Object.keys(AI_MESSAGES), "ai_error"]);
+
 export function isAiError(error: unknown): boolean {
-  return error instanceof ApiError && error.code in AI_MESSAGES;
+  return error instanceof ApiError && AI_ERROR_CODES.has(error.code);
 }
 
 function waitText(seconds: number): string {
@@ -28,6 +31,7 @@ function waitText(seconds: number): string {
 export function describeError(error: unknown): string {
   if (!(error instanceof ApiError)) return "Something went wrong. Try again.";
   if (error.code in AI_MESSAGES) return AI_MESSAGES[error.code];
+  if (error.code === "ai_error") return `${error.message} Nothing was saved.`;
   switch (error.code) {
     case "network_error":
       return "Could not reach the Knowbase API. Check that the backend is running.";

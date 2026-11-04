@@ -73,7 +73,14 @@ Gemini use for all M8 checks: 6 answer requests (3 in the step 5 check, 3 in the
 
 **Temporary accounts:** `m8-check-…` (steps 3–6) and `m8-e2e-…` (acceptance). Their documents were deleted through the API (files, chunks, and cached vectors removed by the delete jobs), both sessions were logged out, and a guarded SQL block (exactly these 2 users, each the only member of its own workspace, no sources left) removed the 2 workspaces (with their conversations and traces) and the 2 users.
 
-### Problems found and fixed during M8
+### Chat failure investigated during review (2026-11-04)
+
+- **Symptom:** from 12:29 to 12:33 UTC every chat question returned 502: the query embedding (`gemini-embedding-001`, `RETRIEVAL_QUERY`, 768 dims) got HTTP 400 `FAILED_PRECONDITION`. The log kept only the status; Google's message was discarded.
+- **Verified:** the same API process, key, model, task type, and dimensions succeeded at 12:12–12:14 and again from 12:40 (7 of 7 query embeddings, a document embedding, the model lookup, and a generation). The key in `.env` had not changed since 10:58. No generation was attempted in the failing window (the embedding comes first), so the window was not embedding-only. Google's API errors page defines `failed_precondition` as "a prerequisite is not met (for example, disabled billing)"; its available-regions page does not list Myanmar.
+- **Conclusion:** not a configuration or code fault. Google refused this project's requests for about 5 minutes; the most likely reason is the region the requests came from (a network or VPN change), but that can't be confirmed from logs that didn't record Google's message.
+- **Fix:** the provider now keeps Google's error message (one line, at most 300 characters; secrets masked by the log formatter) and its `ErrorInfo` reasons, and logs them as `reasons=… google_message=…` (logs only; users still get our message). The UI shows the API's own message for `ai_error` instead of "Gemini returned an invalid response". Regression tests: 3 backend, 1 frontend. Backend 728 passed, 19 skipped; frontend 27 tests.
+- **Live check after the fix:** a temporary account (removed afterwards) asked "hello" (HTTP 201, an abstention `no_valid_citation`: the model's greeting had no citation, so it is withheld by design) and the laptop question (HTTP 201, answered, citing `returns-policy.md`).
+
 
 - **The build's key scan failed from step 3 to step 6.** The not-configured error message named `GEMINI_API_KEY`; once `lib/errors.ts` was bundled (from the auth pages on), `npm run check:bundle` rightly failed. It was found when the Docker build ran the scan (a rebuild before the acceptance run). Fixed in `e5ad0fc` (the message no longer names the variable; the scan stays strict). **The CI frontend job most likely failed on `949f879`, `362245a`, `1a6d76b`, and `ee826bb`.** The `gh` CLI isn't installed here, so CI results weren't checked; the owner should confirm the run for the final commit is green.
 - GitHub had a Git Operations incident (githubstatus.com) during step 2: two pushes were rejected with server errors. The commit stayed local and was pushed with step 3. Nothing was forced.

@@ -317,3 +317,61 @@ def test_failure_logs_have_category_and_status_but_not_prompt(
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert "category=unavailable" in logged and "http=503" in logged
     assert "PRIVATE-PROMPT" not in logged
+
+
+# --- Google's own error text, for diagnosis --------------------------------------------------
+
+
+LOCATION_MESSAGE = "User location is not supported for the API use."
+
+
+def precondition_error(message: str = LOCATION_MESSAGE) -> Exception:
+    return api_error(
+        400,
+        "FAILED_PRECONDITION",
+        message,
+        [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "LOCATION_UNSUPPORTED"}],
+    )
+
+
+def test_query_embedding_precondition_failure_logs_googles_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The M8 chat failure: RETRIEVAL_QUERY refused with 400 FAILED_PRECONDITION, logged
+    # without Google's explanation. Now the log says why; the user message stays generic.
+    h = make_harness()
+    h.client.models.embed_script.extend([precondition_error()] * 3)
+    with caplog.at_level(logging.ERROR), pytest.raises(ProviderConfigurationError) as excinfo:
+        h.embedding.embed_query("PRIVATE-QUESTION")
+
+    assert len(h.calls) == 1 and h.sleeps == []  # a precondition is never retried
+    error = excinfo.value
+    assert error.provider_status == "FAILED_PRECONDITION"
+    assert error.provider_message == "User location is not supported for the API use."
+    assert error.provider_reasons == ("LOCATION_UNSUPPORTED",)
+    assert "User location" not in str(error)  # users get our message, not Google's text
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "embed RETRIEVAL_QUERY failed" in logged
+    assert "status=FAILED_PRECONDITION" in logged and "reasons=LOCATION_UNSUPPORTED" in logged
+    assert "google_message='User location is not supported for the API use.'" in logged
+    assert "PRIVATE-QUESTION" not in logged
+
+
+def test_logged_provider_message_is_one_bounded_line() -> None:
+    h = make_harness()
+    h.client.models.embed_script.append(precondition_error("line one\nline two " + "x" * 1000))
+    with pytest.raises(ProviderConfigurationError) as excinfo:
+        h.embedding.embed_query("q")
+    message = excinfo.value.provider_message
+    assert message is not None and "\n" not in message
+    assert message.startswith("line one line two") and len(message) <= 301
+
+
+def test_errors_without_a_message_or_reason_log_dashes(caplog: pytest.LogCaptureFixture) -> None:
+    h = make_harness()
+    h.client.models.embed_script.append(api_error(400, "FAILED_PRECONDITION", ""))
+    with caplog.at_level(logging.ERROR), pytest.raises(ProviderConfigurationError):
+        h.embedding.embed_query("q")
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "reasons=- google_message=None" in logged

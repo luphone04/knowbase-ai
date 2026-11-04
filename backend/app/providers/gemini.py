@@ -104,11 +104,27 @@ def _reasons(details: list[dict[str, Any]]) -> set[str]:
     return {str(d.get("reason")) for d in details if d.get("@type") == _ERROR_INFO}
 
 
+PROVIDER_MESSAGE_CHARS = 300
+
+
+def _provider_message(exc: errors.APIError) -> str | None:
+    """Google's error message on one bounded line, for logs (the formatter masks secrets)."""
+    if not exc.message:
+        return None
+    text = " ".join(str(exc.message).split())
+    return text if len(text) <= PROVIDER_MESSAGE_CHARS else f"{text[:PROVIDER_MESSAGE_CHARS]}…"
+
+
 def classify_gemini_error(exc: Exception) -> ProviderError | None:
     """Map an SDK or transport exception to a ProviderError, or None if unrecognised."""
     if isinstance(exc, errors.APIError):
         details = _error_details(exc)
-        common: dict[str, Any] = {"status_code": exc.code, "provider_status": exc.status}
+        common: dict[str, Any] = {
+            "status_code": exc.code,
+            "provider_status": exc.status,
+            "provider_message": _provider_message(exc),
+            "provider_reasons": tuple(sorted(r for r in _reasons(details) if r != "None")),
+        }
 
         if exc.code == 429:
             quota_ids = _quota_ids(details)
@@ -202,13 +218,16 @@ class GeminiCalls:
         except ProviderError as exc:
             self._health.record_failure(exc.category)
             logger.error(
-                "Gemini %s failed: category=%s http=%s status=%s attempts=%d quota_ids=%s",
+                "Gemini %s failed: category=%s http=%s status=%s attempts=%d quota_ids=%s "
+                "reasons=%s google_message=%r",
                 operation,
                 exc.category,
                 exc.status_code,
                 exc.provider_status,
                 exc.attempts,
                 ",".join(exc.quota_ids) or "-",
+                ",".join(exc.provider_reasons) or "-",
+                exc.provider_message,
             )
             raise
         self._health.record_success()

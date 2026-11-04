@@ -2,7 +2,8 @@
 
 Every `message` is written for end users. It never includes the provider's raw
 error text, request content, or credentials. Diagnostic fields such as the
-status code, provider status, and quota ids are kept separately for logs.
+status code, provider status, quota ids, and the provider's own error message and
+reasons are kept separately, for logs only.
 """
 
 from app.providers.interfaces import TokenUsage
@@ -20,6 +21,8 @@ class ProviderError(Exception):
         provider_status: str | None = None,
         retry_after_seconds: float | None = None,
         quota_ids: tuple[str, ...] = (),
+        provider_message: str | None = None,
+        provider_reasons: tuple[str, ...] = (),
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -27,6 +30,10 @@ class ProviderError(Exception):
         self.provider_status = provider_status
         self.retry_after_seconds = retry_after_seconds
         self.quota_ids = quota_ids
+        # Google's error text and ErrorInfo reasons: needed to tell, say, a region or
+        # billing precondition from a bad key. Logged, never shown to users.
+        self.provider_message = provider_message
+        self.provider_reasons = provider_reasons
         self.attempts = 0
 
     def __str__(self) -> str:

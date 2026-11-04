@@ -28,7 +28,7 @@ describe("toApiError", () => {
 
 describe("describeError", () => {
   it("explains provider failures without calling them answers", () => {
-    for (const code of ["ai_quota", "ai_unavailable", "ai_incomplete", "ai_error"]) {
+    for (const code of ["ai_quota", "ai_unavailable", "ai_incomplete"]) {
       const error = new ApiError(503, code, "provider text");
       expect(isAiError(error)).toBe(true);
       expect(describeError(error)).toContain("Nothing was saved");
@@ -36,6 +36,17 @@ describe("describeError", () => {
     expect(describeError(new ApiError(503, "ai_not_configured", "x"))).toContain(
       "no Gemini API key",
     );
+  });
+
+  it("shows the API's reason for an ai_error, such as a refused precondition", () => {
+    const refused = new ApiError(
+      502,
+      "ai_error",
+      "Gemini refused this request for the project (for example, the free tier is not available here). No paid fallback is attempted.",
+    );
+    expect(isAiError(refused)).toBe(true);
+    expect(describeError(refused)).toBe(`${refused.message} Nothing was saved.`);
+    expect(describeError(refused)).not.toContain("invalid response");
   });
 
   it("shows the API's own message for client errors", () => {
