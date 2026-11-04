@@ -103,3 +103,14 @@ injection check are still pending** until the quota resets at midnight Pacific (
 Observation: 5xx attempts appear to count toward the daily free-tier request quota. The quota
 ran out after 21 attempts across 7 questions; Gemini doesn't say what the limit is. With
 `GEMINI_MAX_RETRIES=3`, one question can use up to 4 requests.
+
+## Amendment (4 November 2026, ADR 0012)
+
+The pending live checks passed with `gemini-3.5-flash-lite`, first as a temporary override, then
+as the permanent generation model (owner decision, ADR 0012):
+- grounded answer, citation fields, opening the citation, follow-up, abstention, and injection
+  probes;
+- 5 generation requests, all on the first attempt.
+
+Generation now retries separately: `GEMINI_GENERATION_MAX_RETRIES`, default 0. Embeddings keep
+`GEMINI_MAX_RETRIES` (3).

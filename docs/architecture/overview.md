@@ -22,7 +22,8 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 [ADR 0008](../decisions/0008-file-upload-only-scope.md) (file-upload-only scope), and
 [ADR 0009](../decisions/0009-m6-hybrid-retrieval.md) (M6 retrieval), and
 [ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation), and
-[ADR 0011](../decisions/0011-m7-grounded-chat.md) (M7 grounded chat).
+[ADR 0011](../decisions/0011-m7-grounded-chat.md) (M7 grounded chat), and
+[ADR 0012](../decisions/0012-generation-model-gemini-3.5-flash-lite.md) (generation model `gemini-3.5-flash-lite`, separate generation retries).
 
 ## Request flow (authenticated API call)
 
@@ -207,7 +208,7 @@ flowchart LR
 | Model | `GEMINI_CHAT_MODEL` | `GEMINI_EMBEDDING_MODEL` | same as documents |
 | Settings | thinking level, max output tokens | `RETRIEVAL_DOCUMENT`, 768 dims, batches of 8 | `RETRIEVAL_QUERY`, 768 dims |
 | Result checks | finish reason `STOP` and non-empty text, else `IncompleteGeneration` | one vector per input; each 768, finite, non-zero; normalised | same |
-| Retries | 429 rate limit, 500/502/503, connection errors: up to 3, exponential backoff with jitter | same | same |
+| Retries | none by default (`GEMINI_GENERATION_MAX_RETRIES`, 0): one attempt per question | 429 rate limit, 500/502/503, connection errors: up to `GEMINI_MAX_RETRIES` (3), exponential backoff with jitter | same as documents |
 | No retry | daily quota, 4xx, 504 deadline exceeded | same | same |
 
 ## Boundaries that matter for security and cost

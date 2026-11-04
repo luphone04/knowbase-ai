@@ -2,9 +2,10 @@
 
 **Document type:** Product + engineering build specification\
 **Project name:** Knowbase AI\
-**Version:** 1.3 (Milestone 0 decisions and main-branch workflow; see
-`docs/decisions/0001-m0-preflight-decisions.md` and
-`docs/decisions/0002-main-branch-workflow.md`)\
+**Version:** 1.4 (generation model `gemini-3.5-flash-lite` and separate
+generation retries, owner decision 4 November 2026; see
+`docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md`). 1.3:
+Milestone 0 decisions and main-branch workflow (ADRs 0001 and 0002)\
 **Prepared:** 1 November 2026\
 **Primary goal:** Build a working, demonstrable, zero-subscription-cost
 document knowledge assistant using Gemini's free API tier and local
@@ -174,7 +175,7 @@ Use Google's official `google-genai` Python SDK.
   ----------------------------------------------------------------------
   Purpose               Required model           Dimensions / settings
   --------------------- ------------------------ -----------------------
-  Answer generation     `gemini-3.8-flash`       Text generation
+  Answer generation     `gemini-3.5-flash-lite`  Text generation
 
   Document embeddings   `gemini-embedding-001`   768 dimensions,
                                                  `RETRIEVAL_DOCUMENT`
@@ -183,11 +184,12 @@ Use Google's official `google-genai` Python SDK.
                                                  `RETRIEVAL_QUERY`
   ----------------------------------------------------------------------
 
-These are the selected free-tier configuration as checked on 1 November
-2026. Keep model names configurable through environment variables:
+These are the selected free-tier configuration (embeddings checked on 1
+November 2026; the generation model changed on 4 November 2026, ADR 0012).
+Keep model names configurable through environment variables:
 
 ``` env
-GEMINI_CHAT_MODEL=gemini-3.8-flash
+GEMINI_CHAT_MODEL=gemini-3.5-flash-lite
 GEMINI_THINKING_LEVEL=low
 GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIMENSIONS=768
@@ -196,15 +198,22 @@ EMBEDDING_DIMENSIONS=768
 Do not hardcode model names in business logic.
 
 **Model lifecycle note:** The selected generation model is
-`gemini-3.8-flash`. Google lists it as a stable model with free-tier
-access, and the Gemini API models page recommends it for new projects.
-As of 1 November 2026 the Gemini API deprecations page lists no shutdown
-date for `gemini-3.8-flash` or for the older `gemini-3.6-flash`.
-(Version 1.1 of this spec said `gemini-3.6-flash` retires on 19
-November 2026. That claim came from Google Cloud model documentation and
-is not shown on the Gemini API deprecations page.) Milestone 0 re-checked
-free-tier availability and made a live smoke test; see
-`docs/m00-compatibility-report.md`.
+`gemini-3.5-flash-lite` (owner decision, 4 November 2026; ADR 0012). The
+Gemini API models page lists it as stable. The pricing page lists its
+Free Tier input and output as "Free of charge". As of 4 November 2026,
+the deprecations page announces no shutdown date for it, and lists it as
+the replacement for `gemini-3.1-flash-lite`. Free-tier rate limits are
+shown only in Google AI Studio, per project.
+
+The spec previously selected `gemini-3.8-flash`. During Milestone 7's
+live review, that model returned 503 and 504 for every generation request
+on this project. A controlled one-request test and the M7 live acceptance
+re-check then passed with `gemini-3.5-flash-lite`. `gemini-3.8-flash`
+also has no announced shutdown date; it can be set again through
+`GEMINI_CHAT_MODEL` without a code change. Milestone 0's compatibility
+checks are in `docs/m00-compatibility-report.md`. (Version 1.1 of this
+spec said `gemini-3.6-flash` retires on 19 November 2026; the Gemini API
+deprecations page does not show that.)
 
 `gemini-embedding-001` has an earliest possible shutdown of 14 May 2028
 (Gemini API deprecations page). It remains the MVP embedding model.
@@ -277,14 +286,17 @@ response = client.models.generate_content(
 answer_text = response.text or ""
 ```
 
-`max_output_tokens` covers thinking tokens as well as answer tokens, and
-`gemini-3.8-flash` thinks at `medium` by default. A low limit can
-therefore truncate an answer or return it empty. Pass the configurable
-`GEMINI_THINKING_LEVEL` (default `low`; allowed `low`, `medium`, `high`).
-`minimal` is rejected by `gemini-3.8-flash`. Do not use `thinking_budget`.
-Treat a non-`STOP` finish reason as an incomplete answer rather than a
-grounded one. In the Milestone 0 live test, a one-word reply used 191
-thinking tokens at the default level and none at `low`.
+`max_output_tokens` covers thinking tokens as well as answer tokens, so a
+low limit can truncate an answer or return it empty. Always pass the
+configurable `GEMINI_THINKING_LEVEL` (default `low`; the app allows `low`,
+`medium`, `high`). `gemini-3.5-flash-lite` accepts `minimal`, `low`,
+`medium`, and `high`, and defaults to `minimal`; the app sends `low`
+explicitly. Do not use `thinking_budget`. Treat a non-`STOP` finish reason
+as an incomplete answer rather than a grounded one. (In the Milestone 0
+live test with `gemini-3.8-flash`, a one-word reply used 191 thinking
+tokens at that model's default level and none at `low`. In the M7 live
+re-check with `gemini-3.5-flash-lite` at `low`, four of five answers used
+no thinking tokens and one used 343.)
 
 Verify the actual SDK fields against the installed SDK. Do not add
 deprecated sampling parameters such as `temperature`, `top_p`, or
@@ -299,6 +311,12 @@ another paid managed RAG service.
 -   Handle HTTP 429/rate-limit responses gracefully. Use bounded
     exponential backoff for retryable 429/5xx errors; do not retry
     invalid requests indefinitely.
+-   Generation and embeddings retry separately. Embeddings use
+    `GEMINI_MAX_RETRIES` (default 3). Answer generation uses
+    `GEMINI_GENERATION_MAX_RETRIES` (default 0: one attempt per question,
+    with no automatic retry). On the free tier a failed generation attempt
+    can still count toward the daily request quota. A failed attempt is
+    reported as a provider error, never saved as an answer.
 -   If the free quota is exhausted, show a clear message and let the
     user try later. **Never automatically fall back to a billable tier
     or paid model.**
@@ -1281,11 +1299,13 @@ POSTGRES_PASSWORD=local-development-password
 DATABASE_URL=postgresql+psycopg://knowbase:local-development-password@db:5432/knowbase
 
 GEMINI_API_KEY=
-GEMINI_CHAT_MODEL=gemini-3.8-flash
+GEMINI_CHAT_MODEL=gemini-3.5-flash-lite
 GEMINI_THINKING_LEVEL=low
 GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIMENSIONS=768
 GEMINI_EMBEDDING_BATCH_SIZE=8
+GEMINI_MAX_RETRIES=3
+GEMINI_GENERATION_MAX_RETRIES=0
 
 UPLOAD_DIR=/app/data/uploads
 MAX_UPLOAD_MB=10
@@ -2074,15 +2094,22 @@ them if the SDK/model version changes.
     guide](https://ai.google.dev/gemini-api/docs/embeddings) ---
     `gemini-embedding-001`, retrieval task types, multiple text inputs,
     output dimensions, and normalization.
-3.  [Gemini 3.8 Flash model
-    page](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
-    --- stable model identifier and capabilities.
+3.  [Gemini 3.5 Flash-Lite model
+    page](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
+    --- stable model identifier `gemini-3.5-flash-lite` and capabilities
+    (checked 4 November 2026; `ai.google.dev` now redirects to
+    `aistudio.google.com/docs`). The earlier selection was documented on
+    the [Gemini 3.8 Flash model
+    page](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash).
 4.  [Gemini API model
     deprecations](https://ai.google.dev/gemini-api/docs/deprecations)
-    --- shutdown dates for Gemini API models. As of 1 November 2026:
-    no shutdown date announced for `gemini-3.8-flash` or
-    `gemini-3.6-flash`; `gemini-embedding-001` earliest shutdown 14 May
-    2028.
+    --- shutdown dates for Gemini API models. As of 4 November 2026:
+    no shutdown date announced for `gemini-3.5-flash-lite`,
+    `gemini-3.8-flash`, or `gemini-3.6-flash`; `gemini-embedding-001`
+    earliest shutdown 14 May 2028.
+    [Thinking guide](https://ai.google.dev/gemini-api/docs/thinking) ---
+    thinking levels per model (`gemini-3.5-flash-lite`: `minimal`
+    default; `low`, `medium`, `high` available).
 5.  [Gemini API model
     list](https://ai.google.dev/gemini-api/docs/models) --- current
     model names and lifecycle.

@@ -33,7 +33,7 @@ This is a well-engineered prototype for local demos, not production software.
 Next.js (App Router, TypeScript, Node 24 LTS; from M8) · FastAPI (Python
 3.12, dependencies locked with `uv`) · SQLAlchemy 2 + Alembic ·
 PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai` SDK
-(`gemini-3.8-flash`, `gemini-embedding-001` at 768 dims) · Docker Compose.
+(`gemini-3.5-flash-lite` for answers, `gemini-embedding-001` at 768 dims) · Docker Compose.
 Requires no paid services.
 
 ## Prerequisites
@@ -267,8 +267,10 @@ and ask "How much does gift wrapping cost?". Details:
 
 The backend talks to Gemini only through `app/providers`:
 
-- **Generation** uses `GEMINI_CHAT_MODEL` with `GEMINI_THINKING_LEVEL` (default
-  `low`) and `GEMINI_MAX_OUTPUT_TOKENS`, which includes thinking tokens. An
+- **Generation** uses `GEMINI_CHAT_MODEL` (default `gemini-3.5-flash-lite`,
+  [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md)) with
+  `GEMINI_THINKING_LEVEL` (default `low`) and `GEMINI_MAX_OUTPUT_TOKENS`, which
+  includes thinking tokens. An
   answer counts only if Gemini finishes with `STOP` and returns text. Anything
   else (`MAX_TOKENS`, `SAFETY`, an empty reply) is reported as incomplete,
   never shown as a partial answer.
@@ -281,8 +283,12 @@ The backend talks to Gemini only through `app/providers`:
     dimensions Gemini's raw vectors are not unit length (about 0.59), and
     unit vectors make cosine similarity a simple dot product.
 - **Retries** apply only to temporary problems: per-minute rate limits (429),
-  500/502/503, and connection failures. There are up to 3 retries, with
-  exponential backoff and jitter.
+  500/502/503, and connection failures, with exponential backoff and jitter.
+  - Embeddings retry up to `GEMINI_MAX_RETRIES` times (default 3).
+  - Answer generation retries up to `GEMINI_GENERATION_MAX_RETRIES` times
+    (default 0: one attempt per question). A failed attempt is reported as an
+    error and the question can be asked again; on the free tier, a failed
+    attempt can still count toward the daily quota.
   - An exhausted daily quota fails at once with a clear message; it resets
     at midnight Pacific.
   - A request that misses its deadline (504) is not retried; raise

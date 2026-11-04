@@ -52,3 +52,10 @@
   backoff). `GEMINI_CALL_DEADLINE_SECONDS` (120) now bounds it: no retry starts after the
   deadline.
 - 408 and 499 are retried; unreadable responses are `InvalidProviderResponse`.
+
+## Amendment (4 November 2026, ADR 0012)
+
+The generation model is now `gemini-3.5-flash-lite`. Generation retries are configured separately:
+`GEMINI_GENERATION_MAX_RETRIES`, default 0, one attempt. The policy above (3 retries) still
+applies to embeddings through `GEMINI_MAX_RETRIES`. Classification, backoff, and the deadline are
+unchanged.
