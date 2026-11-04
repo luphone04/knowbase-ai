@@ -62,3 +62,51 @@ def test_empty_key_is_not_a_redaction_pattern(monkeypatch: pytest.MonkeyPatch) -
         assert "" not in get_settings().secret_values
     finally:
         get_settings.cache_clear()
+
+
+def test_uvicorn_loggers_with_their_own_handlers_are_redacted() -> None:
+    """Uvicorn logs unhandled-exception tracebacks through its own, non-propagating handler."""
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    saved = (uvicorn_error.handlers[:], uvicorn_error.propagate)
+    root = logging.getLogger()
+    saved_root = (root.handlers[:], root.level)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("UVICORN %(levelname)s: %(message)s"))
+    uvicorn_error.handlers[:] = [handler]
+    uvicorn_error.propagate = False
+    try:
+        configure_logging("INFO", [SECRET], stream=io.StringIO())
+        try:
+            raise RuntimeError(f"connect failed with {SECRET}")
+        except RuntimeError:
+            uvicorn_error.exception("Exception in ASGI application")
+    finally:
+        uvicorn_error.handlers[:], uvicorn_error.propagate = saved
+        root.handlers[:] = saved_root[0]
+        root.setLevel(saved_root[1])
+    output = stream.getvalue()
+    assert output.startswith("UVICORN ERROR: Exception in ASGI application")  # layout kept
+    assert "RuntimeError" in output and SECRET not in output and REDACTED in output
+
+
+def test_the_database_password_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://knowbase:p%40ss-w0rd-xyz@db:5432/kb")
+    get_settings.cache_clear()
+    try:
+        secrets = get_settings().secret_values
+        assert "p%40ss-w0rd-xyz" in secrets and "p@ss-w0rd-xyz" in secrets
+    finally:
+        get_settings.cache_clear()
+
+
+def test_secrets_are_redacted_as_they_are_used_without_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", f"  {SECRET}\n")
+    get_settings.cache_clear()
+    try:
+        assert SECRET in get_settings().secret_values
+    finally:
+        monkeypatch.setenv("GEMINI_API_KEY", "")
+        get_settings.cache_clear()

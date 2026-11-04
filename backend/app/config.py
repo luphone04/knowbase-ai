@@ -6,7 +6,7 @@ the two in sync.
 
 from functools import lru_cache
 from typing import Literal, Self
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -175,9 +175,17 @@ class Settings(BaseSettings):
 
     @property
     def secret_values(self) -> list[str]:
-        """Values that must never appear in logs (used by the log redaction filter)."""
-        candidates = (self.gemini_api_key, self.jwt_secret, self.app_secret_key)
-        return [s.get_secret_value() for s in candidates if s.get_secret_value().strip()]
+        """Values that must never appear in logs (used by the log redaction filter).
+
+        Stripped, because that is how they are used (the Gemini key is sent
+        without surrounding whitespace). The database password is included: a
+        connection error can print the URL.
+        """
+        secrets = (self.gemini_api_key, self.jwt_secret, self.app_secret_key)
+        candidates = [secret.get_secret_value() for secret in secrets]
+        password = urlsplit(self.database_url).password or ""
+        candidates += [password, unquote(password)]  # as written in the URL, and decoded
+        return [value.strip() for value in candidates if value.strip()]
 
     @property
     def allowed_host_list(self) -> list[str]:
