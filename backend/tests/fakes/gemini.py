@@ -91,6 +91,7 @@ def make_harness(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 20.0,
+    max_elapsed: float | None = None,
     batch_size: int = 8,
     chat_model: str = "gemini-3.8-flash",
     embedding_model: str = "gemini-embedding-001",
@@ -98,11 +99,18 @@ def make_harness(
     client = FakeGeminiClient()
     sleeps: list[float] = []
     health = ProviderHealth()
+    now = [0.0]  # a fake clock that only sleeping advances
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
     calls = GeminiCalls(
-        RetryPolicy(max_retries, base_delay, max_delay),
-        sleep=sleeps.append,
+        RetryPolicy(max_retries, base_delay, max_delay, max_elapsed),
+        sleep=sleep,
         jitter=lambda delay: delay,  # deterministic backoff in tests
         health=health,
+        clock=lambda: now[0],
     )
     generation = GeminiGenerationProvider(
         client,  # type: ignore[arg-type]  # duck-typed stand-in for genai.Client

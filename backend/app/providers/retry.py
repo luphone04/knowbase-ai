@@ -3,12 +3,14 @@
 Only errors marked retryable (rate limits, 5xx, timeouts, network failures)
 are retried, and only up to `max_retries` times. When the provider asks for a
 longer wait than `max_delay`, the call fails at once instead of blocking the
-request. Everything else (bad key, bad request, exhausted daily quota) fails
-on the first attempt.
+request. No retry starts once `max_elapsed_seconds` have passed since the call
+began, so one call takes at most that plus one request timeout. Everything else
+(bad key, bad request, exhausted daily quota) fails on the first attempt.
 """
 
 import logging
 import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -22,6 +24,7 @@ class RetryPolicy:
     max_retries: int = 3
     base_delay_seconds: float = 1.0
     max_delay_seconds: float = 20.0
+    max_elapsed_seconds: float | None = None
 
     def backoff(self, retry_number: int) -> float:
         """Delay before retry n (1-based): base, 2*base, 4*base, ..., capped."""
@@ -41,12 +44,14 @@ def call_with_retries[T](
     policy: RetryPolicy,
     sleep: Callable[[float], None],
     jitter: Callable[[float], float] = equal_jitter,
+    clock: Callable[[], float] = time.monotonic,
 ) -> tuple[T, int]:
     """Run `call`, retrying classified retryable errors. Returns (result, attempts).
 
     Exceptions that `classify` doesn't recognise are re-raised unchanged:
     unknown failures are bugs, not outages.
     """
+    started = clock()
     attempt = 0
     while True:
         attempt += 1
@@ -70,6 +75,17 @@ def call_with_retries[T](
                     operation,
                     delay,
                     policy.max_delay_seconds,
+                )
+                raise error from exc
+            elapsed = clock() - started
+            if policy.max_elapsed_seconds is not None and (
+                elapsed + delay >= policy.max_elapsed_seconds
+            ):
+                logger.warning(
+                    "%s: %.0fs spent (limit %.0fs); not retrying",
+                    operation,
+                    elapsed,
+                    policy.max_elapsed_seconds,
                 )
                 raise error from exc
 

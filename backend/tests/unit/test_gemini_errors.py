@@ -7,6 +7,7 @@ import httpx
 import pytest
 from google.genai import errors
 
+from app.config import get_settings
 from app.providers.errors import (
     InvalidProviderResponse,
     ProviderConfigurationError,
@@ -17,6 +18,7 @@ from app.providers.errors import (
     ProviderTimeout,
     ProviderUnavailable,
 )
+from app.providers.factory import retry_policy
 from app.providers.retry import RetryPolicy, equal_jitter
 from tests.fakes.gemini import (
     api_error,
@@ -167,6 +169,20 @@ def test_zero_retries_means_exactly_one_call() -> None:
     with pytest.raises(ProviderUnavailable):
         h.generation.generate(PROMPT)
     assert len(h.calls) == 1 and h.sleeps == []
+
+
+def test_no_retry_starts_after_the_call_deadline() -> None:
+    """Backoff 1, 2, 4, ... s: by 3 s spent, the next 4 s wait would pass the 5 s deadline."""
+    h = make_harness(max_retries=5, max_elapsed=5)
+    h.client.models.generate_script.extend([unavailable_error()] * 10)
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        h.generation.generate(PROMPT)
+    assert h.sleeps == [1.0, 2.0]
+    assert len(h.calls) == 3 and excinfo.value.attempts == 3
+
+
+def test_the_configured_deadline_bounds_every_call() -> None:
+    assert retry_policy(get_settings()).max_elapsed_seconds == 120
 
 
 def test_backoff_is_capped() -> None:

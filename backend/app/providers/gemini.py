@@ -180,10 +180,12 @@ class GeminiCalls:
         sleep: Callable[[float], None] = time.sleep,
         jitter: Callable[[float], float] = equal_jitter,
         health: ProviderHealth = provider_health,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.policy = policy
         self._sleep = sleep
         self._jitter = jitter
+        self._clock = clock
         self._health = health
 
     def run[T](self, operation: str, call: Callable[[], T]) -> tuple[T, int]:
@@ -195,6 +197,7 @@ class GeminiCalls:
                 policy=self.policy,
                 sleep=self._sleep,
                 jitter=self._jitter,
+                clock=self._clock,
             )
         except ProviderError as exc:
             self._health.record_failure(exc.category)

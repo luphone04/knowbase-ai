@@ -22,6 +22,7 @@ def retry_policy(settings: Settings) -> RetryPolicy:
         max_retries=settings.gemini_max_retries,
         base_delay_seconds=settings.gemini_retry_base_delay_seconds,
         max_delay_seconds=settings.gemini_retry_max_delay_seconds,
+        max_elapsed_seconds=settings.gemini_call_deadline_seconds,
     )
 
 

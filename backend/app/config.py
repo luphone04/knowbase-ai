@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     gemini_max_retries: int = Field(default=3, ge=0, le=5)
     gemini_retry_base_delay_seconds: float = Field(default=1, gt=0, le=10)
     gemini_retry_max_delay_seconds: float = Field(default=20, gt=0, le=120)
+    # No retry starts after this long; one call lasts at most this plus one timeout.
+    gemini_call_deadline_seconds: float = Field(default=120, gt=0, le=900)
 
     upload_dir: str = "/app/data/uploads"
     max_upload_mb: int = Field(default=10, gt=0, le=100)
