@@ -25,7 +25,12 @@ from app.db.session import get_engine, get_sessionmaker
 from app.db.tenancy import bind_workspace
 from app.evaluation.dataset import load_dataset
 from app.evaluation.runner import CORPUS_CHANGED, EvaluationWorker
-from app.providers.errors import ProviderError, ProviderQuotaExhausted, ProviderUnavailable
+from app.providers.errors import (
+    ProviderError,
+    ProviderQuotaExhausted,
+    ProviderRateLimited,
+    ProviderUnavailable,
+)
 from app.providers.interfaces import QUERY_TASK, EmbeddingResult, GenerationResult, TokenUsage
 from app.retrieval.followup import contextualize
 from app.worker.lease import Deadline
@@ -689,3 +694,23 @@ def test_starting_a_run_from_another_origin_is_blocked(
     assert response.json()["error"]["code"] == "origin_not_allowed"
     assert scalar("SELECT count(*) FROM evaluation_runs") == 0
     assert slots_used("evaluation-runs-daily") == 0
+
+
+def test_a_rate_limit_stops_the_run_instead_of_pushing_on(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    """Owner decision: a 429 means stop and keep the partial results, not retry or continue."""
+    seed_demo_corpus(tenant_a.workspace_id)
+    second = DATASET.questions[1]
+    evaluator.generator.failures[second.question] = ProviderRateLimited("Too many requests.")
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "failed" and body["error_message"] == "Too many requests."
+    assert body["questions_done"] == 2
+    stopped = results_for(body, second.key)["hybrid"]
+    assert stopped["outcome"] == "provider_error"
+    assert stopped["error_category"] == "rate_limited"
+    assert stopped["abstention_correct"] is None
+    assert len(evaluator.generator.prompts) == 2  # nothing after the refusal
+    assert slots_used("evaluation-generations-daily") == 1  # the refused call is given back

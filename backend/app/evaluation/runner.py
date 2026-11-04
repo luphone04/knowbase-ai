@@ -18,10 +18,11 @@ context and answers through `ChatService.answer`, the code chat uses. Nothing
 is written to conversations, and no database connection is held while Gemini
 works.
 
-Provider failures are results, not abstentions. Gemini's daily quota, a
-missing key, or a rejected key stops the run: every further call would fail
-too. If the workspace's documents change during a run, it stops, because its
-results would mix two corpora.
+Provider failures are results, not abstentions. A quota or rate-limit
+refusal, a missing key, or a rejected key stops the run (partial results are
+kept); other failures (5xx, timeouts, invalid responses) are recorded on that
+question and the run continues. If the workspace's documents change during a
+run, it stops, because its results would mix two corpora.
 """
 
 import logging
@@ -59,6 +60,7 @@ from app.providers.errors import (
     ProviderError,
     ProviderNotConfigured,
     ProviderQuotaExhausted,
+    ProviderRateLimited,
 )
 from app.providers.interfaces import EmbeddingProvider, GenerationProvider
 from app.retrieval.followup import contextualize
@@ -67,9 +69,12 @@ from app.worker.lease import Deadline, LeaseHeartbeat
 
 logger = logging.getLogger(__name__)
 
-# Every later call would fail the same way, so the run stops instead of spending more.
+# The run stops instead of spending more: a missing or rejected key fails every later call;
+# a quota or rate-limit refusal means Gemini wants fewer requests, and pushing on would
+# only consume quota trying to force completion (owner decision, 2026-11-04).
 STOPPING_ERRORS: tuple[type[ProviderError], ...] = (
     ProviderQuotaExhausted,
+    ProviderRateLimited,
     ProviderNotConfigured,
     ProviderConfigurationError,
 )

@@ -97,8 +97,10 @@ free tier only, and SPEC.md §6.1 sketches three evaluation tables.
     installation-wide `DAILY_EVALUATION_GENERATION_LIMIT`, and one slot from a per-workspace
     `DAILY_EVALUATION_RUN_LIMIT`. Unused slots are given back when the run ends. Only one run is
     active per workspace (a partial unique index).
-17. **Failure handling:** Gemini's daily quota stops the run (`failed`, with its partial results
-    kept). Another provider failure is recorded on that question's results, and the run
+17. **Failure handling:** a quota or rate-limit refusal (owner decision, 4 November 2026), a
+    missing key, or a rejected key stops the run (`failed`, with its partial results kept):
+    pushing on would only consume quota trying to force completion. Another provider failure
+    (5xx, timeout, invalid response) is recorded on that question's results, and the run
     continues. If the corpus changes during a run (an upload, re-index, or delete), the run
     stops: its results would mix two corpora.
 18. **Workspace isolation:** runs and results belong to a workspace (composite foreign keys, the

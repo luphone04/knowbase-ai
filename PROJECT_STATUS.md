@@ -58,7 +58,7 @@ No live evaluation has run. Every result so far comes from fake providers.
 - One query embedding per question serves all five retrieval configurations; the three lexical experiments make no Gemini calls. Answer generation is one request per question per mode (`GEMINI_GENERATION_MAX_RETRIES=0`), about 1,300–1,800 prompt tokens each (5 short excerpts plus the instructions).
 - A clean evaluation workspace also needs 10 document embeddings to index the 5 demo files (2 chunks each). The `Test1` workspace already has them indexed, but also holds two other PDFs (79 chunks) that would compete in retrieval.
 - App budgets: `DAILY_QUERY_EMBEDDING_LIMIT` 500 (461 left today), `DAILY_EVALUATION_GENERATION_LIMIT` 120, `DAILY_EVALUATION_RUN_LIMIT` 3 per workspace. Gemini's own free-tier limits are visible only in AI Studio.
-- Pacing: one question about every 6–11 s (`EVALUATION_QUESTION_INTERVAL_SECONDS=6` plus the worker's 5 s poll), so at most about 3 requests per question. A per-minute rate limit would be recorded as a provider error on that question, never as an abstention; Gemini's daily quota stops the run.
+- Pacing: one question about every 6–11 s (`EVALUATION_QUESTION_INTERVAL_SECONDS=6` plus the worker's 5 s poll), so at most about 3 requests per question. A quota or rate-limit refusal stops the run and keeps its partial results (owner decision, 2026-11-04); other provider errors are recorded on that question, never as abstentions.
 
 ### Dev database migration (0009 → 0010, 2026-11-04)
 
