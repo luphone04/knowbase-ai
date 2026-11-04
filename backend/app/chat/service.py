@@ -59,6 +59,16 @@ class PreparedTurn:
 
 
 @dataclass(frozen=True)
+class Answer:
+    outcome: str  # "answered" or "abstained"
+    reason: str | None  # the abstention reason
+    content: str  # the validated answer, or the abstention text
+    citations: list[dict[str, Any]]  # citation_record() of each cited excerpt
+    details: dict[str, Any]  # invalid citation ids and removed URLs
+    result: GenerationResult | None  # None when no generation call was made
+
+
+@dataclass(frozen=True)
 class ChatTurn:
     conversation: Conversation
     user_message: Message
@@ -168,38 +178,43 @@ class ChatService:
 
     # --- phase 2: answer and save ---------------------------------------------------------
 
+    def answer(
+        self, question: str, excerpts: Sequence[SourceExcerpt], history: Sequence[HistoryMessage]
+    ) -> Answer:
+        """Generate (unless there is no evidence) and validate citations. Saves nothing.
+
+        Chat and the evaluation (ADR 0014) both answer through here, so they share
+        the prompt, the model call, citation validation, and the abstention rules.
+        A provider failure propagates.
+        """
+        if not excerpts:
+            return Answer("abstained", "no_evidence", ABSTENTION, [], {}, None)
+        prompt = build_prompt(question, excerpts, history)
+        result = self._generation_factory().generate(prompt, system_instruction=SYSTEM_INSTRUCTION)
+        checked = check_answer(
+            result.text,
+            valid_ids=[e.citation_id for e in excerpts],
+            excerpt_text="\n".join(e.text for e in excerpts),
+        )
+        details: dict[str, Any] = {
+            "invalid_citation_ids": checked.invalid_ids,
+            "removed_urls": checked.removed_urls,
+        }
+        if checked.cited_ids:
+            by_id = {e.citation_id: e for e in excerpts}
+            citations = [citation_record(by_id[i]) for i in checked.cited_ids]
+            return Answer("answered", None, checked.text, citations, details, result)
+        reason = "model_insufficient" if is_abstention(result.text) else "no_valid_citation"
+        return Answer("abstained", reason, ABSTENTION, [], details, result)
+
     def respond(
         self, db: Session, prepared: PreparedTurn, *, conversation_id: uuid.UUID
     ) -> ChatTurn:
         """Generate (unless there is no evidence), validate, and save the turn. Commits."""
         excerpts = prepared.excerpts
-        result: GenerationResult | None = None
-        citations: list[dict[str, Any]] = []
-        details: dict[str, Any] = {}
-        if not excerpts:
-            outcome, reason, content = "abstained", "no_evidence", ABSTENTION
-        else:
-            prompt = build_prompt(prepared.question, excerpts, prepared.history)
-            result = self._generation_factory().generate(
-                prompt, system_instruction=SYSTEM_INSTRUCTION
-            )
-            checked = check_answer(
-                result.text,
-                valid_ids=[e.citation_id for e in excerpts],
-                excerpt_text="\n".join(e.text for e in excerpts),
-            )
-            details = {
-                "invalid_citation_ids": checked.invalid_ids,
-                "removed_urls": checked.removed_urls,
-            }
-            if checked.cited_ids:
-                by_id = {e.citation_id: e for e in excerpts}
-                citations = [citation_record(by_id[i]) for i in checked.cited_ids]
-                outcome, reason, content = "answered", None, checked.text
-            elif is_abstention(result.text):
-                outcome, reason, content = "abstained", "model_insufficient", ABSTENTION
-            else:
-                outcome, reason, content = "abstained", "no_valid_citation", ABSTENTION
+        answer = self.answer(prepared.question, excerpts, prepared.history)
+        outcome, reason, content = answer.outcome, answer.reason, answer.content
+        citations, details, result = answer.citations, answer.details, answer.result
 
         retrieval = prepared.retrieval
         trace = db.get(QueryTrace, retrieval.trace_id)

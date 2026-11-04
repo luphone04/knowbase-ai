@@ -19,18 +19,26 @@ Chunks of a source that is being deleted are never returned.
   dash is not negation: questions are not search syntax, and "-tent" must not
   match every chunk *without* "tent". A query with no searchable words returns
   nothing.
+- **Lexical variants (evaluation only, ADR 0014):** `match="any"` ORs the words
+  instead of ANDing them, and `config="english"` stems words and drops
+  stop-words (computed per query, not indexed). Production uses the defaults,
+  `simple` and all words (ADR 0009).
 """
 
 import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import Row, func, select, text
+from sqlalchemy import Row, Text, cast, func, select, text
+from sqlalchemy.dialects.postgresql import REGCONFIG, TSQUERY
 from sqlalchemy.orm import Session
 
 from app.db.models import Chunk, Document, Source
+
+LexicalConfig = Literal["simple", "english"]
+LexicalMatch = Literal["all", "any"]
 
 _HAS_WORD = re.compile(r"\w")
 # A dash that starts a word (websearch_to_tsquery's NOT); hyphens inside words stay.
@@ -136,17 +144,33 @@ def vector_search(
 
 
 def lexical_search(
-    db: Session, *, workspace_id: uuid.UUID, query: str, limit: int
+    db: Session,
+    *,
+    workspace_id: uuid.UUID,
+    query: str,
+    limit: int,
+    config: LexicalConfig = "simple",
+    match: LexicalMatch = "all",
 ) -> list[SearchHit]:
     """The `limit` best full-text matches for `query` ("quoted phrases" are kept)."""
     query = _NEGATION.sub("", query)
     if not _HAS_WORD.search(query):
         return []
-    tsquery = func.websearch_to_tsquery("simple", query)
-    rank = func.ts_rank_cd(Chunk.search_tsv, tsquery).label("lexical_rank")
+    regconfig = cast(config, REGCONFIG)
+    tsquery: Any = func.websearch_to_tsquery(regconfig, query)
+    if match == "any":
+        # Lexemes in a tsquery's text form are quoted and never contain spaces, so
+        # " & " only ever joins words: this turns AND into OR and leaves phrases alone.
+        tsquery = cast(func.replace(cast(tsquery, Text), " & ", " | "), TSQUERY)
+    document: Any = (
+        Chunk.search_tsv
+        if config == "simple"
+        else func.to_tsvector(regconfig, func.coalesce(Chunk.content, ""))
+    )
+    rank = func.ts_rank_cd(document, tsquery).label("lexical_rank")
     statement = (
         _scoped(select(*_columns(), rank), workspace_id)
-        .where(Chunk.search_tsv.op("@@")(tsquery))
+        .where(document.op("@@")(tsquery))
         .order_by(rank.desc(), Chunk.id)
         .limit(limit)
     )

@@ -348,3 +348,81 @@ def test_lexical_input_is_never_interpreted_as_sql(tenant_a: Tenant, scoped: Ses
     lexical_search(scoped, workspace_id=tenant_a.workspace_id, query=hostile, limit=10)
     with get_engine().connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM chunks")).scalar_one() == 1
+
+
+# --- lexical variants (evaluation experiments, ADR 0014) ------------------------------------
+
+
+def _lexical(scoped: Session, tenant: Tenant, query: str, **variant: Any) -> list[Any]:
+    hits = lexical_search(
+        scoped, workspace_id=tenant.workspace_id, query=query, limit=10, **variant
+    )
+    return [h.chunk_id for h in hits]
+
+
+def test_the_default_still_needs_every_word(tenant_a: Tenant, scoped: Session) -> None:
+    """Production behaviour (ADR 0009): a natural question rarely has every word in one chunk."""
+    (laptop,) = add_source(
+        tenant_a.workspace_id,
+        "returns.md",
+        [("Laptops can be returned within 14 days of delivery.", basis((0, 1)))],
+    )
+    question = "Can I return my laptop?"
+    assert _lexical(scoped, tenant_a, question) == []
+    assert _lexical(scoped, tenant_a, question, config="simple", match="all") == []
+    assert _lexical(scoped, tenant_a, "laptops returned") == [laptop]
+
+
+def test_any_word_matching_ranks_by_how_many_words_match(tenant_a: Tenant, scoped: Session) -> None:
+    both, one, _ = add_source(
+        tenant_a.workspace_id,
+        "faq.md",
+        [
+            ("Express shipping costs $19.95 for any order.", basis((0, 1))),
+            ("Standard shipping is free over $50.", basis((1, 1))),
+            ("Gift cards never expire.", basis((2, 1))),
+        ],
+    )
+    assert _lexical(scoped, tenant_a, "express shipping cost") == []  # "cost" is not "costs"
+    assert _lexical(scoped, tenant_a, "express shipping cost", match="any") == [both, one]
+
+
+def test_any_word_matching_keeps_phrases_and_ignores_negation(
+    tenant_a: Tenant, scoped: Session
+) -> None:
+    seal, _ = add_source(
+        tenant_a.workspace_id,
+        "returns.md",
+        [
+            ("Returned only if the factory seal is intact.", basis((0, 1))),
+            ("The seal of the factory was broken.", basis((1, 1))),
+        ],
+    )
+    assert _lexical(scoped, tenant_a, '"factory seal"', match="any") == [seal]
+    assert _lexical(scoped, tenant_a, '"factory seal" -intact', match="any") == [seal]
+
+
+def test_english_stems_words_and_drops_stop_words(tenant_a: Tenant, scoped: Session) -> None:
+    (laptop,) = add_source(
+        tenant_a.workspace_id,
+        "returns.md",
+        [("Laptops can be returned within 14 days of delivery.", basis((0, 1)))],
+    )
+    # "return"/"returned" and "laptop"/"laptops" share a stem; "can" and "I" are stop-words.
+    assert _lexical(scoped, tenant_a, "Can I return laptops?") == []
+    assert _lexical(scoped, tenant_a, "Can I return laptops?", config="english") == [laptop]
+    # A query of stop-words only matches nothing (not everything).
+    assert _lexical(scoped, tenant_a, "can I be", config="english") == []
+    assert _lexical(scoped, tenant_a, "can I be", config="english", match="any") == []
+
+
+def test_variants_stay_in_the_workspace_and_treat_input_as_data(
+    tenant_a: Tenant, tenant_b: Tenant, scoped: Session
+) -> None:
+    add_source(tenant_b.workspace_id, "b.md", [("tent tent tent", basis((0, 1)))])
+    hostile = "tent ' & | ! <-> :* ); DROP TABLE chunks; --"
+    for variant in ({"match": "any"}, {"config": "english"}, {"config": "english", "match": "any"}):
+        assert _lexical(scoped, tenant_a, "tent", **variant) == []
+        _lexical(scoped, tenant_a, hostile, **variant)
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM chunks")).scalar_one() == 1

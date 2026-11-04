@@ -20,7 +20,7 @@ not committed: the caller owns the transaction (M7 saves a chat turn with it).
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -33,11 +33,28 @@ from app.providers.errors import InvalidProviderResponse
 from app.providers.interfaces import QUERY_TASK, EmbeddingProvider
 from app.retrieval.followup import contextualize
 from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.search import SearchHit, lexical_search, vector_search
+from app.retrieval.search import (
+    LexicalConfig,
+    LexicalMatch,
+    SearchHit,
+    lexical_search,
+    vector_search,
+)
 
 logger = logging.getLogger(__name__)
 
 RetrievalMode = Literal["vector", "hybrid"]
+
+
+@dataclass(frozen=True)
+class LexicalVariant:
+    """How hybrid mode's full-text list matches. The default is production (ADR 0009)."""
+
+    config: LexicalConfig = "simple"
+    match: LexicalMatch = "all"
+
+
+PRODUCTION_LEXICAL = LexicalVariant()
 
 
 @dataclass(frozen=True)
@@ -49,6 +66,13 @@ class RetrievedChunk:
     lexical_rank: int | None
     lexical_score: float | None
     hit: SearchHit
+
+
+@dataclass(frozen=True)
+class Ranking:
+    results: list[RetrievedChunk]  # the top RETRIEVAL_TOP_N, best first
+    vector_hits: list[SearchHit]
+    lexical_hits: list[SearchHit]
 
 
 @dataclass(frozen=True)
@@ -71,7 +95,8 @@ class Retriever:
         self.settings = settings
         self._provider_factory = embedding_provider_factory
 
-    def _embed_query(self, query: str) -> list[float]:
+    def embed_query(self, query: str) -> list[float]:
+        """One Gemini RETRIEVAL_QUERY embedding, checked against the request."""
         provider = self._provider_factory()
         result = provider.embed_query(query)
         if (
@@ -97,30 +122,31 @@ class Retriever:
             is not None
         )
 
-    def retrieve(
+    def rank(
         self,
         db: Session,
         *,
         workspace_id: uuid.UUID,
-        question: str,
+        query: str,
+        query_vector: Sequence[float] | None,
         mode: RetrievalMode,
-        previous_question: str | None = None,
-        embed: bool = True,
-        conversation_id: uuid.UUID | None = None,
-    ) -> RetrievalResult:
-        """Search the workspace. With `embed=False` (nothing indexed) no Gemini call is made."""
-        started = time.perf_counter()
+        lexical: LexicalVariant = PRODUCTION_LEXICAL,
+    ) -> Ranking:
+        """Search and rank, with no Gemini call: the embedding is given (None: nothing indexed).
+
+        `lexical` changes only the full-text list of hybrid mode; anything but the
+        default is an evaluation experiment (ADR 0014).
+        """
         settings = self.settings
-        query = contextualize(question, previous_question)
         vector_hits = (
             vector_search(
                 db,
                 workspace_id=workspace_id,
-                query_vector=self._embed_query(query),
+                query_vector=query_vector,
                 model=settings.gemini_embedding_model,
                 limit=settings.retrieval_candidates,
             )
-            if embed
+            if query_vector is not None
             else []
         )
         lexical_hits: list[SearchHit] = []
@@ -137,44 +163,71 @@ class Retriever:
                 )
                 for hit in vector_hits[: settings.retrieval_top_n]
             ]
-        else:
-            lexical_hits = (
-                lexical_search(
-                    db, workspace_id=workspace_id, query=query, limit=settings.retrieval_candidates
-                )
-                if embed
-                else []
+            return Ranking(results, vector_hits, lexical_hits)
+        lexical_hits = (
+            lexical_search(
+                db,
+                workspace_id=workspace_id,
+                query=query,
+                limit=settings.retrieval_candidates,
+                config=lexical.config,
+                match=lexical.match,
             )
-            by_id = {hit.chunk_id: hit for hit in lexical_hits}
-            by_id.update({hit.chunk_id: hit for hit in vector_hits})
-            vector_by_id = {hit.chunk_id: hit for hit in vector_hits}
-            lexical_by_id = {hit.chunk_id: hit for hit in lexical_hits}
-            fused = reciprocal_rank_fusion(
-                {
-                    "vector": [hit.chunk_id for hit in vector_hits],
-                    "lexical": [hit.chunk_id for hit in lexical_hits],
-                },
-                k=settings.rrf_k,
-                limit=settings.retrieval_top_n,
+            if query_vector is not None
+            else []
+        )
+        by_id = {hit.chunk_id: hit for hit in lexical_hits}
+        by_id.update({hit.chunk_id: hit for hit in vector_hits})
+        vector_by_id = {hit.chunk_id: hit for hit in vector_hits}
+        lexical_by_id = {hit.chunk_id: hit for hit in lexical_hits}
+        fused = reciprocal_rank_fusion(
+            {
+                "vector": [hit.chunk_id for hit in vector_hits],
+                "lexical": [hit.chunk_id for hit in lexical_hits],
+            },
+            k=settings.rrf_k,
+            limit=settings.retrieval_top_n,
+        )
+        results = [
+            RetrievedChunk(
+                rank=item.rank,
+                score=item.score,
+                vector_rank=item.source_ranks.get("vector"),
+                vector_distance=(
+                    vector_by_id[item.chunk_id].score if item.chunk_id in vector_by_id else None
+                ),
+                lexical_rank=item.source_ranks.get("lexical"),
+                lexical_score=(
+                    lexical_by_id[item.chunk_id].score if item.chunk_id in lexical_by_id else None
+                ),
+                hit=by_id[item.chunk_id],
             )
-            results = [
-                RetrievedChunk(
-                    rank=item.rank,
-                    score=item.score,
-                    vector_rank=item.source_ranks.get("vector"),
-                    vector_distance=(
-                        vector_by_id[item.chunk_id].score if item.chunk_id in vector_by_id else None
-                    ),
-                    lexical_rank=item.source_ranks.get("lexical"),
-                    lexical_score=(
-                        lexical_by_id[item.chunk_id].score
-                        if item.chunk_id in lexical_by_id
-                        else None
-                    ),
-                    hit=by_id[item.chunk_id],
-                )
-                for item in fused
-            ]
+            for item in fused
+        ]
+        return Ranking(results, vector_hits, lexical_hits)
+
+    def retrieve(
+        self,
+        db: Session,
+        *,
+        workspace_id: uuid.UUID,
+        question: str,
+        mode: RetrievalMode,
+        previous_question: str | None = None,
+        embed: bool = True,
+        conversation_id: uuid.UUID | None = None,
+    ) -> RetrievalResult:
+        """Search the workspace. With `embed=False` (nothing indexed) no Gemini call is made."""
+        started = time.perf_counter()
+        settings = self.settings
+        query = contextualize(question, previous_question)
+        # Embedded before the session's first statement: no connection is held meanwhile.
+        query_vector = self.embed_query(query) if embed else None
+        ranking = self.rank(
+            db, workspace_id=workspace_id, query=query, query_vector=query_vector, mode=mode
+        )
+        results = ranking.results
+        vector_hits, lexical_hits = ranking.vector_hits, ranking.lexical_hits
 
         latency_ms = round((time.perf_counter() - started) * 1000)
         trace = QueryTrace(
