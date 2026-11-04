@@ -671,7 +671,21 @@ def test_results_computed_after_losing_the_run_are_discarded(
                 {"t": uuid.uuid4(), "id": run["id"]},
             )
 
-    evaluator.embedder.on_call = taken_over  # type: ignore[attr-defined]
+    evaluator.embedder.on_call = taken_over
     evaluator.worker.process(slow, Deadline(60))
     assert scalar("SELECT count(*) FROM evaluation_results") == 0
     assert scalar("SELECT questions_done FROM evaluation_runs") == 0
+
+
+def test_starting_a_run_from_another_origin_is_blocked(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    """The Origin check (CSRF) covers evaluation runs like every other state change."""
+    seed_demo_corpus(tenant_a.workspace_id)
+    response = tenant_a.client.post(
+        f"{EVALUATIONS}/run", json={}, headers={"Origin": "http://evil.example"}
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "origin_not_allowed"
+    assert scalar("SELECT count(*) FROM evaluation_runs") == 0
+    assert slots_used("evaluation-runs-daily") == 0

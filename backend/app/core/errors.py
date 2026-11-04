@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,40 @@ async def _validation_error(_: Request, exc: Exception) -> JSONResponse:
 async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
     return error_response(500, "internal_error", "Internal server error.")
+
+
+class InternalErrorMiddleware:
+    """The JSON 500 for an unhandled exception, answered *inside* CORS.
+
+    Starlette answers unhandled exceptions in its outermost layer, outside every
+    middleware, so that 500 carries no CORS headers and a browser reports it as
+    a network failure. This layer sits just inside CORSMiddleware (see main.py),
+    so the browser can read the error. The outer handler stays as a fallback.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            if started:
+                raise  # the response is partly sent; nothing better can be done here
+            logger.exception("Unhandled error on %s %s", scope.get("method"), scope.get("path"))
+            response = error_response(500, "internal_error", "Internal server error.")
+            await response(scope, receive, send)
 
 
 def install_error_handlers(app: FastAPI) -> None:

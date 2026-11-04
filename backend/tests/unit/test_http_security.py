@@ -164,3 +164,43 @@ def test_protected_endpoint_without_cookie_is_401(client: TestClient) -> None:
     assert response.json() == {
         "error": {"code": "not_authenticated", "message": "Not authenticated."}
     }
+
+
+# --- errors a browser can read (ADR 0010 deferred item, fixed in M9) ----------------------
+
+
+def test_an_oversized_body_gets_a_413_the_frontend_can_read(client: TestClient) -> None:
+    """The body limit sits inside CORS, so the browser sees the 413, not a network error."""
+    response = client.post(LOGOUT, content=b"x" * (1024 * 1024 + 1), headers={"Origin": FRONTEND})
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+    assert response.headers["access-control-allow-origin"] == FRONTEND
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_a_413_for_another_origin_gets_no_cors_headers(client: TestClient) -> None:
+    response = client.post(
+        LOGOUT, content=b"x" * (1024 * 1024 + 1), headers={"Origin": "http://evil.example"}
+    )
+    assert response.status_code == 413
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_an_unhandled_error_is_a_json_500_the_frontend_can_read() -> None:
+    from app.main import create_app
+
+    broken = create_app()
+
+    @broken.get("/api/v1/broken-for-test")
+    def explode() -> None:
+        raise RuntimeError("secret detail that must not leak")
+
+    response = TestClient(broken, base_url="http://localhost").get(
+        "/api/v1/broken-for-test", headers={"Origin": FRONTEND}
+    )
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"code": "internal_error", "message": "Internal server error."}
+    }
+    assert response.headers["access-control-allow-origin"] == FRONTEND
+    assert "secret detail" not in response.text

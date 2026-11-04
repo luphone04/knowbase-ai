@@ -11,7 +11,7 @@ from app.api.v1 import router as api_v1_router
 from app.api.v1.sources import max_upload_bytes
 from app.config import get_settings
 from app.core.body_limit import BodySizeLimitMiddleware
-from app.core.errors import install_error_handlers
+from app.core.errors import InternalErrorMiddleware, install_error_handlers
 from app.core.logging import configure_logging
 from app.core.origin import OriginCheckMiddleware
 
@@ -47,8 +47,17 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router)
 
     # Starlette runs the last-added middleware first:
-    # TrustedHost -> body size limit -> CORS (answers preflights) -> Origin check -> routes.
+    # TrustedHost -> CORS (answers preflights) -> JSON 500s -> body size limit -> Origin check
+    # -> routes. Everything inside CORS gets CORS headers, so a browser can read a 413 from
+    # the body limit or a 500 instead of seeing a network failure (ADR 0010 deferred item).
     app.add_middleware(OriginCheckMiddleware, allowed_origins=[settings.frontend_origin])
+    # Uploads get the file limit plus room for multipart framing; JSON bodies 1 MiB.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        default_limit=JSON_BODY_LIMIT,
+        path_limits={"/api/v1/sources/files": max_upload_bytes(settings) + MULTIPART_OVERHEAD},
+    )
+    app.add_middleware(InternalErrorMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.frontend_origin],  # exact origin; never "*" with credentials
@@ -56,12 +65,6 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type"],
         max_age=600,
-    )
-    # Uploads get the file limit plus room for multipart framing; JSON bodies 1 MiB.
-    app.add_middleware(
-        BodySizeLimitMiddleware,
-        default_limit=JSON_BODY_LIMIT,
-        path_limits={"/api/v1/sources/files": max_upload_bytes(settings) + MULTIPART_OVERHEAD},
     )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_host_list)
     return app

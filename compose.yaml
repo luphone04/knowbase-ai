@@ -9,6 +9,8 @@ x-backend: &backend
     - path: .env
       required: true
   networks: [data, egress]
+  # The images run as a non-root user; nothing in them may gain privileges (setuid) later.
+  security_opt: ["no-new-privileges:true"]
 
 services:
   db:
@@ -86,6 +88,7 @@ services:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:${API_HOST_PORT:-8000}/api/v1}
         NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
     image: knowbase-frontend:dev
+    security_opt: ["no-new-privileges:true"]
     # No env_file: the frontend never receives backend settings or secrets such as GEMINI_API_KEY.
     ports:
       # Localhost only. Open http://localhost:3000 (it must match FRONTEND_ORIGIN exactly).
