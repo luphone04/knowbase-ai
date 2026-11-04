@@ -7,7 +7,7 @@
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 step 5: chat and citations) |
+| Last verified checkpoint | 2026-11-04 (M8 step 6: dashboard) |
 
 ## Milestones
 
@@ -40,7 +40,7 @@ abstention.
 | 3 | Auth and app shell: register, login, logout, route guard, navigation | Done: browser check against the live API passed (redirect when signed out; register → dashboard; HttpOnly `SameSite=Lax` cookie unreadable by JavaScript; logout ends the session; API messages for a wrong password and a taken email; no horizontal scroll at 390 px). 21 unit tests |
 | 4 | Documents: list, upload, live status, detail, re-index, delete | Done: browser check against the live API and worker passed (empty state; `.doc` refused before upload; a fake PDF shows the server's 422 message; upload polled Queued → Processing → Ready; detail with chunks and job result; re-index finishes as unchanged; identical re-upload reports nothing changed; confirmed delete leaves the list; PDF page count on the detail page; no horizontal scroll at 390 px). 25 unit tests. Used 10 embedding texts (2 Markdown, 8 PDF) in a temporary workspace; no generation |
 | 5 | Chat and citations: conversations, answers with citation chips, citation panel, abstention, AI errors | Done: live Gemini check in a temporary workspace with the 5 Northstar documents: the laptop question got a cited answer (`returns-policy.md`); the citation panel shows the saved excerpt; the packaging follow-up was answered in the same conversation (contextualized, `shipping-policy.md`); an unrelated question showed the abstention card (`model_insufficient`); an intercepted 503 `ai_unavailable` showed the error and kept the question; reload shows 3 saved turns; usable at 390 px. 3 generation requests. 26 unit tests |
-| 6 | Dashboard: workspace, AI status, document counts | Not started |
+| 6 | Dashboard: workspace, AI status, document counts | Done: counts (documents, ready, queued or processing, failed, indexed chunks) checked equal to totals computed from `GET /sources`; the 5 most recently updated documents; AI status from `GET /ai/status` (no Gemini call); no horizontal scroll at 390 px |
 | 7 | Acceptance: Playwright flow (live Gemini), desktop and narrow widths, key not in the build, docs → READY_FOR_REVIEW | Not started |
 
 Checklist:
@@ -393,7 +393,8 @@ up to `2b8513e`.
 | M8 | see `git log` | feat(compose): add the frontend service (standalone Next.js, no backend env) |
 | M8 | `949f879` | feat(frontend): add register, login, logout, and the signed-in app shell |
 | M8 | `362245a` | feat(frontend): add documents: upload, live status, detail, re-index, and delete |
-| M8 | see `git log` | feat(frontend): add chat with cited answers, a citation panel, abstention, and AI error states |
+| M8 | `1a6d76b` | feat(frontend): add chat with cited answers, a citation panel, abstention, and AI error states |
+| M8 | see `git log` | feat(frontend): add the dashboard: document totals and AI provider status |
 
 ## Blockers
 
