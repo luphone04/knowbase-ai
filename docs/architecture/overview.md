@@ -3,7 +3,7 @@
 Status: design from [SPEC.md](../../SPEC.md) §4.
 
 **Implemented (file-upload-only scope, [ADR 0008](../decisions/0008-file-upload-only-scope.md)):**
-- `db`, `migrate`, `api`, and `worker` (no frontend yet).
+- `db`, `migrate`, `api`, `worker`, and `frontend` (M8: a minimal Next.js interface over the API, [ADR 0013](../decisions/0013-m8-frontend-scope.md)).
 - The api serves `/health`, `/ready`, `/api/v1/auth/*`, `/api/v1/workspaces/*`, `/api/v1/ai/status`, `/api/v1/sources*` (file sources), `/api/v1/jobs/{id}`, and `/api/v1/retrieval/*` (M6).
 - Retrieval (M6): workspace-scoped pgvector search and PostgreSQL full-text search, fused with RRF, with a trace per search ("Retrieval" below).
 - Grounded chat (M7): `/api/v1/conversations*`, with per-user conversations, fresh retrieval for every question, cited answers or abstention, and provider errors kept separate ("Grounded chat" below).
@@ -13,7 +13,7 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 - File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
 - Website crawling was built in M5 and removed by owner decision (M5 is descoped). The server never fetches user-supplied URLs.
 
-**Planned:** frontend (M8) and evaluation (M9). See
+**Planned:** evaluation (M9). See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
 [ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
 [ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3),
@@ -89,6 +89,7 @@ flowchart LR
 |---|---|---|
 | `data` network (`internal: true`) | db, migrate, api, worker | Database traffic. No route to the internet |
 | `egress` network | api, worker | Outbound calls to Gemini. Carries the API's port, published on `127.0.0.1` only |
+| `web` network | frontend | Carries the frontend's port (`127.0.0.1:3000`). No route to the database; the browser, not the frontend server, calls the API |
 | `postgres_data` volume | db, at `/var/lib/postgresql` (PG18 layout) | Database files. Kept by `docker compose down`, deleted by `down -v` |
 | `uploads_data` volume | api and worker, both at `/app/data/uploads` | Uploaded files. A single shared location |
 

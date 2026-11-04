@@ -15,9 +15,10 @@ This is a well-engineered prototype for local demos, not production software.
 > embedded again. Website crawling (Milestone 5) was built and then removed;
 > it is descoped. **Milestone 6 (hybrid retrieval)** is approved: you can search in
 > vector-only or hybrid mode and inspect ranks, scores, and traces.
-> **Milestone 7 (grounded chat)** is implemented and awaiting review: conversations
-> with answers that cite your documents, abstention when they don't support an
-> answer, and clear errors when Gemini is unavailable. There is no frontend yet (M8).
+> **Milestone 7 (grounded chat)** is approved: conversations with answers that
+> cite your documents, abstention when they don't support an answer, and clear
+> errors when Gemini is unavailable. **Milestone 8 (a minimal web interface over
+> this API)** is in progress.
 > See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
 
 ## Documents
@@ -30,7 +31,7 @@ This is a well-engineered prototype for local demos, not production software.
 
 ## Stack
 
-Next.js (App Router, TypeScript, Node 24 LTS; from M8) · FastAPI (Python
+Next.js 16 (App Router, TypeScript, Node 24 LTS, Tailwind CSS, shadcn/ui) · FastAPI (Python
 3.12, dependencies locked with `uv`) · SQLAlchemy 2 + Alembic ·
 PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai` SDK
 (`gemini-3.5-flash-lite` for answers, `gemini-embedding-001` at 768 dims) · Docker Compose.
@@ -54,13 +55,16 @@ cp .env.example .env
 #    python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 #    Optionally set GEMINI_API_KEY (backend only).
 
-# 2. Build and start db, migrate, api, and worker
+# 2. Build and start db, migrate, api, worker, and frontend
 docker compose up --build -d
 
 # 3. Check the services: api and db "healthy", migrate "Exited (0)", worker "Up"
 docker compose ps -a
 
-# 4. Health endpoints and API docs
+# 4. Open the app (use localhost, not 127.0.0.1: it must match FRONTEND_ORIGIN)
+open http://localhost:3000
+
+#    Health endpoints and API docs
 curl http://localhost:8000/health   # {"status":"ok"}
 curl http://localhost:8000/ready    # database + pgvector extension status
 open http://localhost:8000/docs
@@ -83,10 +87,31 @@ docker compose down
 > uploaded-file volumes. Only use it when you want a clean slate.
 
 If port 8000 is already in use on your machine, set `API_HOST_PORT` in `.env`
-(for example `8001`) and use that port in the URLs above. The database
-publishes no host port. Use `docker compose exec db psql ...` to reach it.
+(for example `8001`) and use that port in the URLs above. Then set
+`NEXT_PUBLIC_API_BASE_URL` to the same port (`http://localhost:8001/api/v1`)
+and rebuild the frontend (`docker compose up --build -d frontend`): the URL is
+built into the browser bundle. The database publishes no host port. Use
+`docker compose exec db psql ...` to reach it.
 
-The web UI (`http://localhost:3000`) arrives in Milestone 8.
+## Web interface
+
+The frontend (`frontend/`, [ADR 0013](docs/decisions/0013-m8-frontend-scope.md))
+is a small Next.js app that demonstrates the backend. The browser calls the API
+directly with the HttpOnly session cookie; the frontend container receives no
+`.env` and holds no secrets.
+
+To work on it outside Docker (with the backend running in Compose):
+
+```bash
+cd frontend
+cp .env.example .env.local   # NEXT_PUBLIC_* settings only; never a secret
+npm ci
+npm run dev                  # http://localhost:3000
+npm run lint && npm run typecheck && npm test && npm run build && npm run check:bundle
+```
+
+Stop the Compose `frontend` container first (`docker compose stop frontend`),
+since both use port 3000.
 
 ## Try authentication and workspace isolation (curl)
 

@@ -78,7 +78,30 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # frontend: added in Milestone 8 (Next.js on Node 24).
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Inlined into the browser bundle at build time; the browser calls the API directly.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:${API_HOST_PORT:-8000}/api/v1}
+        NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+    image: knowbase-frontend:dev
+    # No env_file: the frontend never receives backend settings or secrets such as GEMINI_API_KEY.
+    ports:
+      # Localhost only. Open http://localhost:3000 (it must match FRONTEND_ORIGIN exactly).
+      - "127.0.0.1:3000:3000"
+    # Its own network: no route to the database, and it makes no server-side API calls.
+    networks: [web]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
   postgres_data:
@@ -91,3 +114,5 @@ networks:
   # Outbound access for Gemini calls (api, worker),
   # and the network that carries the API's published localhost port.
   egress: {}
+  # The frontend's published localhost port only.
+  web: {}

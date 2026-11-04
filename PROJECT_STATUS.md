@@ -7,7 +7,7 @@
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 step 1: frontend scaffold) |
+| Last verified checkpoint | 2026-11-04 (M8 step 2: frontend container) |
 
 ## Milestones
 
@@ -36,7 +36,7 @@ abstention.
 |---|---|---|
 | 0 | Scope recorded: ADR 0013, SPEC.md 1.5 notes, this plan | Done |
 | 1 | Scaffold: Next.js, TypeScript, Tailwind, shadcn/ui, ESLint, Vitest, `lib/api.ts`, `lib/types.ts`, CI frontend job | Done: Next.js 16.4.5, React 19.3, Tailwind 4.3, shadcn/ui (Radix), TanStack Query 5, react-markdown 10, Vitest 5 (18 tests); lint, typecheck, build, and bundle key scan pass; actionlint OK |
-| 2 | Docker: frontend image, Compose service (no `.env`), README run instructions; existing data checked unchanged | Not started |
+| 2 | Docker: frontend image, Compose service (no `.env`), README run instructions; existing data checked unchanged | Done: `node:24-bookworm-slim` standalone image as `node` (uid 1000), healthy on `127.0.0.1:3000`, own `web` network, no backend settings in its environment, build-time key scan; CORS from `http://localhost:3000` to `:8001` OK. Backup `~/knowbase-backups/knowbase-before-m8-frontend-20261104T111234Z.dump`; table fingerprints and uploads checksum identical before and after |
 | 3 | Auth and app shell: register, login, logout, route guard, navigation | Not started |
 | 4 | Documents: list, upload, live status, detail, re-index, delete | Not started |
 | 5 | Chat and citations: conversations, answers with citation chips, citation panel, abstention, AI errors | Not started |
@@ -389,7 +389,8 @@ up to `2b8513e`.
 | M7 | `56a90d7` | docs: record the generation model decision (ADR 0012) and the passed M7 live acceptance (CI run 41811055445: success) |
 | M7 | see `git log` | docs: record M7 approval |
 | M8 | `8713e45` | docs: record the M8 frontend scope (ADR 0013) and start Milestone 8 |
-| M8 | see `git log` | feat(frontend): scaffold the Next.js app with the API client, types, unit tests, and CI job |
+| M8 | `cbdcecc` | feat(frontend): scaffold the Next.js app with the API client, types, unit tests, and CI job |
+| M8 | see `git log` | feat(compose): add the frontend service (standalone Next.js, no backend env) |
 
 ## Blockers
 
