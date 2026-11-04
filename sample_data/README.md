@@ -9,5 +9,8 @@ to check retrieval. The facts are internally consistent across files:
 - exact product and policy terms such as `Trailblazer 14`, `Summit 2P`, `RMA`, and
   `NorthCare Plus`.
 
-The evaluation questions (`evaluation/demo_questions.json`) arrive with the
-evaluation milestone.
+The evaluation questions are in
+[`backend/app/evaluation/datasets/northstar-demo-v1.json`](../backend/app/evaluation/datasets/northstar-demo-v1.json)
+(inside the backend package, so the API and worker images include it; ADR 0014). They name
+these files as their expected sources and record each file's SHA-256: **edit a file here and
+the evaluation no longer accepts it** until the dataset gets a new version.

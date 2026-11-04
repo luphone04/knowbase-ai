@@ -1,0 +1,280 @@
+{
+  "name": "northstar-demo",
+  "version": "1",
+  "description": "Questions about the fictional Northstar Outfitters demo documents (sample_data/demo_store). Expected sources are file names; evidence quotes are copied from those files. Unanswerable questions have no supporting text anywhere in the corpus.",
+  "corpus": {
+    "directory": "sample_data/demo_store",
+    "sources": {
+      "product-guide.md": "3ad6db0e3df2ae4263c50ebe884919d27ffa093216cab716fd375ed02df29b70",
+      "returns-policy.md": "fd65debcf190e69ee0ee286cf33a7e87ee55d3ac0388ccddd22713454f070997",
+      "shipping-policy.md": "0df78a5d301be2e3961b0990794e97a4d3f0a17e48864412c575ce566a848d1e",
+      "support-faq.md": "d3eec8bc0dc8ae9927d151f5d7e0c9c7288df1e0cb11853e59fac0604ae1d5e9",
+      "warranty-policy.md": "b4b0d57d192145766470b8ba0a4e945c41ce501181d46598b74fc148ec9a8357"
+    }
+  },
+  "questions": [
+    {
+      "key": "q01",
+      "category": "direct",
+      "question": "How many days do I have to return an unused item?",
+      "expected_source_keys": ["returns-policy.md"],
+      "expected_answer": "Within 30 days of delivery, for a full refund to the original payment method, in the original packaging with tags, manuals, and accessories.",
+      "evidence": [
+        {"source_key": "returns-policy.md", "quote": "Unused items can be returned within 30 days of delivery for a full refund to the original payment method."}
+      ]
+    },
+    {
+      "key": "q02",
+      "category": "paraphrase",
+      "question": "I bought a laptop 20 days ago. Can I still send it back for a refund?",
+      "expected_source_keys": ["returns-policy.md"],
+      "expected_answer": "No. Laptops can be returned only within 14 days of delivery; after 14 days they are covered by the warranty policy instead.",
+      "evidence": [
+        {"source_key": "returns-policy.md", "quote": "can be returned within 14 days of delivery if the factory seal is intact."},
+        {"source_key": "returns-policy.md", "quote": "After 14 days, laptops are covered by the warranty policy instead of the returns policy."}
+      ]
+    },
+    {
+      "key": "q03",
+      "category": "paraphrase",
+      "question": "My parcel showed up crushed. What should I do?",
+      "expected_source_keys": ["shipping-policy.md"],
+      "expected_answer": "Report it within 48 hours with photos; Northstar sends a free replacement and refunds the original shipping charge.",
+      "evidence": [
+        {"source_key": "shipping-policy.md", "quote": "If a parcel arrives damaged, report it within 48 hours with photos."},
+        {"source_key": "shipping-policy.md", "quote": "Northstar sends a replacement at no cost and refunds the original shipping charge."}
+      ]
+    },
+    {
+      "key": "q04",
+      "category": "exact_term",
+      "question": "What is NorthCare Plus?",
+      "expected_source_keys": ["warranty-policy.md"],
+      "expected_answer": "An optional extended protection plan for the Trailblazer 14: three years of coverage in total plus one accidental damage repair, bought within 30 days of delivery.",
+      "evidence": [
+        {"source_key": "warranty-policy.md", "quote": "NorthCare Plus is an optional extended protection plan for the Trailblazer 14."},
+        {"source_key": "warranty-policy.md", "quote": "It extends coverage to three years in total and adds one accidental damage repair."},
+        {"source_key": "warranty-policy.md", "quote": "It must be purchased within 30 days of the laptop's delivery."}
+      ]
+    },
+    {
+      "key": "q05",
+      "category": "exact_term",
+      "question": "How much does the Summit 2P weigh?",
+      "expected_source_keys": ["product-guide.md"],
+      "expected_answer": "1.6 kg packed.",
+      "evidence": [
+        {"source_key": "product-guide.md", "quote": "It weighs 1.6 kg packed and pitches with a single hub pole."}
+      ]
+    },
+    {
+      "key": "q06",
+      "category": "exact_term",
+      "question": "What is an RMA number and where do I write it?",
+      "expected_source_keys": ["returns-policy.md"],
+      "expected_answer": "A Return Merchandise Authorization number, requested from the support portal before sending anything back; write it on the outside of the box.",
+      "evidence": [
+        {"source_key": "returns-policy.md", "quote": "Request a Return Merchandise Authorization (RMA) number from the support portal before sending anything back."},
+        {"source_key": "returns-policy.md", "quote": "Write the RMA number on the outside of the box."}
+      ]
+    },
+    {
+      "key": "q07",
+      "category": "direct",
+      "question": "How long is the warranty on backpacks?",
+      "expected_source_keys": ["warranty-policy.md"],
+      "expected_answer": "Five years.",
+      "evidence": [
+        {"source_key": "warranty-policy.md", "quote": "Backpacks carry a five-year warranty."}
+      ]
+    },
+    {
+      "key": "q08",
+      "category": "paraphrase",
+      "question": "Is it possible to alter an order after I've placed it?",
+      "expected_source_keys": ["support-faq.md"],
+      "expected_answer": "Yes, within 2 hours of placing it; after that it is being packed, so return it once it arrives.",
+      "evidence": [
+        {"source_key": "support-faq.md", "quote": "Orders can be changed or cancelled within 2 hours of being placed."},
+        {"source_key": "support-faq.md", "quote": "After that, the order is already being packed; return it instead once it arrives."}
+      ]
+    },
+    {
+      "key": "q09",
+      "category": "direct",
+      "question": "Do Northstar gift cards expire?",
+      "expected_source_keys": ["support-faq.md"],
+      "expected_answer": "No. They never expire and can be used on any product, but cannot be exchanged for cash.",
+      "evidence": [
+        {"source_key": "support-faq.md", "quote": "No. Northstar gift cards never expire and can be used on any product in the store."}
+      ]
+    },
+    {
+      "key": "q10",
+      "category": "negative_policy",
+      "question": "Do you ship to other countries?",
+      "expected_source_keys": ["shipping-policy.md"],
+      "expected_answer": "No. Northstar ships only within the country; international orders are not accepted.",
+      "evidence": [
+        {"source_key": "shipping-policy.md", "quote": "Northstar ships only within the country. International orders are not accepted."}
+      ]
+    },
+    {
+      "key": "q11",
+      "category": "negative_policy",
+      "question": "Can I return an opened fuel canister?",
+      "expected_source_keys": ["returns-policy.md"],
+      "expected_answer": "No. Opened fuel canisters cannot be returned.",
+      "evidence": [
+        {"source_key": "returns-policy.md", "quote": "Gift cards, opened fuel canisters, and personalised items cannot be returned."}
+      ]
+    },
+    {
+      "key": "q12",
+      "category": "multi_source",
+      "question": "How heavy is the Trailblazer 14, and what warranty does it come with?",
+      "expected_source_keys": ["product-guide.md", "warranty-policy.md"],
+      "expected_answer": "It weighs 1.3 kg and has a one-year limited warranty from the manufacturer (extendable with NorthCare Plus).",
+      "evidence": [
+        {"source_key": "product-guide.md", "quote": "It weighs 1.3 kg, has a battery rated for 12 hours of mixed use"},
+        {"source_key": "warranty-policy.md", "quote": "The Trailblazer 14 laptop carries a one-year limited warranty from the manufacturer."}
+      ]
+    },
+    {
+      "key": "q13",
+      "category": "multi_source",
+      "question": "Can the fuel canisters for the Ember stove be sent by express shipping, and how much does express shipping cost?",
+      "expected_source_keys": ["product-guide.md", "shipping-policy.md"],
+      "expected_answer": "No: fuel canisters are never shipped by express delivery. Express shipping costs $19.95 for any order size.",
+      "evidence": [
+        {"source_key": "product-guide.md", "quote": "Fuel canisters are sold separately and are never shipped by express delivery."},
+        {"source_key": "shipping-policy.md", "quote": "Express shipping costs $19.95 for any order size."}
+      ]
+    },
+    {
+      "key": "q14",
+      "category": "multi_source",
+      "question": "How do I track my order, and when should I contact support if the tracking stops updating?",
+      "expected_source_keys": ["shipping-policy.md", "support-faq.md"],
+      "expected_answer": "A tracking link is emailed when the parcel leaves the warehouse, and orders can be tracked in the support portal; contact support if tracking has not updated for 5 business days.",
+      "evidence": [
+        {"source_key": "shipping-policy.md", "quote": "A tracking link is emailed as soon as the parcel leaves the warehouse."},
+        {"source_key": "support-faq.md", "quote": "If the tracking has not updated for 5 business days, contact support."}
+      ]
+    },
+    {
+      "key": "q15",
+      "category": "multi_source",
+      "question": "If I spill water on my Trailblazer 14, will the warranty cover it?",
+      "expected_source_keys": ["product-guide.md", "warranty-policy.md"],
+      "expected_answer": "No. The keyboard resists only light splashes and the laptop is not waterproof; the warranty does not cover water damage to electronics.",
+      "evidence": [
+        {"source_key": "product-guide.md", "quote": "its keyboard resists light splashes. It is not waterproof and must not be submerged."},
+        {"source_key": "warranty-policy.md", "quote": "The warranty does not cover damage from misuse, accidents, normal wear, unauthorised repairs, or water damage to electronics."}
+      ]
+    },
+    {
+      "key": "q16",
+      "category": "follow_up",
+      "previous_question": "What is the warranty on Northstar tents?",
+      "question": "And how do I make a claim?",
+      "expected_source_keys": ["warranty-policy.md"],
+      "expected_answer": "Open a warranty claim in the support portal with the order number and photos of the defect; approved claims are repaired or replaced within 10 business days.",
+      "evidence": [
+        {"source_key": "warranty-policy.md", "quote": "Open a warranty claim in the support portal with your order number and photos of the defect."},
+        {"source_key": "warranty-policy.md", "quote": "Approved claims are repaired or replaced within 10 business days."}
+      ]
+    },
+    {
+      "key": "q17",
+      "category": "follow_up",
+      "previous_question": "How much does standard shipping cost?",
+      "question": "What about express?",
+      "expected_source_keys": ["shipping-policy.md"],
+      "expected_answer": "Express shipping costs $19.95 for any order size and arrives the next business day when ordered before 12:00 noon local time.",
+      "evidence": [
+        {"source_key": "shipping-policy.md", "quote": "Express shipping costs $19.95 for any order size."},
+        {"source_key": "shipping-policy.md", "quote": "Express shipping arrives the next business day when the order is placed before 12:00 noon local time."}
+      ]
+    },
+    {
+      "key": "q18",
+      "category": "follow_up",
+      "previous_question": "Tell me about the Ridgeline 45 backpack.",
+      "question": "What sizes does it come in?",
+      "expected_source_keys": ["product-guide.md"],
+      "expected_answer": "Two sizes: S/M and L/XL.",
+      "evidence": [
+        {"source_key": "product-guide.md", "quote": "It weighs 1.4 kg and comes in two sizes, S/M and L/XL."}
+      ]
+    },
+    {
+      "key": "q19",
+      "category": "paraphrase",
+      "question": "When will I get my money back after returning something?",
+      "expected_source_keys": ["returns-policy.md"],
+      "expected_answer": "Within 5 business days after the warehouse inspects the item; original shipping charges are not refunded unless the item arrived damaged or was the wrong item.",
+      "evidence": [
+        {"source_key": "returns-policy.md", "quote": "Refunds are issued within 5 business days after the warehouse inspects the item."},
+        {"source_key": "returns-policy.md", "quote": "Original shipping charges are not refunded, except when the item arrived damaged or we sent the wrong item."}
+      ]
+    },
+    {
+      "key": "q20",
+      "category": "paraphrase",
+      "question": "Will Northstar match a lower price I found at another shop?",
+      "expected_source_keys": ["support-faq.md"],
+      "expected_answer": "Yes, for an identical item from another authorised retailer within 7 days of purchase; not for clearance items.",
+      "evidence": [
+        {"source_key": "support-faq.md", "quote": "Northstar matches the price of an identical item from another authorised retailer within 7 days of purchase."},
+        {"source_key": "support-faq.md", "quote": "Price matching does not apply to clearance items."}
+      ]
+    },
+    {
+      "key": "u01",
+      "category": "out_of_scope",
+      "question": "Who won the 1998 football World Cup?",
+      "expected_answer": null,
+      "absent_terms": ["World Cup", "football", "1998"]
+    },
+    {
+      "key": "u02",
+      "category": "absent_detail",
+      "question": "What is the battery capacity of the Trailblazer 14 in watt-hours?",
+      "expected_answer": null,
+      "notes": "The product guide gives battery life (12 hours of mixed use), not capacity. An answer that reports the 12 hours as the capacity is wrong.",
+      "absent_terms": ["watt", "Wh", "mAh", "capacity"]
+    },
+    {
+      "key": "u03",
+      "category": "absent_detail",
+      "question": "Does Northstar offer a student discount?",
+      "expected_answer": null,
+      "notes": "Price matching is documented; no discount programme is.",
+      "absent_terms": ["student", "discount"]
+    },
+    {
+      "key": "u04",
+      "category": "absent_detail",
+      "question": "What colours does the Summit 2P tent come in?",
+      "expected_answer": null,
+      "absent_terms": ["colour", "colours", "color", "colors"]
+    },
+    {
+      "key": "u05",
+      "category": "absent_detail",
+      "question": "Can I pay for my order with cryptocurrency?",
+      "expected_answer": null,
+      "notes": "No payment methods are documented beyond refunds to the original payment method.",
+      "absent_terms": ["cryptocurrency", "bitcoin", "crypto"]
+    },
+    {
+      "key": "u06",
+      "category": "out_of_scope",
+      "question": "What are the opening hours of the Northstar store in Seattle?",
+      "expected_answer": null,
+      "notes": "No physical stores or cities are documented; support answers Monday to Friday, which is not store hours.",
+      "absent_terms": ["Seattle", "opening hours", "store hours"]
+    }
+  ]
+}
