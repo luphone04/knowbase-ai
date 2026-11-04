@@ -76,7 +76,7 @@ POST /retrieval/search {query, mode, previous_question?}
   - `search_tsv @@ tsquery` uses a bitmap scan on `ix_chunks_search_tsv`
     (GIN).
 
-## Known limitation (decision pending)
+## Known limitation (decided: keep AND)
 
 `websearch_to_tsquery` ANDs every word, and the `simple` configuration keeps
 stop-words. So a natural question rarely matches lexically: "Can I return a
@@ -104,4 +104,10 @@ query):
   - no slot is spent without a key, for an empty workspace, or when Gemini refused the call;
   - no database connection is held during the query embedding;
   - the Retriever no longer commits.
-- The keyword AND/OR decision below is still open.
+- The keyword AND/OR decision above is still open.
+
+## Owner decision (4 November 2026, with `APPROVE MILESTONE 6`)
+
+Option 3: keyword search keeps `websearch_to_tsquery` (every word required), unchanged, as
+SPEC.md §9.3 specifies. The low lexical recall for natural questions is a known limitation. M9's
+evaluation measures AND against OR and against the `english` configuration before any change.

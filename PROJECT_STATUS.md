@@ -2,12 +2,12 @@
 
 | Field | Value |
 |---|---|
-| Current milestone | **M6 — Hybrid retrieval and RRF** |
-| Status | **READY_FOR_REVIEW**: checks pass, live retrieval review PASS (7/7 known queries in both modes), pushed to `main`; awaiting `APPROVE MILESTONE 6`. The M0–M6 audit remediation is complete (see below; [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md)). C1 approved. M7 not started |
+| Current milestone | **M7 — Grounded chat, citations, and abstention** |
+| Status | **IN_PROGRESS**: M6 approved 2026-11-04 (`APPROVE MILESTONE 6`); M7 started. The M0–M6 audit remediation is complete (see below; [ADR 0010](docs/decisions/0010-m0-m6-audit-remediation.md)). C1 approved |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (audit remediation) |
+| Last verified checkpoint | 2026-11-04 (M6 approved) |
 
 ## Milestones
 
@@ -20,8 +20,8 @@
 | M4 | File ingestion and durable worker | APPROVED_AND_MERGED | `8af4b01` | `APPROVE MILESTONE 4`, 2026-11-02 |
 | M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
-| M6 | Hybrid retrieval and RRF | READY_FOR_REVIEW | see Commits | Pending: `APPROVE MILESTONE 6` |
-| M7 | Grounded chat, citations, and abstention | NOT_STARTED | — | — |
+| M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
+| M7 | Grounded chat, citations, and abstention | IN_PROGRESS | — | — |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
@@ -54,10 +54,11 @@ regression test that failed on the previous code, or a mutation check for covera
 fingerprints (users, workspaces, memberships, sources, documents, chunks, cache, jobs) and the
 uploaded file are identical before and after; only the Alembic version changed.
 
-### Decision needed (owner): keyword search, AND or OR
+### Owner decision (2026-11-04): keyword search keeps AND
 
-Still open (M15; ADR 0009). `websearch_to_tsquery` requires every word, so natural questions rarely
-match lexically. The remediation fixed the dash-as-NOT bug only.
+M15 (ADR 0009) is decided: keyword search keeps `websearch_to_tsquery` (every word required),
+as SPEC.md §9.3 specifies. Its low lexical recall for natural questions is a known limitation.
+M9's evaluation compares AND, OR, and the `english` configuration.
 
 ## M6 checklist (SPEC.md §17.11)
 
@@ -112,9 +113,9 @@ Design and rationale: [ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md).
 2. **An unreachable RRF tie-break** found by mutation testing was removed (see ADR 0009).
 3. **One test expectation was wrong, not the code.** RRF correctly ranked vector 3 + lexical 1 (0.032266) above vector 2 + lexical 2 (0.032258), and the test was rewritten.
 
-### Decision needed (owner)
+### Owner decision (2026-11-04)
 
-**Lexical recall for natural questions is low:** `websearch_to_tsquery` ANDs every word, and the `simple` configuration keeps stop-words. The lexical list contributed to only 2 of the 7 live questions (those with exact terms). Hybrid was never worse than vector, but for most natural questions it equals vector. SPEC.md §9.3 mandates the current query, so I didn't change it. The options are in ADR 0009: OR the terms; use the `english` configuration (needs a migration); or keep it and measure in M9.
+**Lexical recall for natural questions is low:** `websearch_to_tsquery` ANDs every word, and the `simple` configuration keeps stop-words. The lexical list contributed to only 2 of the 7 live questions (those with exact terms). Hybrid was never worse than vector, but for most natural questions it equals vector. **Decided with the M6 approval:** keep AND unchanged (SPEC.md §9.3), record it as a known limitation, and evaluate AND vs OR vs the `english` configuration in M9.
 
 ### Manual review steps (owner)
 
@@ -281,7 +282,7 @@ None.
   - container and CI hardening;
   - several low items.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
-- **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`; decision pending, see M6 above).
+- **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`). Kept by owner decision (2026-11-04); M9 evaluates AND vs OR vs `english`.
 - **Retrieval has no relevance threshold:** an unanswerable question still returns the nearest chunks. Abstention arrives with chat in M7.
 - **Small demo corpus:** each document is 1–2 chunks, so retrieval is checked at document level. Chunk-size tuning and recall metrics come in M9.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
