@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BookOpenText, LayoutDashboard, LogOut, type LucideIcon } from "lucide-react";
+import { BookOpenText, FileText, LayoutDashboard, LogOut, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/sources", label: "Documents", icon: FileText },
 ];
 
 /** Sidebar on wide screens; a top bar with the same links on narrow ones. */
