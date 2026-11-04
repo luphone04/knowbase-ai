@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M7 — Grounded chat, citations, and abstention** |
-| Status | **READY_FOR_REVIEW** (M7): checks pass and are pushed to `main`; **live acceptance PASSED** with `gemini-3.5-flash-lite`, now the permanent generation model (owner decision 2026-11-04, [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md)); awaiting `APPROVE MILESTONE 7`. M6 approved 2026-11-04 |
+| Status | **M7 APPROVED** (`APPROVE MILESTONE 7`, 2026-11-04): grounded chat, citations, and abstention, with live acceptance passed on `gemini-3.5-flash-lite` (the permanent generation model, [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md)) and CI green on `56a90d7`. M8 not started; it waits for the owner's go-ahead |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (generation model switch; M7 live acceptance passed) |
+| Last verified checkpoint | 2026-11-04 (M7 approved) |
 
 ## Milestones
 
@@ -21,7 +21,7 @@
 | M5 | Website crawler and incremental indexing | **DESCOPED** (owner decision 2026-11-03) | built up to `2b8513e`, then removed | Not applicable: replaced by C1 |
 | C1 | File-only cleanup (not a milestone; tracked separately) | APPROVED | `8732483` (+ closeout) | Owner authorised closeout when all checks pass, 2026-11-03 |
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
-| M7 | Grounded chat, citations, and abstention | READY_FOR_REVIEW (live acceptance passed) | see Commits | Pending: `APPROVE MILESTONE 7` |
+| M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
 | M8 | Frontend product experience | NOT_STARTED | — | — |
 | M9 | Evaluation, hardening, and portfolio finish | NOT_STARTED | — | — |
 
@@ -350,7 +350,8 @@ up to `2b8513e`.
 | M7 | `a461012` | test(chat): add prompt-injection documents and prove they stay data |
 | M7 | `d573242` | docs: document grounded chat (ADR 0011) and record Milestone 7 results |
 | M7 | `a421cec` | feat(config): switch generation to gemini-3.5-flash-lite with its own retry setting (ADR 0012) |
-| M7 | see `git log` | docs: record the generation model decision (ADR 0012) and the passed M7 live acceptance |
+| M7 | `56a90d7` | docs: record the generation model decision (ADR 0012) and the passed M7 live acceptance (CI run 41811055445: success) |
+| M7 | see `git log` | docs: record M7 approval |
 
 ## Blockers
 
