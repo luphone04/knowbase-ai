@@ -11,7 +11,10 @@ Vector-only returns the nearest chunks in distance order. Hybrid fuses the
 two rankings by rank alone, never by adding raw scores.
 
 The session passed in must be bound to the workspace (tenancy guard). The
-searches also filter by workspace explicitly.
+searches also filter by workspace explicitly. The query is embedded before
+the session's first statement, so a caller that has no transaction open holds
+no database connection while Gemini works. The trace is added and flushed but
+not committed: the caller owns the transaction (M7 saves a chat turn with it).
 """
 
 import logging
@@ -21,10 +24,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.db.models import QueryTrace
+from app.db.models import Chunk, QueryTrace
 from app.providers.errors import InvalidProviderResponse
 from app.providers.interfaces import QUERY_TASK, EmbeddingProvider
 from app.retrieval.followup import contextualize
@@ -79,6 +83,20 @@ class Retriever:
             raise InvalidProviderResponse("The query embedding does not match the request.")
         return result.vectors[0]
 
+    def has_indexed_chunks(self, db: Session, *, workspace_id: uuid.UUID) -> bool:
+        """False when nothing could match, so a search needn't call Gemini at all."""
+        return (
+            db.scalar(
+                select(Chunk.id)
+                .where(
+                    Chunk.workspace_id == workspace_id,
+                    Chunk.embedding_model == self.settings.gemini_embedding_model,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     def retrieve(
         self,
         db: Session,
@@ -87,16 +105,22 @@ class Retriever:
         question: str,
         mode: RetrievalMode,
         previous_question: str | None = None,
+        embed: bool = True,
     ) -> RetrievalResult:
+        """Search the workspace. With `embed=False` (nothing indexed) no Gemini call is made."""
         started = time.perf_counter()
         settings = self.settings
         query = contextualize(question, previous_question)
-        vector_hits = vector_search(
-            db,
-            workspace_id=workspace_id,
-            query_vector=self._embed_query(query),
-            model=settings.gemini_embedding_model,
-            limit=settings.retrieval_candidates,
+        vector_hits = (
+            vector_search(
+                db,
+                workspace_id=workspace_id,
+                query_vector=self._embed_query(query),
+                model=settings.gemini_embedding_model,
+                limit=settings.retrieval_candidates,
+            )
+            if embed
+            else []
         )
         lexical_hits: list[SearchHit] = []
         if mode == "vector":
@@ -113,8 +137,12 @@ class Retriever:
                 for hit in vector_hits[: settings.retrieval_top_n]
             ]
         else:
-            lexical_hits = lexical_search(
-                db, workspace_id=workspace_id, query=query, limit=settings.retrieval_candidates
+            lexical_hits = (
+                lexical_search(
+                    db, workspace_id=workspace_id, query=query, limit=settings.retrieval_candidates
+                )
+                if embed
+                else []
             )
             by_id = {hit.chunk_id: hit for hit in lexical_hits}
             by_id.update({hit.chunk_id: hit for hit in vector_hits})
@@ -172,10 +200,10 @@ class Retriever:
                 ],
             },
             latency_ms=latency_ms,
-            token_usage={"query_embeddings": 1},
+            token_usage={"query_embeddings": 1 if embed else 0},
         )
         db.add(trace)
-        db.commit()
+        db.flush()  # assigns the id; the caller commits
         logger.info(
             "Retrieval workspace=%s mode=%s vector=%d lexical=%d results=%d latency_ms=%d trace=%s",
             workspace_id,

@@ -6,7 +6,7 @@ Distances are then exact: e0 is 0 from a query of e0, (e0+e1)/sqrt(2) about
 
 import math
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
@@ -92,11 +92,14 @@ class FixedQueryProvider:
     dimensions: int = DIMS
     queries: list[str] = field(default_factory=list)
     failure: Exception | None = None
+    on_call: Callable[[], None] | None = None  # runs inside the "Gemini call"
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
         raise AssertionError("retrieval must not embed documents")
 
     def embed_query(self, text: str) -> EmbeddingResult:
+        if self.on_call is not None:
+            self.on_call()
         if self.failure is not None:
             raise self.failure
         self.queries.append(text)

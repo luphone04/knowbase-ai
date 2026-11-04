@@ -15,11 +15,13 @@ from sqlalchemy import text
 
 from app.api.v1.retrieval import get_retriever
 from app.config import get_settings
-from app.db.session import get_engine
+from app.db.session import get_engine, get_sessionmaker
+from app.db.tenancy import bind_workspace
 from app.main import app
 from app.providers.errors import (
     ProviderNotConfigured,
     ProviderQuotaExhausted,
+    ProviderRateLimited,
     ProviderUnavailable,
 )
 from app.retrieval.service import Retriever
@@ -33,11 +35,25 @@ DEMO_STORE = Path(__file__).resolve().parents[3] / "sample_data" / "demo_store"
 
 
 @pytest.fixture
-def provider() -> Iterator[FixedQueryProvider]:
+def provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[FixedQueryProvider]:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-not-real")  # never sent anywhere
+    get_settings.cache_clear()
     fake = FixedQueryProvider(vector=basis((0, 1)))
     app.dependency_overrides[get_retriever] = lambda: Retriever(get_settings(), lambda: fake)
     yield fake
     app.dependency_overrides.pop(get_retriever, None)
+    get_settings.cache_clear()
+
+
+def slots_used(rule: str) -> int:
+    with get_engine().connect() as connection:
+        used = connection.execute(
+            text(
+                "SELECT coalesce(sum(count), 0) FROM rate_limit_counters WHERE bucket_key LIKE :k"
+            ),
+            {"k": f"{rule}:%"},
+        ).scalar_one()
+    return int(used)
 
 
 def search(tenant: Tenant, query: str, **body: object) -> Any:
@@ -120,11 +136,15 @@ def test_follow_up_questions_use_the_previous_question(
     assert provider.queries == ["How do I return a laptop? And the warranty?"]
 
 
-def test_an_empty_workspace_returns_no_results(
+def test_an_empty_workspace_returns_no_results_without_calling_gemini(
     tenant_a: Tenant, provider: FixedQueryProvider
 ) -> None:
     result = search(tenant_a, "anything")
     assert result["results"] == []
+    assert provider.queries == []  # nothing to match, so no query embedding
+    assert slots_used("retrieval-requests-daily") == 0
+    trace = tenant_a.client.get(f"/api/v1/retrieval/traces/{result['trace_id']}").json()
+    assert trace["token_usage"] == {"query_embeddings": 0}
 
 
 # --- the demo corpus through the real pipeline --------------------------------------------------
@@ -229,6 +249,8 @@ def test_searches_are_rate_limited_per_workspace(
 ) -> None:
     monkeypatch.setenv("DAILY_RETRIEVAL_REQUEST_LIMIT", "1")
     get_settings.cache_clear()
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    add_source(tenant_b.workspace_id, "b.md", [("tent", basis((0, 1)))])
     search(tenant_a, "tent")
     limited = tenant_a.client.post(SEARCH, json={"query": "tent"})
     assert limited.status_code == 429 and "Retry-After" in limited.headers
@@ -247,6 +269,7 @@ def test_searches_are_rate_limited_per_workspace(
 def test_provider_failures_are_clear_errors(
     tenant_a: Tenant, provider: FixedQueryProvider, failure: Exception, status: int, code: str
 ) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
     provider.failure = failure
     response = tenant_a.client.post(SEARCH, json={"query": "tent"})
     assert response.status_code == status
@@ -256,7 +279,100 @@ def test_provider_failures_are_clear_errors(
 def test_a_mismatched_query_embedding_is_refused(
     tenant_a: Tenant, provider: FixedQueryProvider
 ) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
     provider.model = "some-other-model"
     response = tenant_a.client.post(SEARCH, json={"query": "tent"})
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "ai_error"
+
+
+# --- budget slots and database connections (audit M5, M9) ---------------------------------------
+
+
+def test_without_a_key_no_daily_slot_is_spent(
+    tenant_a: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    get_settings.cache_clear()
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    response = tenant_a.client.post(SEARCH, json={"query": "tent"})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ai_not_configured"
+    assert slots_used("retrieval-requests-daily") == 0
+    assert slots_used("query-embeddings-daily") == 0
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [ProviderQuotaExhausted("Daily quota used up."), ProviderRateLimited("Slow down.")],
+    ids=["daily-quota", "rate-limited"],
+)
+def test_a_search_gemini_refused_gives_its_slots_back(
+    tenant_a: Tenant,
+    provider: FixedQueryProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    refusal: Exception,
+) -> None:
+    monkeypatch.setenv("DAILY_RETRIEVAL_REQUEST_LIMIT", "1")
+    get_settings.cache_clear()
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    provider.failure = refusal
+    assert tenant_a.client.post(SEARCH, json={"query": "tent"}).status_code == 429
+    assert slots_used("retrieval-requests-daily") == 0
+    assert slots_used("query-embeddings-daily") == 0
+    provider.failure = None
+    search(tenant_a, "tent")  # the only slot of the day is still available
+
+
+def test_a_search_that_reached_gemini_keeps_its_slot(
+    tenant_a: Tenant, provider: FixedQueryProvider
+) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    provider.failure = ProviderUnavailable("Gemini is temporarily unavailable.")
+    assert tenant_a.client.post(SEARCH, json={"query": "tent"}).status_code == 503
+    assert slots_used("retrieval-requests-daily") == 1
+
+
+def test_query_embeddings_are_limited_for_the_whole_installation(
+    tenant_a: Tenant,
+    tenant_b: Tenant,
+    provider: FixedQueryProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAILY_QUERY_EMBEDDING_LIMIT", "1")
+    get_settings.cache_clear()
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    add_source(tenant_b.workspace_id, "b.md", [("tent", basis((0, 1)))])
+    search(tenant_a, "tent")
+    limited = tenant_b.client.post(SEARCH, json={"query": "tent"})
+    assert limited.status_code == 429 and "Retry-After" in limited.headers
+    assert len(provider.queries) == 1
+    # B's own workspace slot was not kept for a search that never ran.
+    assert slots_used("retrieval-requests-daily") == 1
+
+
+def test_no_database_connection_is_held_while_gemini_embeds_the_query(
+    tenant_a: Tenant, provider: FixedQueryProvider
+) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    held: list[int] = []
+    provider.on_call = lambda: held.append(get_engine().pool.checkedout())  # type: ignore[attr-defined]
+    search(tenant_a, "tent")
+    assert held == [0]
+
+
+def test_the_retriever_leaves_committing_to_the_caller(
+    tenant_a: Tenant, provider: FixedQueryProvider
+) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
+    retriever = Retriever(get_settings(), lambda: provider)
+    with get_sessionmaker()() as db:
+        bind_workspace(db, tenant_a.workspace_id)
+        result = retriever.retrieve(
+            db, workspace_id=tenant_a.workspace_id, question="tent", mode="hybrid"
+        )
+        assert result.trace_id is not None
+        db.rollback()  # e.g. saving the rest of a chat turn failed
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM query_traces")).scalar_one() == 0
