@@ -26,6 +26,9 @@ def retry_policy(settings: Settings) -> RetryPolicy:
     )
 
 
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
+
+
 def build_gemini_client(settings: Settings) -> genai.Client:
     """A client for the Gemini Developer API. Raises ProviderNotConfigured without a key."""
     api_key = settings.gemini_api_key.get_secret_value().strip()
@@ -37,6 +40,9 @@ def build_gemini_client(settings: Settings) -> genai.Client:
         # this app to Vertex AI, a separately billed Google Cloud service.
         vertexai=False,
         http_options=types.HttpOptions(
+            # Pinned, so GOOGLE_GEMINI_BASE_URL in the environment can't send the key
+            # (in every request header) to another host.
+            base_url=GEMINI_BASE_URL,
             timeout=round(settings.gemini_request_timeout_seconds * 1000),  # milliseconds
             # Exactly one SDK attempt per call; app.providers.retry owns retries,
             # so they can't multiply.

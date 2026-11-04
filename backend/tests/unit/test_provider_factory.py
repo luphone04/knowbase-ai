@@ -116,3 +116,12 @@ def test_retry_settings_are_bounded(settings_with: SettingsFactory) -> None:
         settings_with(GEMINI_MAX_RETRIES="50")
     with pytest.raises(ValidationError):
         settings_with(GEMINI_RETRY_BASE_DELAY_SECONDS="10", GEMINI_RETRY_MAX_DELAY_SECONDS="5")
+
+
+def test_the_api_endpoint_is_pinned_against_environment_overrides(
+    settings_with: SettingsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The SDK reads GOOGLE_GEMINI_BASE_URL; a stray value would receive the API key.
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://attacker.example/")
+    client = factory.build_gemini_client(settings_with(GEMINI_API_KEY=FAKE_KEY))
+    assert client._api_client._http_options.base_url == "https://generativelanguage.googleapis.com/"

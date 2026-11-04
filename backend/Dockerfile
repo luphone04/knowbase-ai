@@ -26,4 +26,5 @@ RUN useradd --create-home --uid 1000 app \
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --no-proxy-headers: nothing in front of the API sets X-Forwarded-*, so never trust it.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
