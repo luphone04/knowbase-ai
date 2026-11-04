@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 IN_PROGRESS** (started 2026-11-04). M8 approved by the owner on 2026-11-04 |
+| Status | **M9 IN_PROGRESS** (started 2026-11-04): steps 0–6 done and pushed; **waiting for the owner's authorisation of the live evaluation** (step 7). M8 approved by the owner on 2026-11-04 |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -36,14 +36,36 @@ the estimated Gemini usage.
 | Step | Work | Status |
 |---|---|---|
 | 0 | M8 closeout recorded; M9 design (ADR 0014); this plan | Done |
-| 1 | Evaluation dataset (versioned file, checks against the demo corpus) | Pending |
-| 2 | Retrieval and chat refactors for reuse (embedding separate from ranking; answer step separate from saving); experimental lexical variants | Pending |
-| 3 | Schema (migration 0010), metrics, and the evaluation runner in the worker | Pending |
-| 4 | Evaluation API (`/evaluations/questions`, `/run`, `/runs`, `/runs/{id}`) | Pending |
-| 5 | Evaluation page | Pending |
-| 6 | Hardening review and fixes | Pending |
-| 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | Pending |
+| 1 | Evaluation dataset (versioned file, checks against the demo corpus) | Done: `backend/app/evaluation/datasets/northstar-demo-v1.json`, 26 questions (20 answerable: 3 direct, 5 paraphrase, 3 exact term, 2 documented "no", 4 multi-document, 3 follow-up; 6 unanswerable: 2 out of scope, 4 undocumented details). Every evidence quote is checked word for word against the demo file it names; every unanswerable question's absent terms are checked against the whole corpus; file hashes match `sample_data/demo_store` (17 unit tests) |
+| 2 | Retrieval and chat refactors for reuse (embedding separate from ranking; answer step separate from saving); experimental lexical variants | Done: `Retriever.rank`, `ChatService.answer`; `lexical_search(config=simple\|english, match=all\|any)` with production defaults; 5 new search tests (variants, isolation, hostile input); existing retrieval and chat tests unchanged and passing |
+| 3 | Schema (migration 0010), metrics, and the evaluation runner in the worker | Done: 3 tables (shared questions; workspace-owned runs and results with a composite key); round trip and `alembic check` clean; 10 constraint tests; 22 metric unit tests; the worker evaluates one question per claim (fencing token, lease heartbeat shared with ingestion) |
+| 4 | Evaluation API (`/evaluations/questions`, `/run`, `/runs`, `/runs/{id}`) | Done: 27 integration tests with fake providers (full run, retrieval-only run, provider errors, embedding failure, daily quota stop and budget give-back, corpus change, crash takeover, fencing, one active run, all-or-nothing budget, per-workspace run limit, dataset immutability, isolation, authentication, validation, Origin check). Mutation check: fencing, corpus fingerprint, and provider-error handling broken one at a time, each caught |
+| 5 | Evaluation page | Done: `/evaluations` (dataset, corpus readiness, request estimate, runs) and `/evaluations/{id}` (status and progress, retrieval comparison with the chance baseline, answer evaluation with confusion matrices, per-question inspection). 49 frontend tests (14 new component tests with React Testing Library). Browser check against the live API in a temporary account (removed): the missing-documents state, the estimate, the disabled button, an unknown run's 404, and no horizontal scroll at 390 px after a navigation fix |
+| 6 | Hardening review and fixes | Done: 413 and 500 responses now carry CORS headers (ADR 0010 deferred item; regression tests fail on the old order); `no-new-privileges` for api, worker, migrate, and frontend; Origin check test for evaluation runs. Migration 0010 applied to the dev database after a backup; fingerprints identical (see "Dev database migration (0009 → 0010)") |
+| 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | **Waiting for the owner** (see "Live evaluation: estimate and authorisation") |
 | 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Pending |
+
+### Live evaluation: estimate and authorisation (2026-11-04)
+
+No live evaluation has run. Every result so far comes from fake providers.
+
+| Choice | Query embeddings | Answer generations | Total requests |
+|---|---|---|---|
+| Retrieval only (all 5 configurations) | 26 | 0 | 26 |
+| Retrieval + hybrid answers | 26 | 26 | 52 |
+| Retrieval + vector and hybrid answers | 26 | 52 | 78 |
+
+- One query embedding per question serves all five retrieval configurations; the three lexical experiments make no Gemini calls. Answer generation is one request per question per mode (`GEMINI_GENERATION_MAX_RETRIES=0`), about 1,300–1,800 prompt tokens each (5 short excerpts plus the instructions).
+- A clean evaluation workspace also needs 10 document embeddings to index the 5 demo files (2 chunks each). The `Test1` workspace already has them indexed, but also holds two other PDFs (79 chunks) that would compete in retrieval.
+- App budgets: `DAILY_QUERY_EMBEDDING_LIMIT` 500 (461 left today), `DAILY_EVALUATION_GENERATION_LIMIT` 120, `DAILY_EVALUATION_RUN_LIMIT` 3 per workspace. Gemini's own free-tier limits are visible only in AI Studio.
+- Pacing: one question about every 6–11 s (`EVALUATION_QUESTION_INTERVAL_SECONDS=6` plus the worker's 5 s poll), so at most about 3 requests per question. A per-minute rate limit would be recorded as a provider error on that question, never as an abstention; Gemini's daily quota stops the run.
+
+### Dev database migration (0009 → 0010, 2026-11-04)
+
+- Backup: `~/knowbase-backups/knowbase-before-m9-evaluations-20261104T162907Z.dump` (custom format; its table of contents lists data for all 14 tables).
+- `docker compose up -d --build` ran `migrate` (0009 → 0010) and recreated api, worker, and frontend; the db container was not recreated (same container id).
+- Per-table fingerprints (users, workspaces, members, sources, documents, chunks with vectors, jobs, embedding cache, traces, conversations, messages) and the uploads checksum are identical before and after. `test.pdf` untouched.
+- One frontend image build failed once at `npm ci` (transient, most likely a network error); the retry succeeded and nothing had been deployed in between.
 
 ### M8 closeout (verified 2026-11-04)
 
@@ -469,7 +491,15 @@ up to `2b8513e`.
 | M8 | `e5ad0fc` | fix(frontend): keep the Gemini key variable's name out of the browser bundle |
 | M8 | `eb13db7` | test(frontend): add the Playwright acceptance flow and record M8 results |
 | M8 | `a8c83a4` | fix(providers): log Google's error message and reasons for failed Gemini calls |
-| M9 | see `git log` | docs: record M8 approval and the M9 evaluation design (ADR 0014) |
+| M9 | `a233e76` | docs: record M8 approval and the M9 evaluation design (ADR 0014) |
+| M9 | `4c16b0e` | feat(evaluation): add the versioned Northstar evaluation dataset with corpus checks |
+| M9 | `e61ce99` | refactor(retrieval,chat): separate embedding from ranking and answering from saving; add lexical variants for evaluation |
+| M9 | `093e20a` | feat(evaluation): add evaluation tables (migration 0010), metrics, and the durable evaluation runner |
+| M9 | `1b74c58` | feat(api): add the evaluation endpoints (questions, run, runs, run detail) |
+| M9 | `7a7639f` | feat(frontend): add the evaluation page: dataset and corpus readiness, runs, metrics, and per-question results |
+| M9 | `04c8541` | fix(api): give 413 and 500 responses CORS headers so the browser can read them; harden containers |
+| M9 | `1f16b7b` | fix(frontend): keep the four navigation links in one row at phone width |
+| M9 | see `git log` | docs: record M9 progress and the live evaluation estimate |
 
 ## Blockers
 
