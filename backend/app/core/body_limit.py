@@ -7,13 +7,22 @@ counts streamed bytes when no length is declared (chunked uploads).
 """
 
 from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.errors import error_response
 
 
-class _TooLarge(Exception):
-    pass
+def _too_large_message(limit: int) -> str:
+    return f"The request body is larger than the {limit // (1024 * 1024) or 1} MB limit."
+
+
+class _TooLarge(HTTPException):
+    """An HTTPException, so FastAPI's body parsing re-raises it as 413 instead of
+    wrapping it as a 400 "error parsing the body" (chunked uploads)."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(413, _too_large_message(limit))
 
 
 class BodySizeLimitMiddleware:
@@ -49,7 +58,7 @@ class BodySizeLimitMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > limit:
-                    raise _TooLarge()
+                    raise _TooLarge(limit)
             return message
 
         async def tracking_send(message: Message) -> None:
@@ -66,9 +75,5 @@ class BodySizeLimitMiddleware:
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send, limit: int) -> None:
-        response = error_response(
-            413,
-            "payload_too_large",
-            f"The request body is larger than the {limit // (1024 * 1024) or 1} MB limit.",
-        )
+        response = error_response(413, "payload_too_large", _too_large_message(limit))
         await response(scope, receive, send)

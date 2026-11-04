@@ -1,6 +1,7 @@
 """Upload and source/job endpoints: validation, storage safety, idempotency, isolation."""
 
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx2
@@ -135,6 +136,41 @@ def test_oversized_upload_is_refused_with_413(
         assert response.status_code == 413
         way_over = b"a" * (3 * 1024 * 1024)  # rejected by the body limit before parsing
         assert small_app.post(UPLOAD, files={"file": ("huge.txt", way_over)}).status_code == 413
+    finally:
+        monkeypatch.setenv("MAX_UPLOAD_MB", "10")
+        get_settings.cache_clear()
+    assert stored_files() == []
+
+
+def test_an_oversized_chunked_upload_is_refused_with_413(
+    tenant_a: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Content-Length: the limit is enforced while streaming, and still answers 413."""
+    monkeypatch.setenv("MAX_UPLOAD_MB", "1")
+    get_settings.cache_clear()
+    try:
+        small_app = TestClient(
+            create_app(), base_url="http://localhost", client=("198.51.100.8", 1)
+        )
+        small_app.cookies.update(tenant_a.client.cookies)
+        boundary = "knowbase-test-boundary"
+
+        def chunked_body() -> Iterator[bytes]:
+            yield (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file";'
+                ' filename="big.txt"\r\nContent-Type: text/plain\r\n\r\n'
+            ).encode()
+            for _ in range(3 * 16):
+                yield b"a" * 65536  # 3 MB in 64 KB chunks
+            yield f"\r\n--{boundary}--\r\n".encode()
+
+        response = small_app.post(
+            UPLOAD,
+            content=chunked_body(),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        assert response.status_code == 413, response.text
+        assert response.json()["error"]["code"] == "payload_too_large"
     finally:
         monkeypatch.setenv("MAX_UPLOAD_MB", "10")
         get_settings.cache_clear()
