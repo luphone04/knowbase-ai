@@ -7,7 +7,7 @@
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 step 0: scope recorded) |
+| Last verified checkpoint | 2026-11-04 (M8 step 1: frontend scaffold) |
 
 ## Milestones
 
@@ -35,7 +35,7 @@ abstention.
 | Step | Work | Status |
 |---|---|---|
 | 0 | Scope recorded: ADR 0013, SPEC.md 1.5 notes, this plan | Done |
-| 1 | Scaffold: Next.js, TypeScript, Tailwind, shadcn/ui, ESLint, Vitest, `lib/api.ts`, `lib/types.ts`, CI frontend job | Not started |
+| 1 | Scaffold: Next.js, TypeScript, Tailwind, shadcn/ui, ESLint, Vitest, `lib/api.ts`, `lib/types.ts`, CI frontend job | Done: Next.js 16.4.5, React 19.3, Tailwind 4.3, shadcn/ui (Radix), TanStack Query 5, react-markdown 10, Vitest 5 (18 tests); lint, typecheck, build, and bundle key scan pass; actionlint OK |
 | 2 | Docker: frontend image, Compose service (no `.env`), README run instructions; existing data checked unchanged | Not started |
 | 3 | Auth and app shell: register, login, logout, route guard, navigation | Not started |
 | 4 | Documents: list, upload, live status, detail, re-index, delete | Not started |
@@ -388,6 +388,8 @@ up to `2b8513e`.
 | M7 | `a421cec` | feat(config): switch generation to gemini-3.5-flash-lite with its own retry setting (ADR 0012) |
 | M7 | `56a90d7` | docs: record the generation model decision (ADR 0012) and the passed M7 live acceptance (CI run 41811055445: success) |
 | M7 | see `git log` | docs: record M7 approval |
+| M8 | `8713e45` | docs: record the M8 frontend scope (ADR 0013) and start Milestone 8 |
+| M8 | see `git log` | feat(frontend): scaffold the Next.js app with the API client, types, unit tests, and CI job |
 
 ## Blockers
 

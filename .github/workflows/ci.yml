@@ -14,7 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 # No GEMINI_API_KEY is configured here; live Gemini tests never run in CI.
-# Frontend lint, TypeScript check, and build (Node 24) are added in M8.
 
 jobs:
   repo-hygiene:
@@ -79,3 +78,32 @@ jobs:
         run: uv run alembic upgrade head
       - name: Tests (unit + integration)
         run: uv run pytest
+
+  frontend:
+    name: Frontend (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    env:
+      # Inlined into the browser bundle at build time; not a secret.
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: No Gemini key material in the build
+        run: npm run check:bundle
