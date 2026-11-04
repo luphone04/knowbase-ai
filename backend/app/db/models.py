@@ -42,6 +42,12 @@ FILE_TYPES = ("pdf", "docx", "txt", "md")
 JOB_TYPES = ("ingest", "reindex", "delete")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed")
 RETRIEVAL_MODES = ("vector", "hybrid")
+MESSAGE_ROLES = ("user", "assistant")
+# An assistant message either answered with validated citations or abstained.
+MESSAGE_OUTCOMES = ("answered", "abstained")
+# Why it abstained: nothing usable was retrieved; the model said the excerpts were
+# not enough; or the answer had no valid citation, so it was not shown.
+ABSTAIN_REASONS = ("no_evidence", "model_insufficient", "no_valid_citation")
 
 
 def _sql_in(column: str, values: tuple[str, ...]) -> str:
@@ -350,8 +356,9 @@ class EmbeddingCacheEntry(WorkspaceScoped, Base):
 class QueryTrace(WorkspaceScoped, Base):
     """One retrieval run: the query, what came back, the ranks and scores, and timing.
 
-    Written for every search (SPEC.md §6.1 `query_traces`). Conversation and
-    message ids are filled in by chat (M7), which adds their foreign keys.
+    Written for every search (SPEC.md §6.1 `query_traces`). A chat turn's trace
+    also names its conversation and, once the turn is saved, the assistant message
+    that used the evidence. A turn that failed at Gemini keeps a trace without one.
     """
 
     __tablename__ = "query_traces"
@@ -359,6 +366,20 @@ class QueryTrace(WorkspaceScoped, Base):
         CheckConstraint(_sql_in("retrieval_mode", RETRIEVAL_MODES), name="retrieval_mode"),
         CheckConstraint("latency_ms >= 0", name="latency_ms"),
         Index("ix_query_traces_workspace_created", "workspace_id", "created_at"),
+        ForeignKeyConstraint(
+            ["workspace_id", "conversation_id"],
+            ["conversations.workspace_id", "conversations.id"],
+            ondelete="CASCADE",
+            name="fk_query_traces_conversation_same_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "message_id"],
+            ["messages.workspace_id", "messages.id"],
+            ondelete="CASCADE",
+            name="fk_query_traces_message_same_workspace",
+        ),
+        Index("ix_query_traces_conversation_id", "conversation_id"),
+        Index("ix_query_traces_message_id", "message_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -372,4 +393,88 @@ class QueryTrace(WorkspaceScoped, Base):
     retrieval_scores: Mapped[dict[str, Any]] = mapped_column(JSONB)
     latency_ms: Mapped[int]
     token_usage: Mapped[dict[str, Any]] = _jsonb()
+    created_at: Mapped[datetime] = _created_at()
+
+
+# --- chat (Milestone 7) ---------------------------------------------------------------------
+
+
+class Conversation(WorkspaceScoped, Base):
+    """One user's chat in one workspace. Only that user can read or continue it."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_conversations_workspace_and_id"),
+        # The owner must be a member of the workspace; leaving it removes their chats.
+        ForeignKeyConstraint(
+            ["workspace_id", "user_id"],
+            ["workspace_members.workspace_id", "workspace_members.user_id"],
+            ondelete="CASCADE",
+            name="fk_conversations_member_same_workspace",
+        ),
+        CheckConstraint("char_length(btrim(title)) BETWEEN 1 AND 200", name="title_length"),
+        Index("ix_conversations_workspace_user_updated", "workspace_id", "user_id", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID]
+    title: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class Message(WorkspaceScoped, Base):
+    """A question (`user`) or an answer or abstention (`assistant`).
+
+    `position` orders a conversation's messages (1, 2, ...): a question and its
+    answer are saved together, so their timestamps can be equal.
+    """
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_messages_workspace_and_id"),
+        ForeignKeyConstraint(
+            ["workspace_id", "conversation_id"],
+            ["conversations.workspace_id", "conversations.id"],
+            ondelete="CASCADE",
+            name="fk_messages_conversation_same_workspace",
+        ),
+        UniqueConstraint("conversation_id", "position", name="uq_messages_conversation_position"),
+        Index("ix_messages_conversation_created", "conversation_id", "created_at"),
+        CheckConstraint(_sql_in("role", MESSAGE_ROLES), name="role"),
+        CheckConstraint("position >= 1", name="position"),
+        CheckConstraint("char_length(content) >= 1", name="content"),
+        # CASE and coalesce keep these checks from evaluating to NULL, which would pass.
+        CheckConstraint(
+            "CASE role WHEN 'user' THEN outcome IS NULL "
+            f"WHEN 'assistant' THEN coalesce({_sql_in('outcome', MESSAGE_OUTCOMES)}, false) "
+            "ELSE true END",
+            name="outcome",
+        ),
+        CheckConstraint(
+            "CASE WHEN outcome = 'abstained' "
+            f"THEN coalesce({_sql_in('abstain_reason', ABSTAIN_REASONS)}, false) "
+            "ELSE abstain_reason IS NULL END",
+            name="abstain_reason",
+        ),
+        CheckConstraint("latency_ms IS NULL OR latency_ms >= 0", name="latency_ms"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID]
+    position: Mapped[int]
+    role: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(Text)
+    abstain_reason: Mapped[str | None] = mapped_column(Text)
+    # Validated citations only: id ("S1"), chunk, document, source, file, pages, excerpt.
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    token_usage: Mapped[dict[str, Any]] = _jsonb()
+    latency_ms: Mapped[int | None]
+    # Retrieval mode, trace id, model, and what citation validation removed.
+    meta: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = _created_at()

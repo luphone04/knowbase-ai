@@ -43,6 +43,8 @@ APP_TABLES = (
     "ingestion_jobs",
     "embedding_cache",
     "query_traces",
+    "conversations",
+    "messages",
 )
 TEST_PASSWORD = "integration-test-password-1"
 

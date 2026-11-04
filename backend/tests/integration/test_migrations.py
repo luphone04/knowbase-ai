@@ -78,6 +78,8 @@ def test_auth_schema_constraints(scratch_engine: Engine, alembic_config: Config)
             "ingestion_jobs",
             "embedding_cache",
             "query_traces",
+            "conversations",
+            "messages",
         }
         assert schema.get_pk_constraint("workspace_members")["constrained_columns"] == [
             "workspace_id",
@@ -284,6 +286,159 @@ def test_database_enforces_ingestion_integrity(
     with scratch_engine.connect() as connection, pytest.raises(IntegrityError) as excinfo:
         connection.execute(text(statement))
     assert constraint in str(excinfo.value)
+
+
+CONV_A = "00000000-0000-0000-0000-0000000000c1"
+MSG_A = "00000000-0000-0000-0000-0000000000c2"
+NON_MEMBER_ID = "00000000-0000-0000-0000-000000000003"
+
+
+def _seed_chat(connection: Connection) -> None:
+    _seed(connection)
+    connection.execute(
+        text(
+            f"""
+            INSERT INTO users (id, email, password_hash) VALUES
+                ('{NON_MEMBER_ID}', 'b@example.com', 'x');
+            INSERT INTO workspace_members (workspace_id, user_id, role) VALUES
+                ('{WS_A}', '{USER_ID}', 'owner'), ('{WS_B}', '{NON_MEMBER_ID}', 'owner');
+            INSERT INTO conversations (id, workspace_id, user_id, title) VALUES
+                ('{CONV_A}', '{WS_A}', '{USER_ID}', 'Returns');
+            INSERT INTO messages (id, workspace_id, conversation_id, position, role, content)
+                VALUES ('{MSG_A}', '{WS_A}', '{CONV_A}', 1, 'user', 'How do returns work?');
+            """
+        )
+    )
+
+
+def _message(values: str) -> str:
+    return (
+        "INSERT INTO messages (workspace_id, conversation_id, position, role, content, outcome, "
+        f"abstain_reason) VALUES ({values})"
+    )
+
+
+def _trace(conversation: str, message: str) -> str:
+    return (
+        "INSERT INTO query_traces (workspace_id, conversation_id, message_id, retrieval_mode, "
+        f"query_text, retrieved_chunk_ids, retrieval_scores, latency_ms) VALUES ('{WS_B}', "
+        f"{conversation}, {message}, 'hybrid', 'q', '[]', '{{}}', 1)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("statement", "constraint"),
+    [
+        (
+            # A user who isn't a member of workspace A can't own a conversation there.
+            f"INSERT INTO conversations (workspace_id, user_id, title) "
+            f"VALUES ('{WS_A}', '{NON_MEMBER_ID}', 'x')",
+            "fk_conversations_member_same_workspace",
+        ),
+        (
+            f"INSERT INTO conversations (workspace_id, user_id, title) "
+            f"VALUES ('{WS_A}', '{USER_ID}', '   ')",
+            "ck_conversations_title_length",
+        ),
+        (
+            _message(f"'{WS_B}', '{CONV_A}', 2, 'user', 'q', NULL, NULL"),
+            "fk_messages_conversation_same_workspace",
+        ),
+        (
+            _trace(f"'{CONV_A}'", "NULL"),
+            "fk_query_traces_conversation_same_workspace",
+        ),
+        (
+            _trace("NULL", f"'{MSG_A}'"),
+            "fk_query_traces_message_same_workspace",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 1, 'assistant', 'a', 'answered', NULL"),
+            "uq_messages_conversation_position",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'system', 'a', NULL, NULL"),
+            "ck_messages_role",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'user', 'q', 'answered', NULL"),
+            "ck_messages_outcome",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'assistant', 'a', NULL, NULL"),
+            "ck_messages_outcome",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'assistant', 'a', 'abstained', NULL"),
+            "ck_messages_abstain_reason",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'assistant', 'a', 'answered', 'no_evidence'"),
+            "ck_messages_abstain_reason",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'assistant', 'a', 'abstained', 'felt like it'"),
+            "ck_messages_abstain_reason",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 0, 'user', 'q', NULL, NULL"),
+            "ck_messages_position",
+        ),
+        (
+            _message(f"'{WS_A}', '{CONV_A}', 2, 'user', '', NULL, NULL"),
+            "ck_messages_content",
+        ),
+    ],
+    ids=[
+        "conversation-for-non-member",
+        "blank-title",
+        "message-into-other-workspace",
+        "trace-to-other-workspace-conversation",
+        "trace-to-other-workspace-message",
+        "duplicate-position",
+        "unknown-role",
+        "question-with-outcome",
+        "answer-without-outcome",
+        "abstention-without-reason",
+        "answer-with-reason",
+        "unknown-reason",
+        "position-zero",
+        "empty-content",
+    ],
+)
+def test_database_enforces_chat_integrity(
+    scratch_engine: Engine, alembic_config: Config, statement: str, constraint: str
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed_chat(connection)
+    with scratch_engine.connect() as connection, pytest.raises(IntegrityError) as excinfo:
+        connection.execute(text(statement))
+    assert constraint in str(excinfo.value)
+
+
+def test_removing_a_member_removes_their_chats_and_chat_traces(
+    scratch_engine: Engine, alembic_config: Config
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed_chat(connection)
+        connection.execute(
+            text(
+                "INSERT INTO query_traces (workspace_id, conversation_id, message_id, "
+                "retrieval_mode, query_text, retrieved_chunk_ids, retrieval_scores, latency_ms) "
+                f"VALUES ('{WS_A}', '{CONV_A}', '{MSG_A}', 'hybrid', 'q', '[]', '{{}}', 1), "
+                f"('{WS_A}', NULL, NULL, 'vector', 'search', '[]', '{{}}', 1)"
+            )
+        )
+        connection.execute(text(f"DELETE FROM workspace_members WHERE user_id = '{USER_ID}'"))
+        counts = connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM conversations), (SELECT count(*) FROM messages), "
+                "(SELECT array_agg(query_text) FROM query_traces)"
+            )
+        ).one()
+    assert tuple(counts) == (0, 0, ["search"])  # a plain search trace stays
 
 
 def test_vectors_must_have_768_dimensions(scratch_engine: Engine, alembic_config: Config) -> None:
