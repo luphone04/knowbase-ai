@@ -51,7 +51,8 @@ export function AppShell({ session, children }: { session: Session; children: Re
           active && "bg-muted text-foreground",
         )}
       >
-        <Icon className="size-4" aria-hidden />
+        {/* Text only on phones, so four links fit in one row at 390 px. */}
+        <Icon className="hidden size-4 sm:block" aria-hidden />
         {label}
       </Link>
     );
@@ -76,7 +77,7 @@ export function AppShell({ session, children }: { session: Session; children: Re
             <LogOut />
           </Button>
         </div>
-        <nav aria-label="Main" className="flex gap-1 md:flex-col">
+        <nav aria-label="Main" className="flex flex-wrap gap-1 md:flex-col">
           {links}
         </nav>
         <div className="mt-auto hidden border-t pt-3 md:block">
