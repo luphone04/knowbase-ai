@@ -54,7 +54,8 @@ class AIStatusOut(BaseModel):
     embedding_batch_size: int
     document_task_type: str = DOCUMENT_TASK
     query_task_type: str = QUERY_TASK
-    max_retries: int
+    max_retries: int  # embeddings (GEMINI_MAX_RETRIES)
+    generation_max_retries: int  # answer generation (GEMINI_GENERATION_MAX_RETRIES)
     paid_fallback: Literal[False] = False
     last_error: LastError | None
     last_success_at: datetime | None
@@ -86,6 +87,7 @@ def ai_status(_: CurrentAuth, settings: SettingsDep) -> AIStatusOut:
         embedding_dimensions=settings.embedding_dimensions,
         embedding_batch_size=settings.gemini_embedding_batch_size,
         max_retries=settings.gemini_max_retries,
+        generation_max_retries=settings.gemini_generation_max_retries,
         last_error=last_error,
         last_success_at=health.last_success_at,
     )

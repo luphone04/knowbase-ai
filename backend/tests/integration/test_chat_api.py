@@ -25,6 +25,7 @@ from app.db.models import WorkspaceMember
 from app.db.session import get_engine
 from app.db.tenancy import bind_workspace
 from app.main import app
+from app.providers import factory
 from app.providers.errors import (
     IncompleteGeneration,
     ProviderError,
@@ -32,8 +33,16 @@ from app.providers.errors import (
     ProviderRateLimited,
     ProviderUnavailable,
 )
+from app.providers.health import provider_health
 from app.providers.interfaces import TokenUsage
 from app.retrieval.service import Retriever
+from tests.fakes.gemini import (
+    FakeGeminiClient,
+    daily_quota_error,
+    deadline_error,
+    generation_response,
+    unavailable_error,
+)
 from tests.fakes.providers import MockGenerationProvider
 from tests.fakes.retrieval import FixedQueryProvider, add_source, basis
 from tests.integration.conftest import Tenant, new_client
@@ -495,3 +504,73 @@ def test_invalid_questions_are_rejected_before_gemini(
 )
 def test_invalid_conversations_are_rejected(tenant_a: Tenant, body: dict[str, object]) -> None:
     assert tenant_a.client.post(CONVERSATIONS, json=body).status_code == 422
+
+
+# --- the real Gemini provider with the configured retries (a scripted client) ---------------
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        (unavailable_error(), 503, "ai_unavailable"),
+        (deadline_error(), 503, "ai_unavailable"),
+        (daily_quota_error(), 429, "ai_quota"),
+    ],
+    ids=["503", "504", "daily-quota"],
+)
+def test_one_failed_generation_attempt_is_an_error_and_nothing_is_saved(
+    tenant_a: Tenant, monkeypatch: pytest.MonkeyPatch, failure: Exception, status: int, code: str
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-not-real")  # never sent anywhere
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.gemini_generation_max_retries == 0  # the configured default
+    client = FakeGeminiClient()
+    # A retry would get this answer: it must never be requested.
+    client.models.generate_script.extend([failure, generation_response("Laptops: 14 days [S1].")])
+    generator = factory.build_generation_provider(settings, client)  # type: ignore[arg-type]
+    embedder = FixedQueryProvider(vector=basis((0, 1)))
+    app.dependency_overrides[get_chat_service] = lambda: ChatService(
+        settings, Retriever(settings, lambda: embedder), lambda: generator
+    )
+    try:
+        add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+        conversation = start(tenant_a)
+        response = tenant_a.client.post(
+            f"{CONVERSATIONS}/{conversation}/messages", json={"content": "Can I return a laptop?"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_chat_service, None)
+        provider_health.reset()
+        get_settings.cache_clear()
+    assert response.status_code == status and response.json()["error"]["code"] == code
+    assert sum(c.method == "generate_content" for c in client.models.calls) == 1
+    assert scalar("SELECT count(*) FROM messages") == 0
+    assert tenant_a.client.get(f"{CONVERSATIONS}/{conversation}").json()["messages"] == []
+    assert scalar("SELECT token_usage->>'generation_requests' FROM query_traces") == "1"
+
+
+def test_one_successful_generation_attempt_is_saved_with_its_citation(
+    tenant_a: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-not-real")
+    get_settings.cache_clear()
+    settings = get_settings()
+    client = FakeGeminiClient()
+    client.models.generate_script.append(generation_response("Laptops: 14 days [S1]."))
+    generator = factory.build_generation_provider(settings, client)  # type: ignore[arg-type]
+    embedder = FixedQueryProvider(vector=basis((0, 1)))
+    app.dependency_overrides[get_chat_service] = lambda: ChatService(
+        settings, Retriever(settings, lambda: embedder), lambda: generator
+    )
+    try:
+        (chunk,) = add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+        answer = ask(tenant_a, start(tenant_a), "Can I return a laptop?")["assistant_message"]
+    finally:
+        app.dependency_overrides.pop(get_chat_service, None)
+        provider_health.reset()
+        get_settings.cache_clear()
+    assert answer["outcome"] == "answered" and answer["citations"][0]["chunk_id"] == str(chunk)
+    assert answer["token_usage"]["model"] == "gemini-3.5-flash-lite"
+    assert answer["token_usage"]["generation_attempts"] == 1
+    assert sum(c.method == "generate_content" for c in client.models.calls) == 1

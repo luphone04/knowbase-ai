@@ -93,7 +93,7 @@ def make_harness(
     max_delay: float = 20.0,
     max_elapsed: float | None = None,
     batch_size: int = 8,
-    chat_model: str = "gemini-3.8-flash",
+    chat_model: str = "gemini-3.5-flash-lite",
     embedding_model: str = "gemini-embedding-001",
 ) -> Harness:
     client = FakeGeminiClient()

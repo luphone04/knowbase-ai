@@ -287,7 +287,7 @@ def test_failures_never_switch_model_endpoint_or_service(error: Exception) -> No
     with pytest.raises(Exception):  # noqa: B017
         h.embedding.embed_documents(["x"])
 
-    assert {c.model for c in h.calls if c.method == "generate_content"} == {"gemini-3.8-flash"}
+    assert {c.model for c in h.calls if c.method == "generate_content"} == {"gemini-3.5-flash-lite"}
     assert {c.model for c in h.calls if c.method == "embed_content"} == {"gemini-embedding-001"}
     assert {c.method for c in h.calls} <= {"generate_content", "embed_content"}
     # Never reached for batches, files, caches, tunings, or any other client surface.

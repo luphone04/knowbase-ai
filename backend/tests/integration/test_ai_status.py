@@ -63,6 +63,8 @@ def test_configured_status_shows_safe_model_settings(tenant_a: Tenant, gemini_ke
     assert body["status"] == "configured" and body["configured"] is True
     assert body["provider"] == "gemini"
     assert body["chat_model"] == settings.gemini_chat_model
+    assert body["chat_model"] == "gemini-3.5-flash-lite"
+    assert (body["max_retries"], body["generation_max_retries"]) == (3, 0)
     assert body["thinking_level"] == "low"
     assert body["max_output_tokens"] == 1200
     assert body["embedding_model"] == settings.gemini_embedding_model

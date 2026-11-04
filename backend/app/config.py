@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # The app must start without a key (SPEC.md §2.4); AI features report it as missing.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_chat_model: str = "gemini-3.8-flash"
+    gemini_chat_model: str = "gemini-3.5-flash-lite"
     gemini_thinking_level: Literal["low", "medium", "high"] = "low"
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = SCHEMA_EMBEDDING_DIMENSIONS
@@ -51,7 +51,11 @@ class Settings(BaseSettings):
     # slow periods: a one-token reply took 50.7 s during M3 live testing.
     gemini_request_timeout_seconds: float = Field(default=90, gt=0, le=300)
     # Bounded retries for 429 rate limits and 5xx/network errors only.
+    # Embeddings (documents and queries) use GEMINI_MAX_RETRIES.
     gemini_max_retries: int = Field(default=3, ge=0, le=5)
+    # Answer generation has its own setting. A failed free-tier attempt can still count
+    # toward the daily request quota, so the default is a single attempt per question.
+    gemini_generation_max_retries: int = Field(default=0, ge=0, le=5)
     gemini_retry_base_delay_seconds: float = Field(default=1, gt=0, le=10)
     gemini_retry_max_delay_seconds: float = Field(default=20, gt=0, le=120)
     # No retry starts after this long; one call lasts at most this plus one timeout.

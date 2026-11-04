@@ -27,7 +27,7 @@ def test_successful_generation_returns_text_usage_latency_and_attempts() -> None
 
     assert result.text == "Returns are accepted within 30 days."
     assert result.finish_reason == "STOP"
-    assert result.model == "gemini-3.8-flash"
+    assert result.model == "gemini-3.5-flash-lite"
     assert (result.usage.prompt_tokens, result.usage.output_tokens) == (40, 8)
     assert (result.usage.thinking_tokens, result.usage.total_tokens) == (5, 53)
     assert isinstance(result.latency_ms, int) and result.latency_ms >= 0
@@ -170,7 +170,7 @@ def test_logs_have_usage_and_latency_but_never_the_prompt(caplog: pytest.LogCapt
     with caplog.at_level(logging.DEBUG):
         h.generation.generate(PROMPT, system_instruction=SYSTEM)
     logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert "model=gemini-3.8-flash" in logged and "latency_ms=" in logged
+    assert "model=gemini-3.5-flash-lite" in logged and "latency_ms=" in logged
     assert "total_tokens=12" in logged
     for private in ("PRIVATE-PROMPT-TEXT", "PRIVATE-SYSTEM-INSTRUCTION", "Answer text here"):
         assert private not in logged
@@ -201,7 +201,7 @@ def test_one_generate_call_is_exactly_one_http_request() -> None:
     )
     provider = GeminiGenerationProvider(
         client,
-        model="gemini-3.8-flash",
+        model="gemini-3.5-flash-lite",
         thinking_level="low",
         max_output_tokens=1200,
         calls=GeminiCalls(RetryPolicy(max_retries=0), health=ProviderHealth()),

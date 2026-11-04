@@ -17,13 +17,23 @@ from app.providers.interfaces import EmbeddingProvider, GenerationProvider
 from app.providers.retry import RetryPolicy
 
 
-def retry_policy(settings: Settings) -> RetryPolicy:
+def _policy(settings: Settings, max_retries: int) -> RetryPolicy:
     return RetryPolicy(
-        max_retries=settings.gemini_max_retries,
+        max_retries=max_retries,
         base_delay_seconds=settings.gemini_retry_base_delay_seconds,
         max_delay_seconds=settings.gemini_retry_max_delay_seconds,
         max_elapsed_seconds=settings.gemini_call_deadline_seconds,
     )
+
+
+def retry_policy(settings: Settings) -> RetryPolicy:
+    """Embeddings (documents and queries): GEMINI_MAX_RETRIES."""
+    return _policy(settings, settings.gemini_max_retries)
+
+
+def generation_retry_policy(settings: Settings) -> RetryPolicy:
+    """Answer generation: GEMINI_GENERATION_MAX_RETRIES (default 0, a single attempt)."""
+    return _policy(settings, settings.gemini_generation_max_retries)
 
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
@@ -59,7 +69,7 @@ def build_generation_provider(
         model=settings.gemini_chat_model,
         thinking_level=settings.gemini_thinking_level,
         max_output_tokens=settings.gemini_max_output_tokens,
-        calls=GeminiCalls(retry_policy(settings)),
+        calls=GeminiCalls(generation_retry_policy(settings)),
     )
 
 

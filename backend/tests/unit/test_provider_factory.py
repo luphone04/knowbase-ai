@@ -89,13 +89,16 @@ def test_providers_use_model_names_from_configuration(settings_with: SettingsFac
         GEMINI_EMBEDDING_MODEL="configured-embed",
         GEMINI_EMBEDDING_BATCH_SIZE="3",
         GEMINI_MAX_RETRIES="1",
+        GEMINI_GENERATION_MAX_RETRIES="2",
     )
     generation = factory.build_generation_provider(settings)
     embedding = factory.build_embedding_provider(settings)
     assert generation.model == "configured-chat"
     assert (embedding.model, embedding.dimensions) == ("configured-embed", 768)
     assert embedding._batch_size == 3
-    assert generation._calls.policy.max_retries == 1
+    # Each kind of call has its own retry setting.
+    assert generation._calls.policy.max_retries == 2
+    assert embedding._calls.policy.max_retries == 1
 
 
 def test_retry_policy_comes_from_settings(settings_with: SettingsFactory) -> None:
@@ -114,6 +117,10 @@ def test_retry_settings_are_bounded(settings_with: SettingsFactory) -> None:
 
     with pytest.raises(ValidationError):
         settings_with(GEMINI_MAX_RETRIES="50")
+    with pytest.raises(ValidationError):
+        settings_with(GEMINI_GENERATION_MAX_RETRIES="-1")
+    with pytest.raises(ValidationError):
+        settings_with(GEMINI_GENERATION_MAX_RETRIES="6")
     with pytest.raises(ValidationError):
         settings_with(GEMINI_RETRY_BASE_DELAY_SECONDS="10", GEMINI_RETRY_MAX_DELAY_SECONDS="5")
 

@@ -46,7 +46,9 @@ def env_example_values() -> dict[str, str]:
 
 def test_defaults_match_spec() -> None:
     settings = make_settings()
-    assert settings.gemini_chat_model == "gemini-3.8-flash"
+    assert settings.gemini_chat_model == "gemini-3.5-flash-lite"
+    assert settings.gemini_max_retries == 3  # embeddings
+    assert settings.gemini_generation_max_retries == 0  # one attempt per answer
     assert settings.gemini_embedding_model == "gemini-embedding-001"
     assert settings.gemini_thinking_level == "low"
     assert settings.embedding_dimensions == 768
@@ -124,7 +126,7 @@ def test_app_starts_without_gemini_key() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("gemini_thinking_level", "minimal"),  # rejected by gemini-3.8-flash
+        ("gemini_thinking_level", "minimal"),  # not an allowed setting (SPEC.md §2.3)
         ("embedding_dimensions", 1536),  # schema is vector(768)
         ("max_upload_mb", 0),
         ("rrf_k", 0),
