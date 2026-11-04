@@ -22,7 +22,8 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     app_secret_key: SecretStr
     jwt_secret: SecretStr
-    access_token_expire_minutes: int = Field(default=480, gt=0)
+    # At most a week: logout revokes only the current token, so lifetime bounds exposure.
+    access_token_expire_minutes: int = Field(default=480, gt=0, le=10_080)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     # Send the auth cookie only over HTTPS. Required in production; off for local HTTP.
@@ -141,6 +142,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "chunk settings need CHUNK_OVERLAP_CHARS < CHUNK_TARGET_CHARS <= CHUNK_MAX_CHARS"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _secrets_differ(self) -> Self:
+        # One leaked value must not both forge tokens and unmask rate-limit keys.
+        if self.app_secret_key.get_secret_value() == self.jwt_secret.get_secret_value():
+            raise ValueError("APP_SECRET_KEY and JWT_SECRET must be different values")
         return self
 
     @model_validator(mode="after")

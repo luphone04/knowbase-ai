@@ -165,3 +165,14 @@ def test_env_example_matches_settings() -> None:
     fields = {name.upper() for name in Settings.model_fields}
     assert names - NON_BACKEND_VARIABLES - fields == set(), "unknown variables in .env.example"
     assert fields - names == set(), "settings missing from .env.example"
+
+
+def test_token_lifetime_is_capped_at_a_week() -> None:
+    assert make_settings(access_token_expire_minutes=10_080).access_token_expire_minutes == 10_080
+    with pytest.raises(ValidationError, match="less than or equal to 10080"):
+        make_settings(access_token_expire_minutes=10_081)
+
+
+def test_the_two_secrets_must_differ() -> None:
+    with pytest.raises(ValidationError, match="must be different"):
+        make_settings(jwt_secret=APP_SECRET)
