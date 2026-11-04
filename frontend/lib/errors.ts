@@ -7,8 +7,9 @@ const AI_MESSAGES: Record<string, string> = {
   ai_quota:
     "Gemini's free-tier limit has been reached. Nothing was saved. Try again later.",
   ai_unavailable: "Gemini is unavailable right now. Nothing was saved. Try again in a moment.",
+  // Not naming the variable: the build check refuses any mention of it in the bundle.
   ai_not_configured:
-    "The backend has no Gemini API key (GEMINI_API_KEY), so AI features are unavailable.",
+    "The backend has no Gemini API key, so AI features are unavailable. Add the key to the backend .env.",
   ai_incomplete: "Gemini returned an incomplete answer. Nothing was saved. Try again.",
   ai_error: "Gemini returned an invalid response. Nothing was saved. Try again.",
 };

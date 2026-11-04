@@ -34,7 +34,7 @@ describe("describeError", () => {
       expect(describeError(error)).toContain("Nothing was saved");
     }
     expect(describeError(new ApiError(503, "ai_not_configured", "x"))).toContain(
-      "GEMINI_API_KEY",
+      "no Gemini API key",
     );
   });
 
