@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -20,6 +21,17 @@ PASSWORD_MAX_LENGTH = 128
 def _not_blank(value: str) -> str:
     if not value.strip():
         raise ValueError("must not be only whitespace")
+    return value
+
+
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _no_control_characters(value: str | None) -> str | None:
+    # PostgreSQL text can't hold NUL, and no question needs control characters.
+    # Rejected here, before a daily slot or a Gemini call is spent.
+    if value is not None and _CONTROL_CHARACTERS.search(value):
+        raise ValueError("must not contain control characters")
     return value
 
 
@@ -154,7 +166,13 @@ class RetrievalSearchIn(StrictRequest):
     @field_validator("query")
     @classmethod
     def _query_not_blank(cls, value: str) -> str:
+        _no_control_characters(value)
         return _not_blank(value)
+
+    @field_validator("previous_question")
+    @classmethod
+    def _previous_question_is_text(cls, value: str | None) -> str | None:
+        return _no_control_characters(value)
 
 
 class RetrievalHitOut(BaseModel):

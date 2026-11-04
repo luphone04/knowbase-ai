@@ -84,6 +84,24 @@ def test_vectors_from_another_model_are_never_compared(tenant_a: Tenant, scoped:
     assert [h.chunk_id for h in hits] == [current]
 
 
+def test_ties_at_the_cut_off_are_settled_by_chunk_id(tenant_a: Tenant, scoped: Session) -> None:
+    """Which of several equally near chunks makes the top k must not depend on scan order."""
+    (nearest,) = add_source(tenant_a.workspace_id, "near.md", [("nearest", basis((0, 1)))])
+    tied = add_source(
+        tenant_a.workspace_id,
+        "dupes.md",
+        [(f"same {i}", basis((0, 1), (1, 1))) for i in range(12)],
+    )
+    hits = vector_search(
+        scoped,
+        workspace_id=tenant_a.workspace_id,
+        query_vector=basis((0, 1)),
+        model=MODEL,
+        limit=3,
+    )
+    assert [h.chunk_id for h in hits] == [nearest, *sorted(tied, key=str)[:2]]
+
+
 def test_exact_ties_are_ordered_by_chunk_id(tenant_a: Tenant, scoped: Session) -> None:
     ids = add_source(
         tenant_a.workspace_id, "twins.md", [("a", basis((0, 1))), ("b", basis((0, 1)))]
@@ -192,10 +210,10 @@ def test_exact_product_terms_are_found(tenant_a: Tenant, scoped: Session) -> Non
         scoped, workspace_id=tenant_a.workspace_id, query='"summit 2p"', limit=10
     )
     assert [h.chunk_id for h in phrase] == [tent]  # case-insensitive phrase
-    either = lexical_search(
+    dashed = lexical_search(
         scoped, workspace_id=tenant_a.workspace_id, query="weighs -tent", limit=10
     )
-    assert [h.chunk_id for h in either] == [laptop]  # websearch negation
+    assert [h.chunk_id for h in dashed] == [tent]  # a dash is not negation in a question
 
 
 def test_more_matches_rank_higher(tenant_a: Tenant, scoped: Session) -> None:
@@ -210,6 +228,34 @@ def test_more_matches_rank_higher(tenant_a: Tenant, scoped: Session) -> None:
     hits = lexical_search(scoped, workspace_id=tenant_a.workspace_id, query="warranty", limit=10)
     assert [h.chunk_id for h in hits] == [twice, once]
     assert hits[0].score > hits[1].score
+
+
+def test_a_leading_dash_never_matches_chunks_without_the_word(
+    tenant_a: Tenant, scoped: Session
+) -> None:
+    """As NOT, "-tent" matched every chunk lacking "tent" (at rank 0) and boosted it in hybrid."""
+    tent, _, _ = add_source(
+        tenant_a.workspace_id,
+        "guide.md",
+        [
+            ("The Summit 2P tent weighs 1.6 kg.", basis((0, 1))),
+            ("Gift cards never expire.", basis((1, 1))),
+            ("Returns within 30 days.", basis((2, 1))),
+        ],
+    )
+    for query in ("-tent", "--tent", "(-tent)"):
+        hits = lexical_search(scoped, workspace_id=tenant_a.workspace_id, query=query, limit=10)
+        assert [h.chunk_id for h in hits] == [tent], query
+        assert all(h.score > 0 for h in hits)
+    assert lexical_search(scoped, workspace_id=tenant_a.workspace_id, query="-", limit=10) == []
+
+
+def test_hyphenated_words_still_match(tenant_a: Tenant, scoped: Session) -> None:
+    (chunk,) = add_source(
+        tenant_a.workspace_id, "a.md", [("Use the e-mail form for returns.", basis((0, 1)))]
+    )
+    hits = lexical_search(scoped, workspace_id=tenant_a.workspace_id, query="e-mail", limit=10)
+    assert [h.chunk_id for h in hits] == [chunk]
 
 
 def test_queries_without_words_return_nothing(tenant_a: Tenant, scoped: Session) -> None:

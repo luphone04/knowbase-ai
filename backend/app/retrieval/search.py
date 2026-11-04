@@ -11,10 +11,14 @@ Chunks of a source that is being deleted are never returned.
   is the shape pgvector's HNSW index can serve. Iterative index scans are
   enabled so that filtering by workspace can't silently return fewer than
   `limit` rows. Exact ties are ordered by chunk id afterwards.
+  When an exact tie crosses the cut-off, the tied chunks are chosen by id
+  too, so the top k never depends on scan order.
 - **Lexical:** PostgreSQL full-text search on the generated `search_tsv`
   (`simple` configuration), `websearch_to_tsquery`, ranked by `ts_rank_cd`.
-  This is PostgreSQL ranking, not BM25. A query with no searchable words
-  returns nothing.
+  This is PostgreSQL ranking, not BM25. "Quoted phrases" work, but a leading
+  dash is not negation: questions are not search syntax, and "-tent" must not
+  match every chunk *without* "tent". A query with no searchable words returns
+  nothing.
 """
 
 import re
@@ -29,6 +33,8 @@ from sqlalchemy.orm import Session
 from app.db.models import Chunk, Document, Source
 
 _HAS_WORD = re.compile(r"\w")
+# A dash that starts a word (websearch_to_tsquery's NOT); hyphens inside words stay.
+_NEGATION = re.compile(r"(?:^|(?<=[\s(\"]))-+")
 
 
 @dataclass(frozen=True)
@@ -109,22 +115,31 @@ def vector_search(
 ) -> list[SearchHit]:
     """The `limit` chunks nearest to `query_vector` (a unit RETRIEVAL_QUERY embedding)."""
     distance = Chunk.embedding.cosine_distance(list(query_vector)).label("distance")
-    statement = (
-        _scoped(select(*_columns(), distance), workspace_id)
-        .where(Chunk.embedding_model == model)
-        .order_by(distance)
-        .limit(limit)
+    candidates = _scoped(select(*_columns(), distance), workspace_id).where(
+        Chunk.embedding_model == model
     )
-    # Keep scanning the HNSW index until `limit` rows pass the workspace filter.
+    # Keep scanning the HNSW index until enough rows pass the workspace filter.
     db.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
-    rows = sorted(db.execute(statement).all(), key=lambda row: (row.distance, str(row.id)))
+    # One extra row shows whether a tie crosses the cut-off.
+    rows = list(db.execute(candidates.order_by(distance).limit(limit + 1)).all())
+    if len(rows) > limit and rows[limit].distance == rows[limit - 1].distance:
+        # Chunks exactly as near as the last one kept (identical text in several
+        # documents): take the tied ones by id, not in whatever order the scan met them.
+        boundary = rows[limit - 1].distance
+        nearer = [row for row in rows if row.distance < boundary]
+        tied = db.execute(
+            candidates.where(distance == boundary).order_by(Chunk.id).limit(limit - len(nearer))
+        ).all()
+        rows = nearer + list(tied)
+    rows = sorted(rows[:limit], key=lambda row: (row.distance, str(row.id)))
     return _hits(rows, [row.distance for row in rows])
 
 
 def lexical_search(
     db: Session, *, workspace_id: uuid.UUID, query: str, limit: int
 ) -> list[SearchHit]:
-    """The `limit` best full-text matches for `query` (websearch syntax: "quotes", -not)."""
+    """The `limit` best full-text matches for `query` ("quoted phrases" are kept)."""
+    query = _NEGATION.sub("", query)
     if not _HAS_WORD.search(query):
         return []
     tsquery = func.websearch_to_tsquery("simple", query)

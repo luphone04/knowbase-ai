@@ -231,14 +231,28 @@ def test_search_requires_authentication_and_origin(tenant_a: Tenant) -> None:
         {"query": "x" * 1001},
         {"query": "tent", "mode": "bm25"},
         {"query": "tent", "workspace_id": str(uuid.uuid4())},
+        {"query": "tent\u0000"},
+        {"query": "tent\u001b[2J"},
+        {"query": "and the warranty?", "previous_question": "returns\u0000"},
     ],
-    ids=["empty", "blank", "too-long", "unknown-mode", "client-workspace"],
+    ids=[
+        "empty",
+        "blank",
+        "too-long",
+        "unknown-mode",
+        "client-workspace",
+        "nul",
+        "control-character",
+        "nul-in-previous-question",
+    ],
 )
 def test_invalid_requests_are_rejected(
     tenant_a: Tenant, provider: FixedQueryProvider, body: dict[str, object]
 ) -> None:
+    add_source(tenant_a.workspace_id, "a.md", [("tent", basis((0, 1)))])
     assert tenant_a.client.post(SEARCH, json=body).status_code == 422
     assert provider.queries == []  # rejected before any Gemini call
+    assert slots_used("retrieval-requests-daily") == 0
 
 
 def test_searches_are_rate_limited_per_workspace(
