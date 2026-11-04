@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     chat_history_messages: int = Field(default=6, ge=0, le=20)
     daily_embedding_text_limit: int = Field(default=300, ge=0)
 
+    # Evaluation (ADR 0014): runs per workspace per UTC day, answer generations for all
+    # evaluations per UTC day (query embeddings come from DAILY_QUERY_EMBEDDING_LIMIT),
+    # and the pause between questions (paces Gemini; lets ingestion jobs run).
+    daily_evaluation_run_limit: int = Field(default=3, ge=0)
+    daily_evaluation_generation_limit: int = Field(default=120, ge=0)
+    evaluation_question_interval_seconds: float = Field(default=6, ge=0, le=300)
+
     worker_poll_seconds: float = Field(default=5, gt=0)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
     # A running job's lock is renewed every heartbeat; a lock older than the lease

@@ -1,9 +1,11 @@
-"""Ingestion worker entry point: `python -m app.worker.runner`.
+"""Worker entry point: `python -m app.worker.runner`.
 
-One process handling one job at a time (SPEC.md §4.2). The loop:
+One process handling one unit of work at a time (SPEC.md §4.2). The loop:
 1. Every lease period, recover jobs abandoned by a crashed worker.
-2. Claim the next due job (FOR UPDATE SKIP LOCKED) and process it.
-3. Sleep `WORKER_POLL_SECONDS` when the queue is empty.
+2. Claim the next due ingestion job (FOR UPDATE SKIP LOCKED) and process it.
+3. Otherwise, evaluate one question of the next due evaluation run (ADR 0014):
+   ingestion always goes first, and a run yields between questions.
+4. Sleep `WORKER_POLL_SECONDS` when there is nothing to do.
 
 SIGTERM/SIGINT stop the loop after the current job. If the process is killed
 mid-job, the job's lease lapses and the next recovery pass requeues it.
@@ -25,9 +27,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_engine, get_sessionmaker
+from app.evaluation.runner import EvaluationWorker
 from app.ingestion.pipeline import IngestionWorker
 from app.ingestion.storage import FileStorage
-from app.providers.factory import get_embedding_provider
+from app.providers.factory import get_embedding_provider, get_generation_provider
 
 logger = logging.getLogger("app.worker")
 
@@ -73,10 +76,11 @@ def main() -> int:
         return 1
 
     worker = build_worker(settings)
+    evaluator = build_evaluator(settings, worker.worker_id)
     if not settings.gemini_configured:
         logger.warning("GEMINI_API_KEY is not set: jobs that need new embeddings will fail clearly")
     logger.info("Worker %s ready", worker.worker_id)
-    run_loop(worker, stop, settings)
+    run_loop(worker, stop, settings, evaluator)
     logger.info("Worker stopped")
     return 0
 
@@ -92,14 +96,30 @@ def build_worker(settings: Settings) -> IngestionWorker:
     )
 
 
-def run_loop(worker: IngestionWorker, stop: threading.Event, settings: Settings) -> None:
+def build_evaluator(settings: Settings, worker_id: str) -> EvaluationWorker:
+    return EvaluationWorker(
+        settings=settings,
+        session_factory=get_sessionmaker(),
+        engine=get_engine(),
+        embedding_provider_factory=get_embedding_provider,
+        generation_provider_factory=get_generation_provider,
+        worker_id=worker_id,
+    )
+
+
+def run_loop(
+    worker: IngestionWorker,
+    stop: threading.Event,
+    settings: Settings,
+    evaluator: EvaluationWorker | None = None,
+) -> None:
     next_recovery = 0.0
     while not stop.is_set():
         try:
             if time.monotonic() >= next_recovery:
                 worker.recover()
                 next_recovery = time.monotonic() + settings.job_lease_seconds / 2
-            if worker.run_once():
+            if worker.run_once() or (evaluator is not None and evaluator.run_once()):
                 continue  # more work may be waiting
         except SQLAlchemyError as exc:
             logger.warning("Worker loop database error (%s); backing off", type(exc).__name__)

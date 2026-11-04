@@ -22,7 +22,6 @@ Logs carry ids, counts, and timings, never document text, vectors, or keys.
 """
 
 import logging
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -30,11 +29,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from types import TracebackType
 from typing import Any
 
 from sqlalchemy import ColumnElement, Engine, delete, exists, func, insert, or_, select
-from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.rate_limit import RateLimiter
@@ -69,6 +67,7 @@ from app.providers.errors import (
     ProviderUnavailable,
 )
 from app.providers.interfaces import EmbeddingProvider
+from app.worker.lease import Deadline, LeaseHeartbeat
 from app.worker.queue import (
     SUPERSEDED_MESSAGE,
     ClaimedJob,
@@ -158,25 +157,13 @@ class JobTimedOut(Exception):
         super().__init__(self.message)
 
 
-class _JobRun:
+class _JobRun(Deadline):
     """The running job's deadline and lease state, checked between stages (audit H3).
 
     `checkpoint()` raises JobTimedOut once the deadline has passed, and JobLost
     once the heartbeat has found that another worker owns the job, so no
     partial or stale result is ever published.
     """
-
-    def __init__(self, max_runtime: float, clock: Callable[[], float] = time.monotonic) -> None:
-        self.max_runtime = max_runtime
-        self._clock = clock
-        self.deadline = clock() + max_runtime
-        self.lost = threading.Event()
-
-    def remaining(self) -> float:
-        return max(0.0, self.deadline - self._clock())
-
-    def expired(self) -> bool:
-        return self._clock() >= self.deadline
 
     def checkpoint(self) -> None:
         if self.lost.is_set():
@@ -185,52 +172,16 @@ class _JobRun:
             raise JobTimedOut(self.max_runtime)
 
 
-class _Heartbeat:
-    """Renews the job's lease in the background while it is processed.
-
-    Renewal stops at the job's deadline: a job wedged somewhere no checkpoint
-    reaches then loses its lease, and recovery requeues it (bounded by
-    max_attempts) instead of it holding the queue forever.
-    """
+class _Heartbeat(LeaseHeartbeat):
+    """Renews the job's lease in the background while it is processed (app.worker.lease)."""
 
     def __init__(self, engine: Engine, job: ClaimedJob, interval: float, run: _JobRun) -> None:
-        self._engine = engine
-        self._job = job
-        self._interval = interval
-        self._run_state = run
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name=f"heartbeat-{job.id}", daemon=True)
-
-    @property
-    def lost(self) -> threading.Event:
-        return self._run_state.lost
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval):
-            if self._run_state.expired():
-                logger.warning(
-                    "Job %s passed its deadline; no longer renewing its lease", self._job.id
-                )
-                return
-            try:
-                if not engine_heartbeat(self._engine, self._job):
-                    self._run_state.lost.set()
-                    return
-            except SQLAlchemyError:  # includes pool timeouts, not only DBAPI errors
-                logger.warning("Heartbeat failed for job %s; will retry", self._job.id)
-
-    def __enter__(self) -> "_Heartbeat":
-        self._thread.start()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        self._stop.set()
-        self._thread.join(timeout=self._interval)
+        super().__init__(
+            lambda: engine_heartbeat(engine, job),
+            interval=interval,
+            deadline=run,
+            name=f"Job {job.id}",
+        )
 
 
 class IngestionWorker:

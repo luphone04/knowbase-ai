@@ -45,6 +45,9 @@ APP_TABLES = (
     "query_traces",
     "conversations",
     "messages",
+    "evaluation_questions",
+    "evaluation_runs",
+    "evaluation_results",
 )
 TEST_PASSWORD = "integration-test-password-1"
 

@@ -48,6 +48,21 @@ MESSAGE_OUTCOMES = ("answered", "abstained")
 # Why it abstained: nothing usable was retrieved; the model said the excerpts were
 # not enough; or the answer had no valid citation, so it was not shown.
 ABSTAIN_REASONS = ("no_evidence", "model_insufficient", "no_valid_citation")
+EVALUATION_RUN_STATUSES = ("queued", "running", "succeeded", "failed")
+# Retrieval configurations an evaluation compares (app.evaluation.variants).
+EVALUATION_VARIANTS = ("vector", "hybrid", "hybrid_or", "hybrid_english", "hybrid_english_or")
+EVALUATION_CATEGORIES = (
+    "direct",
+    "paraphrase",
+    "exact_term",
+    "negative_policy",
+    "multi_source",
+    "follow_up",
+    "out_of_scope",
+    "absent_detail",
+)
+# An evaluated answer; a provider failure is its own outcome, never an abstention.
+EVALUATION_OUTCOMES = ("answered", "abstained", "provider_error")
 
 
 def _sql_in(column: str, values: tuple[str, ...]) -> str:
@@ -477,4 +492,194 @@ class Message(WorkspaceScoped, Base):
     meta: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
+    created_at: Mapped[datetime] = _created_at()
+
+
+# --- evaluation (Milestone 9, ADR 0014) -----------------------------------------------------
+
+
+def _fraction(column: str) -> str:
+    return f"{column} IS NULL OR ({column} >= 0 AND {column} <= 1)"
+
+
+class EvaluationQuestion(Base):
+    """One question of a versioned dataset (app/evaluation/datasets). Shared, read-only.
+
+    Loaded from the dataset file; a version's rows never change (the file's
+    SHA-256 is kept on every row, and a different file for the same version is
+    refused). Expected sources are stable source keys, never database ids.
+    """
+
+    __tablename__ = "evaluation_questions"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_name", "dataset_version", "question_key", name="uq_evaluation_questions_key"
+        ),
+        CheckConstraint(_sql_in("category", EVALUATION_CATEGORIES), name="category"),
+        CheckConstraint(
+            "is_unanswerable = (jsonb_array_length(relevant_source_keys) = 0)",
+            name="unanswerable_has_no_sources",
+        ),
+        CheckConstraint("position >= 1", name="position"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    dataset_name: Mapped[str] = mapped_column(Text)
+    dataset_version: Mapped[str] = mapped_column(Text)
+    dataset_sha256: Mapped[str] = mapped_column(Text)
+    question_key: Mapped[str] = mapped_column(Text)
+    position: Mapped[int]
+    category: Mapped[str] = mapped_column(Text)
+    question: Mapped[str] = mapped_column(Text)
+    previous_question: Mapped[str | None] = mapped_column(Text)
+    expected_answer: Mapped[str | None] = mapped_column(Text)
+    relevant_source_keys: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    is_unanswerable: Mapped[bool]
+    # Evidence quotes, absent terms, and notes, for human review.
+    reference: Mapped[dict[str, Any]] = _jsonb()
+    created_at: Mapped[datetime] = _created_at()
+
+
+class EvaluationRun(WorkspaceScoped, Base):
+    """One evaluation of a dataset against a workspace's corpus. Also a worker queue row.
+
+    The worker claims a due run (FOR UPDATE SKIP LOCKED, a fresh `lock_token`),
+    evaluates one question, commits its results, and releases the run with
+    `next_run_at` a little later; the lease lets a crashed worker's run be taken
+    over. `attempts` counts claims since the last question finished.
+    """
+
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_evaluation_runs_workspace_and_id"),
+        CheckConstraint(_sql_in("status", EVALUATION_RUN_STATUSES), name="status"),
+        CheckConstraint(
+            "questions_done >= 0 AND questions_done <= questions_total", name="progress"
+        ),
+        CheckConstraint("attempts >= 0", name="attempts"),
+        # At most one active run per workspace.
+        Index(
+            "uq_evaluation_runs_one_active_per_workspace",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+        Index("ix_evaluation_runs_status_next_run_at", "status", "next_run_at"),
+        Index("ix_evaluation_runs_workspace_created", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    dataset_name: Mapped[str] = mapped_column(Text)
+    dataset_version: Mapped[str] = mapped_column(Text)
+    dataset_sha256: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="queued", server_default="queued")
+    # Models, retrieval settings, variants, answer modes, budget reservation.
+    config: Mapped[dict[str, Any]] = _jsonb()
+    # The corpus at the start: dataset sources (key, id, hash, chunks), other sources, totals.
+    corpus: Mapped[dict[str, Any]] = _jsonb()
+    questions_total: Mapped[int]
+    questions_done: Mapped[int] = mapped_column(default=0, server_default="0")
+    summary: Mapped[dict[str, Any]] = _jsonb()
+    error_message: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    next_run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lock_token: Mapped[uuid.UUID | None]
+    locked_by: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EvaluationResult(WorkspaceScoped, Base):
+    """One question under one retrieval configuration in one run.
+
+    Retrieval metrics are NULL for unanswerable questions (no relevant source)
+    and when retrieval failed. Answer fields are set only for the production
+    modes the run answered with; `outcome` is then answered, abstained, or
+    provider_error. Citation metrics are NULL unless an answerable question
+    was answered.
+    """
+
+    __tablename__ = "evaluation_results"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            ondelete="CASCADE",
+            name="fk_evaluation_results_run_same_workspace",
+        ),
+        UniqueConstraint("run_id", "question_id", "variant", name="uq_evaluation_results_item"),
+        CheckConstraint(_sql_in("variant", EVALUATION_VARIANTS), name="variant"),
+        CheckConstraint(_sql_in("retrieval_mode", RETRIEVAL_MODES), name="retrieval_mode"),
+        CheckConstraint(
+            f"outcome IS NULL OR {_sql_in('outcome', EVALUATION_OUTCOMES)}", name="outcome"
+        ),
+        CheckConstraint(
+            "CASE WHEN outcome = 'abstained' "
+            f"THEN coalesce({_sql_in('abstain_reason', ABSTAIN_REASONS)}, false) "
+            "ELSE abstain_reason IS NULL END",
+            name="abstain_reason",
+        ),
+        CheckConstraint(_fraction("recall_at_5"), name="recall_at_5"),
+        CheckConstraint(_fraction("reciprocal_rank"), name="reciprocal_rank"),
+        CheckConstraint(_fraction("citation_precision"), name="citation_precision"),
+        CheckConstraint(_fraction("citation_recall"), name="citation_recall"),
+        CheckConstraint(
+            "coalesce(embedding_latency_ms, 0) >= 0 AND coalesce(retrieval_latency_ms, 0) >= 0 "
+            "AND coalesce(answer_latency_ms, 0) >= 0",
+            name="latency",
+        ),
+        Index("ix_evaluation_results_question_id", "question_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID]
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("evaluation_questions.id", ondelete="RESTRICT")
+    )
+    variant: Mapped[str] = mapped_column(Text)
+    retrieval_mode: Mapped[str] = mapped_column(Text)
+    retrieval_query: Mapped[str] = mapped_column(Text)
+    # The top chunks (rank, chunk, source key, list ranks, score) and the sources they collapse to.
+    retrieved: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    retrieved_sources: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    vector_candidates: Mapped[int | None]
+    lexical_candidates: Mapped[int | None]
+    top_vector_distance: Mapped[float | None]
+    hit_at_5: Mapped[bool | None]
+    recall_at_5: Mapped[float | None]
+    reciprocal_rank: Mapped[float | None]
+    embedding_latency_ms: Mapped[int | None]
+    retrieval_latency_ms: Mapped[int | None]
+    answer_evaluated: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    outcome: Mapped[str | None] = mapped_column(Text)
+    abstain_reason: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(Text)
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    citation_precision: Mapped[float | None]
+    citation_recall: Mapped[float | None]
+    abstention_correct: Mapped[bool | None]
+    answer_latency_ms: Mapped[int | None]
+    token_usage: Mapped[dict[str, Any]] = _jsonb()
+    # Citation validation's removals, excerpt count, and the model's own text when the
+    # answer was withheld (chat never shows it; the evaluation keeps it for review).
+    details: Mapped[dict[str, Any]] = _jsonb()
+    # Where it failed (embedding, generation), the provider error category, and its message.
+    error_stage: Mapped[str | None] = mapped_column(Text)
+    error_category: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()

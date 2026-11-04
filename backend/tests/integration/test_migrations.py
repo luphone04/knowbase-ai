@@ -80,6 +80,9 @@ def test_auth_schema_constraints(scratch_engine: Engine, alembic_config: Config)
             "query_traces",
             "conversations",
             "messages",
+            "evaluation_questions",
+            "evaluation_runs",
+            "evaluation_results",
         }
         assert schema.get_pk_constraint("workspace_members")["constrained_columns"] == [
             "workspace_id",
@@ -626,3 +629,136 @@ def test_0006_purge_flag_removes_only_website_data(
         assert count("SELECT count(*) FROM embedding_cache WHERE content_hash = 'web-only'") == 0
         assert count("SELECT count(*) FROM embedding_cache WHERE content_hash = 'h'") == 1
         assert "crawl_pages" not in inspect(connection).get_table_names()
+
+
+# --- evaluation (migration 0010) -------------------------------------------------------------
+
+QUESTION_ID = "00000000-0000-0000-0000-0000000000e1"
+RUN_A = "00000000-0000-0000-0000-0000000000e2"
+RUN_B = "00000000-0000-0000-0000-0000000000e3"
+RESULT_COLUMNS = "workspace_id, run_id, question_id, variant, retrieval_mode, retrieval_query"
+
+
+def _seed_evaluation(connection: Connection) -> None:
+    _seed(connection)
+    connection.execute(
+        text(
+            f"""
+            INSERT INTO evaluation_questions (id, dataset_name, dataset_version, dataset_sha256,
+                question_key, position, category, question, relevant_source_keys,
+                is_unanswerable)
+                VALUES ('{QUESTION_ID}', 'd', '1', 'h', 'q01', 1, 'direct', 'Q?',
+                        '["a.md"]', false);
+            INSERT INTO evaluation_runs (id, workspace_id, dataset_name, dataset_version,
+                dataset_sha256, status, questions_total)
+                VALUES ('{RUN_A}', '{WS_A}', 'd', '1', 'h', 'succeeded', 1),
+                       ('{RUN_B}', '{WS_B}', 'd', '1', 'h', 'succeeded', 1);
+            """
+        )
+    )
+
+
+def _result(values: str) -> str:
+    return f"INSERT INTO evaluation_results ({RESULT_COLUMNS}{values}"
+
+
+@pytest.mark.parametrize(
+    ("statement", "constraint"),
+    [
+        (
+            _result(f") VALUES ('{WS_A}', '{RUN_B}', '{QUESTION_ID}', 'vector', 'vector', 'q')"),
+            "fk_evaluation_results_run_same_workspace",
+        ),
+        (
+            _result(f") VALUES ('{WS_A}', '{RUN_A}', '{QUESTION_ID}', 'bm25', 'vector', 'q')"),
+            "ck_evaluation_results_variant",
+        ),
+        (
+            _result(
+                f", recall_at_5) VALUES ('{WS_A}', '{RUN_A}', '{QUESTION_ID}', 'vector', "
+                "'vector', 'q', 1.5)"
+            ),
+            "ck_evaluation_results_recall_at_5",
+        ),
+        (
+            _result(
+                f", outcome) VALUES ('{WS_A}', '{RUN_A}', '{QUESTION_ID}', 'hybrid', 'hybrid', "
+                "'q', 'abstained')"
+            ),
+            "ck_evaluation_results_abstain_reason",
+        ),
+        (
+            _result(
+                f", outcome) VALUES ('{WS_A}', '{RUN_A}', '{QUESTION_ID}', 'hybrid', 'hybrid', "
+                "'q', 'refused')"
+            ),
+            "ck_evaluation_results_outcome",
+        ),
+        (
+            f"INSERT INTO evaluation_runs (workspace_id, dataset_name, dataset_version, "
+            f"dataset_sha256, status, questions_total) VALUES "
+            f"('{WS_A}', 'd', '1', 'h', 'queued', 1), ('{WS_A}', 'd', '1', 'h', 'running', 1)",
+            "uq_evaluation_runs_one_active_per_workspace",
+        ),
+        (
+            f"INSERT INTO evaluation_runs (workspace_id, dataset_name, dataset_version, "
+            f"dataset_sha256, status, questions_total, questions_done) VALUES "
+            f"('{WS_A}', 'd', '1', 'h', 'queued', 1, 2)",
+            "ck_evaluation_runs_progress",
+        ),
+        (
+            "INSERT INTO evaluation_questions (dataset_name, dataset_version, dataset_sha256, "
+            "question_key, position, category, question, is_unanswerable) "
+            "VALUES ('d', '1', 'h', 'u01', 2, 'out_of_scope', 'Q?', false)",
+            "ck_evaluation_questions_unanswerable_has_no_sources",
+        ),
+        (
+            "INSERT INTO evaluation_questions (dataset_name, dataset_version, dataset_sha256, "
+            "question_key, position, category, question, is_unanswerable) "
+            "VALUES ('d', '1', 'h', 'q01', 2, 'out_of_scope', 'Q?', true)",
+            "uq_evaluation_questions_key",
+        ),
+    ],
+    ids=[
+        "result-into-other-workspace-run",
+        "unknown-variant",
+        "recall-above-one",
+        "abstention-without-reason",
+        "unknown-outcome",
+        "two-active-runs",
+        "progress-past-total",
+        "unanswerable-flag-mismatch",
+        "duplicate-question-key",
+    ],
+)
+def test_database_enforces_evaluation_integrity(
+    scratch_engine: Engine, alembic_config: Config, statement: str, constraint: str
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed_evaluation(connection)
+    with scratch_engine.connect() as connection, pytest.raises(IntegrityError) as excinfo:
+        connection.execute(text(statement))
+    assert constraint in str(excinfo.value)
+
+
+def test_deleting_a_workspace_removes_its_runs_but_not_the_dataset(
+    scratch_engine: Engine, alembic_config: Config
+) -> None:
+    with scratch_engine.begin() as connection:
+        migrate(connection, alembic_config, "head")
+        _seed_evaluation(connection)
+        connection.execute(
+            text(
+                _result(f") VALUES ('{WS_A}', '{RUN_A}', '{QUESTION_ID}', 'vector', 'vector', 'q')")
+            )
+        )
+        connection.execute(text(f"DELETE FROM workspaces WHERE id = '{WS_A}'"))
+        counts = connection.execute(
+            text(
+                "SELECT (SELECT count(*) FROM evaluation_runs), "
+                "(SELECT count(*) FROM evaluation_results), "
+                "(SELECT count(*) FROM evaluation_questions)"
+            )
+        ).one()
+    assert tuple(counts) == (1, 0, 1)  # workspace B's run and the shared question stay
