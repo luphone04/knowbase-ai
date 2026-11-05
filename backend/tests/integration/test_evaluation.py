@@ -23,6 +23,7 @@ from app.config import get_settings
 from app.db.models import EvaluationRun
 from app.db.session import get_engine, get_sessionmaker
 from app.db.tenancy import bind_workspace
+from app.evaluation import budget
 from app.evaluation.dataset import load_dataset
 from app.evaluation.runner import CORPUS_CHANGED, EvaluationWorker
 from app.providers.errors import (
@@ -714,3 +715,213 @@ def test_a_rate_limit_stops_the_run_instead_of_pushing_on(
     assert stopped["abstention_correct"] is None
     assert len(evaluator.generator.prompts) == 2  # nothing after the refusal
     assert slots_used("evaluation-generations-daily") == 1  # the refused call is given back
+
+
+# --- budget accounting for retried questions (M9 review fix) ---------------------------------
+
+
+def expire_lease(run_id: str) -> None:
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE evaluation_runs SET locked_at = :t WHERE id = :id"),
+            {"t": datetime.now(UTC) - timedelta(hours=1), "id": run_id},
+        )
+
+
+def crash_before_saving(monkeypatch: pytest.MonkeyPatch, times: int = 1) -> None:
+    """The next `times` attempts call Gemini, then the worker "dies" before saving."""
+    original = EvaluationWorker._save
+    left = {"n": times}
+
+    def save(self: EvaluationWorker, *args: Any, **kwargs: Any) -> None:
+        if left["n"] > 0:
+            left["n"] -= 1
+            raise RuntimeError("worker killed")
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(EvaluationWorker, "_save", save)
+
+
+def actual_calls(evaluator: Harness) -> tuple[int, int]:
+    """Gemini calls the fake providers received (failed and discarded ones included)."""
+    return len(evaluator.embedder.queries), len(evaluator.generator.prompts)
+
+
+def counted() -> tuple[int, int]:
+    return slots_used("query-embeddings-daily"), slots_used("evaluation-generations-daily")
+
+
+def test_a_crash_after_provider_calls_is_covered_by_a_retry_reservation(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["vector", "hybrid"])
+    crash_before_saving(monkeypatch)
+    with pytest.raises(RuntimeError):
+        evaluator.worker.run_once()  # q01: 1 embedding + 2 generations, never saved
+    assert actual_calls(evaluator) == (1, 2)
+    expire_lease(run["id"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "succeeded" and body["questions_done"] == QUESTIONS
+    assert actual_calls(evaluator) == (QUESTIONS + 1, 2 * QUESTIONS + 2)
+    # Recorded usage covers the saved attempts; the retry reservation covers the lost one.
+    assert body["summary"]["gemini_requests"] == {
+        "query_embeddings": QUESTIONS,
+        "generation_requests": 2 * QUESTIONS,
+    }
+    assert body["summary"]["retry_reservations"] == {
+        "count": 1,
+        "query_embeddings": 1,
+        "generations": 2,
+        "held_from_original": {"query_embeddings": 0, "generation_requests": 0},
+    }
+    assert counted() == actual_calls(evaluator)  # never fewer than the real calls
+
+
+def test_a_crash_before_any_provider_call_over_counts_by_one_attempt_at_most(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])
+    assert evaluator.worker.claim() is not None  # claimed, then died before calling Gemini
+    expire_lease(run["id"])
+    evaluator.run_all()
+    assert detail(tenant_a, run["id"])["status"] == "succeeded"
+    embeddings, generations = actual_calls(evaluator)
+    assert (embeddings, generations) == (QUESTIONS, QUESTIONS)
+    assert counted() == (embeddings + 1, generations + 1)  # conservative, bounded
+
+
+def test_a_retry_without_budget_stops_the_run_without_calling_gemini(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DAILY_EVALUATION_GENERATION_LIMIT", str(QUESTIONS))
+    get_settings.cache_clear()
+    evaluator.worker = make_evaluator(evaluator.embedder, evaluator.generator, "eval-worker")
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])  # reserves every generation slot
+    assert evaluator.worker.run_once() and evaluator.worker.run_once()  # q01, q02 saved
+    crash_before_saving(monkeypatch)
+    with pytest.raises(RuntimeError):
+        evaluator.worker.run_once()  # q03 calls Gemini, never saved
+    before = actual_calls(evaluator)
+    expire_lease(run["id"])
+    assert evaluator.worker.run_once()  # the retry: no room for its reservation
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "failed"
+    assert body["error_message"].startswith("Question q03 had to be retried")
+    assert body["questions_done"] == 2  # completed results are kept
+    assert actual_calls(evaluator) == before  # no provider call for the retry
+    assert body["summary"]["retry_reservations"]["count"] == 0
+    assert body["summary"]["retry_reservations"]["held_from_original"] == {
+        "query_embeddings": 1,
+        "generation_requests": 1,
+    }
+    # Only genuinely unused original slots went back: q01, q02, and q03's interrupted attempt stay.
+    assert counted() == (3, 3) == actual_calls(evaluator)
+
+
+def test_maximum_attempts_end_the_run_without_another_reservation(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])
+    attempts = get_settings().job_max_attempts
+    crash_before_saving(monkeypatch, times=attempts)
+    for _ in range(attempts):  # every allowed attempt calls Gemini and dies
+        with pytest.raises(RuntimeError):
+            evaluator.worker.run_once()
+        expire_lease(run["id"])
+    calls = actual_calls(evaluator)
+    assert calls == (attempts, attempts)
+    assert evaluator.worker.run_once()  # the terminal claim: no Gemini, no reservation
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "failed" and "q01" in body["error_message"]
+    assert actual_calls(evaluator) == calls
+    assert body["summary"]["retry_reservations"]["count"] == attempts - 1
+    assert counted() == calls  # original slot held for attempt 1, retries for the rest
+
+
+def test_a_terminal_claim_after_an_interrupted_attempt_reserves_nothing(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The corpus changed after a crash: the run stops before any reservation or call."""
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])
+    crash_before_saving(monkeypatch)
+    with pytest.raises(RuntimeError):
+        evaluator.worker.run_once()
+    expire_lease(run["id"])
+    add_source(tenant_a.workspace_id, "new.md", [("new", basis((30, 1)))])
+    assert evaluator.worker.run_once()
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "failed" and body["error_message"] == CORPUS_CHANGED
+    assert body["summary"]["retry_reservations"]["count"] == 0
+    assert counted() == actual_calls(evaluator) == (1, 1)
+
+
+def test_a_retry_lost_before_calling_gives_its_reservation_back(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run changes hands between the retry reservation and the first call."""
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])
+    assert evaluator.worker.claim() is not None
+    expire_lease(run["id"])
+    retry = evaluator.worker.claim()
+    assert retry is not None and retry.attempts == 2
+    with get_engine().begin() as connection:  # another worker took it over meanwhile
+        connection.execute(
+            text("UPDATE evaluation_runs SET lock_token = :t WHERE id = :id"),
+            {"t": uuid.uuid4(), "id": run["id"]},
+        )
+    evaluator.worker.process(retry, Deadline(60))
+    assert actual_calls(evaluator) == (0, 0)
+    assert counted() == (QUESTIONS, QUESTIONS)  # only the original reservation
+
+
+def window_counts(rule: str) -> dict[str, int]:
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            text("SELECT window_start, count FROM rate_limit_counters WHERE bucket_key LIKE :k"),
+            {"k": f"{rule}:%"},
+        ).all()
+    return {window.date().isoformat(): int(count) for window, count in rows}
+
+
+def test_a_retry_after_midnight_is_charged_to_the_new_day_and_kept(evaluator: Harness) -> None:
+    """Retry reservations land in the current UTC day; giving back the original never touches
+    them. (The previous day's counters are pruned once a new day starts: they no longer limit.)"""
+    settings, limiter = get_settings(), evaluator.worker.limiter
+    late = datetime(2026, 11, 4, 23, 59, tzinfo=UTC)
+    original = budget.reserve(
+        limiter, settings, workspace_id="ws", query_embeddings=26, generations=26, now=late
+    )
+    assert window_counts("evaluation-generations-daily") == {"2026-11-04": 26}
+    budget.reserve_retry(limiter, settings, generations=1, now=late + timedelta(minutes=2))
+    assert window_counts("evaluation-generations-daily") == {"2026-11-05": 1}
+    budget.give_back_unused(
+        limiter,
+        settings,
+        original.as_json(),
+        {"query_embeddings": 3, "generation_requests": 3},
+    )
+    assert window_counts("evaluation-generations-daily") == {"2026-11-05": 1}
+    assert window_counts("query-embeddings-daily") == {"2026-11-05": 1}
+
+
+def test_giving_back_within_one_day_returns_only_the_original_unused_slots(
+    evaluator: Harness,
+) -> None:
+    settings, limiter = get_settings(), evaluator.worker.limiter
+    now = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
+    original = budget.reserve(
+        limiter, settings, workspace_id="ws", query_embeddings=26, generations=52, now=now
+    )
+    budget.reserve_retry(limiter, settings, generations=2, now=now + timedelta(minutes=1))
+    budget.give_back_unused(
+        limiter, settings, original.as_json(), {"query_embeddings": 5, "generation_requests": 10}
+    )
+    assert window_counts("evaluation-generations-daily") == {"2026-11-04": 10 + 2}
+    assert window_counts("query-embeddings-daily") == {"2026-11-04": 5 + 1}

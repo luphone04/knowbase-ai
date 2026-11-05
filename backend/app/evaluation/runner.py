@@ -9,7 +9,10 @@ the run's progress, then releases the run with `next_run_at` a little later:
 - the pause paces Gemini requests (EVALUATION_QUESTION_INTERVAL_SECONDS);
 - a crash loses at most the question in progress, which the next claim redoes.
   `attempts` counts claims since the last finished question, so a question that
-  keeps killing the worker fails the run instead of looping.
+  keeps killing the worker fails the run instead of looping. A claim with
+  `attempts > 1` is a retry: the earlier attempt may already have called Gemini,
+  so before any call the retry takes an additional retry reservation (budget.py);
+  if today's budget can't cover it, the run stops with its completed results.
 
 One question, every configuration: the retrieval query (with the previous
 question for a follow-up, exactly as chat builds it) is embedded once; each
@@ -37,7 +40,7 @@ from typing import Any
 from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.auth.rate_limit import RateLimiter
+from app.auth.rate_limit import RateLimiter, RateLimitExceeded
 from app.chat.context import build_context
 from app.chat.prompt import HistoryMessage
 from app.chat.service import Answer, ChatService
@@ -84,6 +87,10 @@ CORPUS_CHANGED = (
 )
 ABANDONED = "The worker stopped repeatedly while evaluating question {key}; the run was stopped."
 SKIPPED = "Not attempted: the run stopped at an earlier request."
+RETRY_BUDGET = (
+    "Question {key} had to be retried after an interrupted attempt, and today's Gemini budget "
+    "has no room for the retry; the run was stopped. Completed results are kept."
+)
 
 
 @dataclass(frozen=True)
@@ -232,9 +239,14 @@ class EvaluationWorker:
                 self._finish(db, run, status="succeeded")
                 return
             question = pending[0]
+            # Terminal checks first: a claim that won't call Gemini reserves nothing.
             if run.attempts > self.settings.job_max_attempts:
                 self._finish(
-                    db, run, status="failed", message=ABANDONED.format(key=question.question_key)
+                    db,
+                    run,
+                    status="failed",
+                    message=ABANDONED.format(key=question.question_key),
+                    interrupted=True,
                 )
                 return
             snapshot = corpus_snapshot(
@@ -244,9 +256,13 @@ class EvaluationWorker:
                 embedding_model=self.settings.gemini_embedding_model,
             )
             if snapshot.fingerprint != row.corpus.get("fingerprint"):
-                self._finish(db, run, status="failed", message=CORPUS_CHANGED)
+                self._finish(
+                    db, run, status="failed", message=CORPUS_CHANGED, interrupted=run.attempts > 1
+                )
                 return
             config, corpus = dict(row.config), dict(row.corpus)
+            if run.attempts > 1 and not self._reserve_retry(db, run, question, config):
+                return
             db.commit()  # end the read: nothing is held while Gemini works
 
             outcome = self.evaluate(db, run, question, config, corpus)
@@ -374,6 +390,52 @@ class EvaluationWorker:
             row["token_usage"] = {**row["token_usage"], **_generation_usage(answer)}
         return QuestionOutcome(rows, stop)
 
+    def _reserve_retry(
+        self, db: Session, run: ClaimedRun, question: EvaluationQuestion, config: dict[str, Any]
+    ) -> bool:
+        """Take an additional retry reservation before a retry calls Gemini. False: stop here."""
+        try:
+            retry = budget.reserve_retry(
+                self.limiter, self.settings, generations=len(config["answer_modes"])
+            )
+        except RateLimitExceeded:
+            self._finish(
+                db,
+                run,
+                status="failed",
+                message=RETRY_BUDGET.format(key=question.question_key),
+                interrupted=True,
+            )
+            return False
+        recorded = dict(config.get("budget", {}))
+        recorded["retry_reservations"] = [
+            *recorded.get("retry_reservations", []),
+            {**retry, "question": question.question_key, "attempt": run.attempts},
+        ]
+        updated = db.scalar(
+            update(EvaluationRun)
+            .where(
+                EvaluationRun.id == run.id,
+                EvaluationRun.lock_token == run.lock_token,
+                EvaluationRun.status == "running",
+            )
+            .values(config={**config, "budget": recorded})
+            .returning(EvaluationRun.id)
+        )
+        if updated is None:  # the run changed hands: this worker makes no call
+            db.rollback()
+            budget.release_retry(self.limiter, self.settings, retry)
+            return False
+        logger.warning(
+            "Evaluation run %s retries question %s (attempt %d): additional retry reservation "
+            "of 1 query embedding and %d generation(s)",
+            run.id,
+            question.question_key,
+            run.attempts,
+            retry["generations"],
+        )
+        return True
+
     # --- writes -----------------------------------------------------------------------
 
     def _save(
@@ -420,12 +482,24 @@ class EvaluationWorker:
         status: str,
         message: str | None = None,
         row: EvaluationRun | None = None,
+        interrupted: bool = False,
     ) -> None:
-        """End the run, store its summary, and give back the budget it didn't use."""
+        """End the run, store its summary, and give back the budget it didn't use.
+
+        `interrupted`: the run ends on a question whose earlier attempt never saved. That
+        attempt may have spent the question's slots from the original reservation, so one
+        attempt's worth is held back instead of being given back as unused.
+        """
         row = row or self._owned(db, run, lock=True)
         if row is None:
             db.rollback()
             return
+        modes = len(row.config.get("answer_modes", []))
+        held = {"query_embeddings": int(interrupted), "generation_requests": modes * interrupted}
+        row.config = {
+            **row.config,
+            "budget": {**row.config.get("budget", {}), "held_from_original": held},
+        }
         summary = run_summary(row, run_questions(db, row), run_results(db, row))
         row.summary = summary
         row.status = status
@@ -442,7 +516,8 @@ class EvaluationWorker:
             row.questions_total,
             f": {message}" if message else "",
         )
-        used = summary["gemini_requests"]
+        recorded = summary["gemini_requests"]
+        used = {name: recorded.get(name, 0) + held[name] for name in held}
         budget.give_back_unused(self.limiter, self.settings, reservation, used)
 
 

@@ -29,6 +29,7 @@ from app.db.models import (
     EvaluationRun,
     Source,
 )
+from app.evaluation import budget
 from app.evaluation.dataset import Dataset
 from app.evaluation.metrics import ResultRow, chance_hit_rate, summarize
 from app.evaluation.variants import VARIANTS
@@ -281,4 +282,6 @@ def run_summary(
         for name in ("query_embeddings", "generation_requests"):
             usage[name] += int(r.token_usage.get(name, 0))
     summary["gemini_requests"] = dict(usage)
+    # Budget reserved for retried questions (an upper bound on unrecorded calls; ADR 0014).
+    summary["retry_reservations"] = budget.retry_totals(run.config.get("budget", {}))
     return summary
