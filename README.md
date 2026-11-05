@@ -1,547 +1,190 @@
 # Knowbase AI
 
-A locally runnable document knowledge assistant. Upload PDF, DOCX, TXT, or Markdown files; Knowbase
-indexes them into PostgreSQL + pgvector and answers questions with Gemini (free tier), **grounded in
-your documents, with citations the server has validated**. When the documents don't support an answer,
-it says so instead of guessing. A built-in evaluation measures how well that works.
+## What is Knowbase?
 
-This is a carefully engineered prototype for local use and technical review, **not production
-software** (see [Known limitations](#known-limitations)).
+Knowbase is a document-grounded knowledge assistant. You upload PDF, DOCX, TXT, or Markdown files to
+a private workspace and ask questions about them. It uses retrieval-augmented generation (RAG): it
+finds the relevant passages, asks Gemini to answer only from them, and shows the citations. When the
+documents don't contain enough evidence, it says so instead of guessing.
 
-## The problem
+General chatbots answer fluently whether or not they know. Knowbase requires answers to be traceable
+to your documents, and a built-in evaluation measures how well that works. It is a locally runnable
+prototype for learning and technical review, **not production software**.
 
-Ask a general chatbot about your company's returns policy and it answers fluently, whether or not it
-knows. Knowbase answers only from the documents you uploaded, and every answer must cite the excerpts
-it used. The server checks those citations and refuses to show an answer that cites nothing it was
-given. Unsupported questions get an explicit "not found in your documents".
-
-![Evaluation run: retrieval comparison](docs/screenshots/evaluation-retrieval.png)
-
-More screenshots: [dashboard](docs/screenshots/dashboard.png) ·
-[documents](docs/screenshots/documents.png) ·
-[evaluation runs](docs/screenshots/evaluation-overview.png) ·
-[a full run](docs/screenshots/evaluation-run.png) ·
-[answer metrics](docs/screenshots/evaluation-answers.png) ·
-[one question inspected](docs/screenshots/evaluation-question-q06.png) ·
-[phone width](docs/screenshots/evaluation-run-mobile.png). Taken from the running app with the
-evaluation workspace (account email masked). Chat screenshots were not taken, to avoid Gemini calls
-beyond the approved evaluation run.
-
-## How it works
-
-1. **Ingest** (worker): an upload is stored and queued as a durable job in PostgreSQL. The worker parses
-   it in a killable child process, cleans and chunks it, embeds new chunks with
-   `gemini-embedding-001` (`RETRIEVAL_DOCUMENT`, 768 dims), and publishes the chunks in one transaction.
-2. **Retrieve** (api): the question (plus the previous question for a follow-up) is embedded once
-   (`RETRIEVAL_QUERY`). Vector search (pgvector, cosine) and PostgreSQL full-text search each return
-   10 candidates; hybrid mode fuses them with Reciprocal Rank Fusion (ranks only, k = 60) and keeps the
-   top 5. Full-text ranking is `ts_rank_cd`, **not BM25**.
-3. **Answer**: the excerpts go to `gemini-3.5-flash-lite` as escaped, numbered sources (`[S1]` …),
-   treated as untrusted data, with bounded history.
-4. **Validate**: only citation ids the server assigned survive; invented links are removed. An answer
-   with no valid citation is withheld, and the turn is recorded as an abstention. Gemini failures are
-   errors, never answers or abstentions.
-5. **Evaluate**: a versioned dataset runs through the same retrieval and answer code, comparing
-   retrieval configurations and measuring citations, abstention, and latency.
-
-Every query is scoped to the signed-in user's workspace twice: a fail-closed session guard and explicit
-filters, backed by composite foreign keys.
-
-## Architecture
+## How does it work?
 
 ```mermaid
 flowchart LR
-    B["Browser<br/>Next.js UI"] -->|"REST + HttpOnly cookie"| API["api (FastAPI)<br/>auth · workspace guard · sources<br/>retrieval + RRF · grounded chat · evaluations"]
-    API --> DB[("PostgreSQL 18 + pgvector<br/>chunks: vector(768) HNSW, tsvector GIN<br/>job and evaluation queues")]
-    W["worker<br/>ingestion jobs · evaluation runs"] --> DB
-    API --> UP[("uploads volume")]
-    W --> UP
-    API -->|"query embeddings, answers"| G["Gemini API (free tier)"]
-    W -->|"document embeddings, evaluation answers"| G
+    subgraph ING["Document ingestion (background worker)"]
+        direction LR
+        U["Upload"] --> API1["API: validate and store file"] --> Q["Job queued<br/>in PostgreSQL"] --> W["Worker claims job"] --> P["Parse"] --> C["Clean"] --> K["Chunk"] --> E1["Embed chunks"]
+    end
+
+    subgraph QA["Question answering (API)"]
+        direction LR
+        QU["Question"] --> CX["Add previous question<br/>(follow-ups only)"] --> E2["Embed query"] --> R["Vector search +<br/>full-text search"] --> F["Fuse with RRF"] --> T["Top 5 excerpts"] --> G1["Generate answer"] --> V["Validate citations<br/>or abstain"] --> RS["Response"]
+    end
+
+    DB[("PostgreSQL + pgvector<br/>chunks, vectors, full-text index")]
+    GEM["Gemini API"]
+
+    E1 -->|"store chunks"| DB
+    DB -->|"candidates"| R
+    E1 -.-> GEM
+    E2 -.-> GEM
+    G1 -.-> GEM
 ```
 
-Full diagrams (the whole system, request flow, ingestion, retrieval, chat, evaluation):
+Uploads are processed in the background by a worker. Questions are answered while the user waits,
+and each answer is checked before it is shown. Detailed diagrams:
 [docs/architecture/overview.md](docs/architecture/overview.md).
 
-## Technology
+## Screenshots
 
-Next.js 16 (App Router, TypeScript, Tailwind CSS, shadcn/ui, TanStack Query) · FastAPI (Python 3.12,
-`uv`) · SQLAlchemy 2 + Alembic · PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai`
-(`gemini-3.5-flash-lite` for answers, `gemini-embedding-001` at 768 dims) · Docker Compose. No paid
-services, no Redis or Celery, no orchestration framework: PostgreSQL is the queue, and each RAG stage
-is plain code.
+| Dashboard | Document management |
+|---|---|
+| ![Dashboard: document counts and Gemini status](docs/screenshots/app-dashboard.png) | ![Documents: five indexed files](docs/screenshots/app-documents.png) |
+| **Chat with citations** | **Cited source excerpt** |
+| ![Chat: answers with citations and follow-up questions](docs/screenshots/app-chat-citations.png) | ![The excerpt behind citation S1](docs/screenshots/app-citation-source.png) |
+| **Follow-up questions** | **Evaluation** |
+| ![Chat: follow-ups searched with the previous question](docs/screenshots/app-chat-follow-ups.png) | ![Evaluation: dataset, corpus check, and run options](docs/screenshots/app-evaluation.png) |
 
-## Evaluation results (4 November 2026)
+Screenshots of evaluation results are in [docs/screenshots/](docs/screenshots/).
 
-One live run on a clean workspace holding only the five fictional demo documents (**10 chunks**), with
-26 questions (20 answerable, 6 unanswerable). All numbers come from the run's stored results. Full
-report, per-question findings, and caveats: [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md).
+## Technology Stack
 
-| Retrieval (source level, 20 answerable) | HitRate@5 | Recall@5 | MRR |
-|---|---|---|---|
-| Vector only | 1.00 | 0.975 | 0.917 |
-| Hybrid, keyword AND (production) | 1.00 | 0.975 | 0.917 |
-| Hybrid, keyword OR (experiment) | 1.00 | 1.000 | 1.000 |
-| Hybrid, `english` AND (experiment) | 1.00 | 0.975 | 0.950 |
-| Hybrid, `english` OR (experiment) | 1.00 | 1.000 | 0.975 |
+| Layer | Technologies |
+|---|---|
+| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, shadcn/ui, TanStack Query |
+| Backend | Python 3.12, FastAPI, Pydantic, SQLAlchemy 2.1, Alembic, PyJWT, Argon2 (pwdlib), pypdf, python-docx |
+| Database and vectors | PostgreSQL 18, pgvector 0.8.7 (HNSW index), PostgreSQL full-text search (GIN index) |
+| AI provider | Google Gemini via `google-genai`: `gemini-3.5-flash-lite` (answers), `gemini-embedding-001` at 768 dimensions |
+| Background processing | A worker process and a job queue stored in PostgreSQL (no Redis or Celery) |
+| Tooling | Docker Compose, GitHub Actions, uv, Ruff, mypy, pytest, ESLint, Vitest, Testing Library, Playwright |
 
-| Answers | Vector only | Hybrid |
+## Backend Engineering Concepts
+
+- **REST API with a service layer:** thin, versioned FastAPI routes call services. Errors share one
+  JSON shape with a machine-readable code and never expose exception text or SQL.
+- **Authentication:** Argon2 password hashing; signed JWT sessions in an HttpOnly, SameSite=Lax
+  cookie; logout revokes the token on the server.
+- **Workspace isolation:** the database session is bound to the caller's workspace and fails closed;
+  queries also filter by workspace explicitly, and composite foreign keys stop cross-workspace
+  references. Members have owner, admin, or member roles.
+- **Schema and migrations:** check, unique, and composite-key constraints enforce rules in the
+  database. Alembic migrations are tested, including that they match the SQLAlchemy models.
+- **Durable background jobs:** workers claim job rows with `FOR UPDATE SKIP LOCKED`, renew a lease
+  with a heartbeat, and write with a fencing token, so a stalled worker can't overwrite its
+  successor. A crashed worker's jobs are recovered when its lease expires.
+- **Failure handling:** temporary Gemini errors are retried with exponential backoff; permanent ones
+  (such as a damaged PDF) fail once with a clear message. New chunks replace old ones in one
+  transaction, so a failed re-index keeps the previous version searchable.
+- **Untrusted files:** uploads are checked by type, file signature, and size. Parsing runs in a
+  separate process with time and memory limits, plus page, character, and chunk limits.
+- **Rate limits and budgets:** login and registration limits and daily Gemini budgets are counters
+  in PostgreSQL, reserved before each call and given back when Gemini refuses it.
+- **HTTP security:** CORS allows only the frontend; data-changing requests must send its `Origin`
+  (CSRF protection); trusted-host and request-size checks.
+- **Testing and CI:** unit tests, plus integration tests against real PostgreSQL with pgvector.
+  GitHub Actions runs lint, type checks, migrations, tests, the frontend build, a bundle scan for
+  API-key material, and a secrets check.
+
+## AI and RAG Concepts
+
+- **Chunking:** text is extracted, normalised, and split into overlapping, paragraph-aware chunks
+  (about 1,800 characters). Embeddings are cached by content hash, so unchanged text is never
+  embedded twice.
+- **Task-specific embeddings:** documents use `RETRIEVAL_DOCUMENT` and questions `RETRIEVAL_QUERY`;
+  vectors are validated and normalised to unit length.
+- **Hybrid retrieval:** pgvector cosine search and PostgreSQL full-text search (`ts_rank_cd`,
+  **not BM25**) each return 10 candidates. Reciprocal Rank Fusion combines their ranks, not raw
+  scores (k = 60), and keeps the top 5. Production uses keyword AND with the `simple` configuration;
+  OR matching and the `english` configuration are evaluation experiments only.
+- **Follow-up questions:** a rule-based check (short questions, or words like "it" and "what about")
+  adds the previous question to the search. No LLM classifier, no extra Gemini call.
+- **Citation validation:** excerpts are numbered `[S1]`, `[S2]`, … The server keeps only ids it
+  assigned, removes links not found in an excerpt, and withholds answers without a valid citation.
+  This checks the cited documents, **not each individual claim**.
+- **Abstention:** with no evidence, or when the model finds the excerpts insufficient, the user sees
+  "not found" instead of an answer.
+- **Prompt-injection protection:** excerpts, titles, and history are escaped and declared as data,
+  not instructions. Tests confirm forged citations never survive validation; the model's own
+  behaviour can't be guaranteed.
+- **Provider failures:** Gemini errors and quota refusals are shown as errors, never as answers or
+  abstentions. There is no paid fallback.
+- **Evaluation:** a versioned dataset of 26 questions (20 answerable, 6 unanswerable) runs through the
+  production retrieval and answer code, measuring HitRate@5, Recall@5, MRR, citation precision and
+  recall, abstention accuracy, and latency.
+
+### Evaluation results (one run, 4 November 2026)
+
+Five demo documents (10 chunks); retrieval scored per source on the 20 answerable questions.
+
+| Configuration | Recall@5 | MRR |
 |---|---|---|
-| Abstention accuracy (decided questions) | 1.00 (23) | 1.00 (25) |
-| Citation precision / recall (answered answerable) | 0.97 / 0.97 (17) | 0.975 / 0.975 (20) |
-| Provider errors (Gemini 503/504, not counted as abstentions) | 3 | 1 |
-| End-to-end latency of successful answers, median / p95 | 17.5 / 32.9 s (n = 23) | 15.4 / 43.3 s (n = 25) |
+| Vector only | 0.975 | 0.917 |
+| Hybrid, keyword AND (production) | 0.975 | 0.917 |
+| Hybrid, keyword OR (experiment) | 1.000 | 1.000 |
+| Hybrid, `english` AND (experiment) | 0.975 | 0.950 |
+| Hybrid, `english` OR (experiment) | 1.000 | 0.975 |
 
-What this does and doesn't show:
+- HitRate@5 was 1.00 everywhere, but random ranking already reaches 0.82 on 10 chunks.
+- Production hybrid equalled vector-only: AND matching found no keyword match for 18 of 20 questions.
+  OR helped on 4 questions but also matches stop-words, so the default is unchanged.
+- Abstention accuracy was 1.00 in both answer modes and citation precision about 0.97. Four Gemini
+  503/504 errors were recorded as provider errors, not abstentions.
 
-- **HitRate@5 is saturated:** a random ranking of 10 chunks already reaches 0.82. MRR is the useful
-  signal, and it comes from 4 questions.
-- **Production hybrid added nothing over vector-only here:** the all-words keyword query matched no
-  chunk for 18 of 20 answerable questions. OR matching helped on 4 questions but matches stop-words.
-  The default is unchanged until it is tested on a larger corpus.
-- **Every question that got a decision was decided correctly** in this run (37 answers, 11
-  abstentions). A manual review found no contradictions, but several answers omit details. Citations
-  are checked per document, not per claim.
-- **The two answer modes can't be ranked:** they received identical excerpts here, and Gemini's
-  latency, during a high-demand period, dominates end-to-end time.
-- **Latency counts successful answers only.** The run didn't record timing for its 4 failed attempts.
-  Estimates from the worker log (not measured evaluation results): the two 504s took about 90 s each
-  (the request timeout), and the two 503s about 20 s and 2 s. Runs since the review fix record
-  failed-attempt latency separately.
+Full report: [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md).
 
-## Technical decisions
+## Weaknesses and Limitations
 
-Concise decision records live in [docs/decisions/](docs/decisions/), including:
+- **Small evaluation:** 26 questions, 10 chunks, one run. Answers vary between runs.
+- **Keyword search rarely helps:** production AND matching seldom matches natural questions.
+- **No relevance threshold:** answerable and unanswerable distances overlap, so abstention relies on
+  the model and the citation check.
+- **No claim-level verification:** answers can omit details that citation checks don't catch.
+- **Gemini free tier:** median answer time about 15 s, up to a minute when busy; no streaming. All
+  workspaces share one quota.
+- **Scope:** no OCR (scanned PDFs fail), no URL ingestion, no password reset, MFA, or account deletion.
+- **Operations:** one worker process, fixed-window rate limits, and local HTTP by default.
 
-- the PostgreSQL job queue with fencing tokens and leases ([ADR 0006](docs/decisions/0006-m4-file-ingestion.md), [0010](docs/decisions/0010-m0-m6-audit-remediation.md));
-- file-upload-only scope ([0008](docs/decisions/0008-file-upload-only-scope.md));
-- hybrid retrieval with RRF on ranks, and keeping keyword AND ([0009](docs/decisions/0009-m6-hybrid-retrieval.md));
-- grounded chat, citation validation, and abstention ([0011](docs/decisions/0011-m7-grounded-chat.md));
-- the generation model ([0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md));
-- the minimal frontend ([0013](docs/decisions/0013-m8-frontend-scope.md));
-- the evaluation design ([0014](docs/decisions/0014-m9-evaluation-design.md)).
+## Future Scope
 
-Other documents: [SPEC.md](SPEC.md) (specification), [PROJECT_STATUS.md](PROJECT_STATUS.md)
-(milestones, test results, evidence), [docs/interview/](docs/interview/) (demo script and likely
-questions).
+Possible next steps, not implemented:
 
-## Known limitations
+- A larger evaluation corpus with distractor documents, to test `english` OR matching.
+- A calibrated relevance threshold, and claim-level checks or a labelled model judge.
+- OCR and more document formats.
+- URL ingestion, designed with SSRF protection.
+- Streaming responses.
+- Multiple workers, and a production deployment with HTTPS, monitoring, and account management.
 
-- **Small evaluation:** 26 questions, 10 chunks, one run. The metrics separate configurations only
-  weakly, and answers vary between runs.
-- **Production keyword search rarely matches natural questions** (all-words AND; owner decision,
-  ADR 0009), so hybrid mode mostly behaves like vector search.
-- **No relevance threshold:** nearest-chunk distances of answerable and unanswerable questions overlap,
-  so abstention relies on the model and the citation check.
-- **Citations are checked per answer and per document**, not per claim. The server shows an answer only
-  if it cites at least one excerpt it actually provided; it doesn't verify that each statement is
-  supported by its citation. Answers can omit details.
-- **Latency** is dominated by Gemini's free tier: a chat answer can take 15–60 s when it is busy. There
-  is no streaming.
-- **No OCR**, no URL ingestion, no password reset or MFA, a single worker, fixed-window rate limits, and
-  local HTTP by default. Every workspace shares one free-tier Gemini project and its quota.
-- More in [PROJECT_STATUS.md](PROJECT_STATUS.md#risks-limitations-and-deferred-work).
+## Getting Started
 
-## Prerequisites
-
-- Docker Desktop (or Docker Engine) with Compose v2+
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/). Do
-  **not** enable billing. Free-tier content may be used by Google to improve
-  its products, so use only synthetic or public data. The stack starts
-  without a key.
-
-## Run the local stack
-
-This was checked from a fresh clone (4 November 2026): the steps below, with only the secrets set and
-no Gemini key, start every service healthy and pass the backend tests in the container.
+**Prerequisites:** Docker with Compose v2, and a Gemini API key from
+[Google AI Studio](https://aistudio.google.com/) (optional: the app starts without one, but AI
+features are unavailable). Don't enable billing, and use synthetic or public documents: free-tier
+content may be used by Google.
 
 ```bash
-# 1. Create your local configuration (git-ignored)
 cp .env.example .env
-#    Replace APP_SECRET_KEY and JWT_SECRET with random values (required:
-#    the backend refuses the placeholder and anything under 32 characters):
-#    python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-#    Optionally set GEMINI_API_KEY (backend only).
+# Set APP_SECRET_KEY and JWT_SECRET to random values of at least 32 characters:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+# Optionally set GEMINI_API_KEY (backend only).
 
-# 2. Build and start db, migrate, api, worker, and frontend
 docker compose up --build -d
-
-# 3. Check the services: api and db "healthy", migrate "Exited (0)", worker "Up"
-docker compose ps -a
-
-# 4. Open the app (use localhost, not 127.0.0.1: it must match FRONTEND_ORIGIN)
-open http://localhost:3000
-
-#    Health endpoints and API docs
-curl http://localhost:8000/health   # {"status":"ok"}
-curl http://localhost:8000/ready    # database + pgvector extension status
-open http://localhost:8000/docs
-
-# 5. Inspect the pgvector extension
-docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "SELECT extversion FROM pg_extension WHERE extname = '\''vector'\''"'
-
-# 6. Follow worker logs
-docker compose logs -f worker
-
-# 7. Run backend tests inside the api container
-docker compose exec api pytest -q
-
-# 8. Stop containers but keep data
-docker compose down
+docker compose ps -a        # api and db healthy, migrate exited (0), worker up
 ```
 
-> **Warning:** `docker compose down -v` **deletes** the database and
-> uploaded-file volumes. Only use it when you want a clean slate.
+Open **http://localhost:3000** (`localhost`, not `127.0.0.1`), register, and upload the files in
+[sample_data/demo_store/](sample_data/demo_store/). API docs: http://localhost:8000/docs.
 
-If port 8000 is already in use on your machine, set `API_HOST_PORT` in `.env`
-(for example `8001`) and use that port in the URLs above. Then set
-`NEXT_PUBLIC_API_BASE_URL` to the same port (`http://localhost:8001/api/v1`)
-and rebuild the frontend (`docker compose up --build -d frontend`): the URL is
-built into the browser bundle. The database publishes no host port. Use
-`docker compose exec db psql ...` to reach it.
+`docker compose down` keeps your data; `docker compose down -v` **deletes** the database and uploads.
 
-## Web interface
+## Further Documentation
 
-The frontend (`frontend/`, [ADR 0013](docs/decisions/0013-m8-frontend-scope.md))
-is a small Next.js app that demonstrates the backend. The browser calls the API
-directly with the HttpOnly session cookie; the frontend container receives no
-`.env` and holds no secrets.
-
-To work on it outside Docker (with the backend running in Compose):
-
-```bash
-cd frontend
-cp .env.example .env.local   # NEXT_PUBLIC_* settings only; never a secret
-npm ci
-npm run dev                  # http://localhost:3000
-npm run lint && npm run typecheck && npm test && npm run build && npm run check:bundle
-```
-
-Stop the Compose `frontend` container first (`docker compose stop frontend`),
-since both use port 3000.
-
-### Acceptance test (browser, live stack)
-
-One Playwright test walks the whole flow against the running app: register,
-upload the five Northstar documents, wait until they are Ready, ask the laptop
-question, open its citation, ask a follow-up, ask an unrelated question and see
-the abstention, then log out. It also checks every API response for Gemini key
-material and the pages at 390 px.
-
-```bash
-cd frontend
-npx playwright install chromium   # once
-npm run e2e                       # http://localhost:3000; set E2E_BASE_URL to change
-```
-
-It needs the full stack with a Gemini key and uses about 3 answer requests and
-10 document embeddings per run, so it is not part of CI. Each run creates an
-`m8-e2e-…@example.com` account; the app has no account deletion, so remove it
-afterwards (delete its documents in the UI, then remove the user and workspace
-in the database).
-
-## Upload the demo corpus, chat, and run an evaluation
-
-1. Open http://localhost:3000, register (each account gets its own workspace), and go to
-   **Documents**.
-2. Upload the five files in [`sample_data/demo_store/`](sample_data/demo_store/) unchanged, and wait
-   until each shows **Ready**.
-3. **Chat:** ask "I bought a laptop 20 days ago. Can I return it?", then open the `S1` citation to see
-   the excerpt. Ask "What if the packaging is damaged?" (a follow-up), then something the documents
-   don't cover, to see the abstention.
-4. **Evaluation:** the page shows whether the workspace holds the demo documents, and how many Gemini
-   requests a run will reserve: 26 query embeddings, plus 26 answers per answer mode. Start a run. The
-   worker evaluates one question at a time (about 20–25 minutes for both answer modes on the free
-   tier), and the page shows progress. Open the run to compare retrieval configurations and to inspect
-   each question's retrieved documents, answer, citations, and decision.
-
-For reproducible numbers, use a workspace that holds only the five demo files. Other documents are
-searched too, and the run records them. Daily limits: `DAILY_EVALUATION_RUN_LIMIT` (per workspace),
-`DAILY_EVALUATION_GENERATION_LIMIT`, and `DAILY_QUERY_EMBEDDING_LIMIT`. A Gemini quota or rate-limit
-refusal stops a run and keeps its partial results.
-
-## Try authentication and workspace isolation (curl)
-
-The session is an HttpOnly cookie, so each user needs their own cookie jar.
-Requests that change data must send the frontend's `Origin` (the CSRF check).
-
-```bash
-API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
-O='Origin: http://localhost:3000'; J='Content-Type: application/json'
-
-# Two users, each with their own workspace
-curl -s -c alice.jar -H "$O" -H "$J" -X POST $API/auth/register \
-  -d '{"email":"alice@example.com","password":"alice-password-123","workspace_name":"Alice Co"}'
-curl -s -c bob.jar -H "$O" -H "$J" -X POST $API/auth/register \
-  -d '{"email":"bob@example.com","password":"bob-password-1234","workspace_name":"Bob Ltd"}'
-
-curl -s -b alice.jar $API/auth/me                # Alice's user + workspace
-BOB_WS=$(curl -s -b bob.jar $API/auth/me | python3 -c 'import json,sys;print(json.load(sys.stdin)["workspace"]["id"])')
-curl -s -b alice.jar $API/workspaces/$BOB_WS     # 404: Alice can't see Bob's workspace
-curl -s -b alice.jar -H "$O" -H "$J" -X PATCH $API/workspaces/$BOB_WS -d '{"name":"x"}'  # 404
-curl -s -b alice.jar -H 'Origin: http://localhost:5173' -H "$J" -X POST $API/auth/logout  # 403 CSRF
-curl -s -b alice.jar -c alice.jar -H "$O" -X POST $API/auth/logout -o /dev/null -w '%{http_code}\n'  # 204
-```
-
-Interactive docs at `/docs` work too: log in with `POST /api/v1/auth/login`,
-and the browser keeps the cookie for later calls.
-
-## Upload and index documents (curl)
-
-Sign in first (the curl block above writes `alice.jar`). Uploads return at
-once (`202`); the worker then parses, chunks, embeds, and stores them.
-
-```bash
-API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
-O='Origin: http://localhost:3000'
-
-# 1. Upload (PDF, DOCX, TXT, or .md; up to MAX_UPLOAD_MB)
-curl -s -b alice.jar -H "$O" -F "file=@returns-policy.pdf" $API/sources/files
-#    -> {"source": {"id": ..., "status": "pending"}, "job": {"id": ..., "status": "queued"}, "unchanged": false}
-
-# 2. Watch the job: queued -> running -> succeeded (or failed, with last_error)
-curl -s -b alice.jar $API/jobs/<job-id>
-#    result: {"outcome": "indexed", "chunks": N, "embedded_texts": N, "embedding_requests": ...}
-
-# 3. Source detail: document title, metadata (page_count, chunker, embedding model), chunk count
-curl -s -b alice.jar $API/sources/<source-id>
-curl -s -b alice.jar $API/sources                # all sources in your workspace
-
-# 4. A stored vector: 768 dimensions, unit length
-docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "SELECT d.title, c.chunk_index, vector_dims(c.embedding) AS dims,
-          round(vector_norm(c.embedding)::numeric, 6) AS norm, c.metadata->>'\''page_start'\'' AS page
-   FROM chunks c JOIN documents d ON d.id = c.document_id ORDER BY 1, 2"'
-
-# 5. Same file again: 200, "unchanged": true, no job, no Gemini calls
-curl -s -b alice.jar -H "$O" -F "file=@returns-policy.pdf" $API/sources/files
-
-# 6. Re-index: runs the pipeline, finds the content unchanged, embeds nothing
-curl -s -b alice.jar -H "$O" -X POST $API/sources/<source-id>/reindex
-
-# 7. Delete (owner/admin): removes chunks, cached vectors, and the file; then 404
-curl -s -b alice.jar -H "$O" -X DELETE $API/sources/<source-id>
-```
-
-What goes wrong, and how it shows:
-- **Unsupported type or fake content:** `415` / `422` immediately. Nothing is stored.
-- **Damaged, scanned (no text), or password-protected PDF:** the job fails once
-  with a clear `last_error`. It isn't retried, and no OCR is attempted.
-- **Too big to index:** more than `MAX_PDF_PAGES` (500) pages, `MAX_DOCUMENT_CHARS`
-  (2,000,000) characters of text, or `MAX_DOCUMENT_CHUNKS` (1,500) chunks. These
-  are checked while parsing, so a small file that expands hugely stops early.
-  The job fails once, naming the setting.
-- **A document that hangs or exhausts the parser:** parsing runs in a separate
-  process. It is stopped after `PARSE_TIMEOUT_SECONDS` (120) or at
-  `PARSE_MEMORY_LIMIT_MB` (1536, Linux), and no job runs longer than
-  `JOB_MAX_RUNTIME_SECONDS` (900).
-- **Gemini busy:** the job retries with backoff (shown in `last_error`). A
-  per-minute rate limit waits without using an attempt. Gemini's daily quota
-  waits until 08:05 UTC, after the midnight-Pacific reset.
-- **Daily limit reached** (`DAILY_EMBEDDING_TEXT_LIMIT`, 300 texts per UTC day,
-  all workspaces): the job waits until 00:00 UTC. Finished batches are kept,
-  and cached or unchanged text never counts.
-- **A failed new version never removes the old one:** the source shows
-  `failed` with "The previously indexed version is still available."
-
-Crash recovery, by hand:
-
-```bash
-docker compose stop worker      # upload a file now: the job stays queued
-docker compose start worker     # it is picked up; jobs left 'running' by a dead
-                                # worker are recovered once their 120 s lease lapses
-docker compose logs -f worker   # ids, counts, and timings only, never document text
-```
-
-## Search your documents (curl)
-
-Retrieval can be inspected on its own. Upload the fictional demo
-documents in [`sample_data/demo_store/`](sample_data/README.md), then search.
-Each search makes one Gemini request, to embed the query. Searches are limited
-per workspace per day (`DAILY_RETRIEVAL_REQUEST_LIMIT`, 100), and in total for
-the installation (`DAILY_QUERY_EMBEDDING_LIMIT`, 500). A search spends nothing
-without a key, in an empty workspace, or when Gemini refuses the request.
-
-```bash
-API=http://localhost:8000/api/v1                 # or your API_HOST_PORT
-O='Origin: http://localhost:3000'; J='Content-Type: application/json'
-
-# 1. Index the demo corpus (wait for each job to succeed)
-for f in sample_data/demo_store/*.md; do curl -s -b alice.jar -H "$O" -F "file=@$f" $API/sources/files; echo; done
-
-# 2. Hybrid (vector + full-text, fused with RRF) or vector-only
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
-  -d '{"query": "Can I return a laptop after 20 days?", "mode": "hybrid"}'
-#    -> results[]: rank, score (RRF), vector_rank/vector_distance, lexical_rank/lexical_score,
-#       filename, document_title, heading, page_start, content; plus trace_id and latency_ms
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
-  -d '{"query": "What is NorthCare Plus?", "mode": "vector"}'
-
-# 3. A follow-up borrows the previous question (no extra Gemini call)
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/retrieval/search \
-  -d '{"query": "And the warranty?", "previous_question": "How long do I have to return a Trailblazer 14 laptop?"}'
-#    -> "contextualized": true, "retrieval_query": "How long ... laptop? And the warranty?"
-
-# 4. The stored trace: every candidate's rank and raw score, the fused scores, timing
-curl -s -b alice.jar $API/retrieval/traces/<trace-id>
-```
-
-Lexical scores come from PostgreSQL `ts_rank_cd`, which is not BM25. Fusion uses
-ranks only (`1/(60 + rank)` per list), never the raw scores. Details:
-[ADR 0009](docs/decisions/0009-m6-hybrid-retrieval.md).
-
-## Chat with your documents (curl)
-
-Each question retrieves fresh evidence (as in search), then asks Gemini for an
-answer that may only use the numbered excerpts `[S1]`, `[S2]`, ... It makes two
-Gemini requests: one query embedding and one answer. Only answers that cite
-at least one excerpt they were given are shown. Otherwise the reply is
-"I couldn't find enough information in this knowledge base to answer that.",
-with a reason. Questions are limited per user per day (`DAILY_CHAT_REQUEST_LIMIT`, 30).
-
-```bash
-# 1. A conversation (the first question becomes its title)
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations -d '{}'
-#    -> {"id": "<conversation-id>", "title": "New conversation", ...}
-
-# 2. A policy question: an answer with validated citations
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
-  -d '{"content": "Can I return a laptop after 20 days?"}'
-#    -> 201: assistant_message.outcome "answered", content with [S1], and
-#       citations[]: id, filename, page_start, excerpt, source_id, chunk_id
-
-# 3. Open a citation's source
-curl -s -b alice.jar $API/sources/<source-id>
-
-# 4. A follow-up (retrieves with the previous question too)
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
-  -d '{"content": "And the warranty?"}'
-
-# 5. An unsupported question: outcome "abstained", abstain_reason "model_insufficient"
-#    ("no_evidence" when nothing is indexed; "no_valid_citation" when the model cited nothing valid)
-curl -s -b alice.jar -H "$O" -H "$J" -X POST $API/conversations/<conversation-id>/messages \
-  -d '{"content": "Who is the CEO of Northstar Outfitters?"}'
-
-# 6. The persisted conversation, and the trace behind an answer
-curl -s -b alice.jar $API/conversations/<conversation-id>
-curl -s -b alice.jar $API/retrieval/traces/<assistant_message.metadata.trace_id>
-```
-
-When Gemini is unavailable or out of quota, a question gets an error response,
-never an answer or an abstention: 429 `ai_quota`, 503 `ai_unavailable`, or 502
-`ai_incomplete`. Nothing is saved. To check that uploaded documents are treated
-as data, upload the prompt-injection documents in
-[`backend/tests/fixtures/prompt_injection/`](backend/tests/fixtures/prompt_injection/README.md)
-and ask "How much does gift wrapping cost?". Details:
-[ADR 0011](docs/decisions/0011-m7-grounded-chat.md).
-
-## Gemini (AI provider)
-
-The backend talks to Gemini only through `app/providers`:
-
-- **Generation** uses `GEMINI_CHAT_MODEL` (default `gemini-3.5-flash-lite`,
-  [ADR 0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md)) with
-  `GEMINI_THINKING_LEVEL` (default `low`) and `GEMINI_MAX_OUTPUT_TOKENS`, which
-  includes thinking tokens. An
-  answer counts only if Gemini finishes with `STOP` and returns text. Anything
-  else (`MAX_TOKENS`, `SAFETY`, an empty reply) is reported as incomplete,
-  never shown as a partial answer.
-- **Embeddings** use `gemini-embedding-001` at 768 dimensions. Documents use
-  task type `RETRIEVAL_DOCUMENT` and questions use `RETRIEVAL_QUERY`: the
-  model embeds them asymmetrically, so a question lands near the passage
-  that answers it.
-  - Each input gets its own vector. Every vector is checked (exactly 768
-    finite, non-zero values) and **normalised to length 1**. At 768
-    dimensions Gemini's raw vectors are not unit length (about 0.59), and
-    unit vectors make cosine similarity a simple dot product.
-- **Retries** apply only to temporary problems: per-minute rate limits (429),
-  500/502/503, and connection failures, with exponential backoff and jitter.
-  - Embeddings retry up to `GEMINI_MAX_RETRIES` times (default 3).
-  - Answer generation retries up to `GEMINI_GENERATION_MAX_RETRIES` times
-    (default 0: one attempt per question). A failed attempt is reported as an
-    error and the question can be asked again; on the free tier, a failed
-    attempt can still count toward the daily quota.
-  - An exhausted daily quota fails at once with a clear message; it resets
-    at midnight Pacific.
-  - A request that misses its deadline (504) is not retried; raise
-    `GEMINI_REQUEST_TIMEOUT_SECONDS` (default 90) instead.
-  - No retry starts after `GEMINI_CALL_DEADLINE_SECONDS` (120), so one call
-    lasts at most that plus one request timeout.
-  - Invalid requests are never retried, and **nothing ever falls back to
-    another model, a paid tier, or Vertex AI.**
-- The key is read only from the backend `.env`. It never appears in
-  responses or logs; log output masks it even inside tracebacks.
-
-Check the configuration (signed in; this does not call Gemini):
-
-```bash
-curl -s -b alice.jar http://localhost:8000/api/v1/ai/status
-# {"status":"configured" | "missing_key" | "quota_error", "chat_model": ..., "paid_fallback": false, ...}
-```
-
-Run the **minimal live smoke test**. It makes 3 requests (one generation, one
-document embedding of two texts, one query embedding) and prints measurements
-only, never the key, the vectors, or the generated text:
-
-```bash
-docker compose exec api python -m app.providers.smoke
-# Exit codes: 0 pass, 1 response/implementation problem, 2 no key,
-#             3 rate limit or daily quota, 4 Gemini slow or unavailable,
-#             5 key, model, or project rejected
-```
-
-Temporary 503s can add a few bounded retries; the attempt count is printed.
-
-**Confirm no billing is involved:**
-1. In [Google AI Studio](https://aistudio.google.com/), the key's project
-   should show the **Free** tier. Google requires you to set up billing
-   explicitly before a project can move to a paid tier.
-2. Don't link a billing account.
-3. The app only calls the Gemini Developer API with your AI Studio key
-   (`vertexai=False`). It uses no paid features: no Vertex AI, no batch API,
-   no grounding, and no File Search.
-
-Run the **mocked provider tests** (no network, no key needed):
-
-```bash
-docker compose exec api pytest -q tests/unit -k "gemini or provider or mock or redaction"
-```
-
-## Backend development without Docker (optional)
-
-Requires [`uv`](https://docs.astral.sh/uv/) (`brew install uv`).
-
-```bash
-cd backend
-uv sync --locked
-uv run ruff check . && uv run ruff format --check . && uv run mypy
-uv run pytest -m "not integration"   # unit tests; no database needed
-```
-
-Integration tests need a reachable database in `DATABASE_URL`. The simplest
-way to run them is in the container (step 7). CI runs the full suite
-against a pgvector service container.
-
-## Milestone 0 preflight tools
-
-```bash
-# Repository hygiene: fails if secrets, session tokens, cookie jars (*.jar), or
-# local data are tracked or staged (it reads the git index, archives included)
-bash scripts/check_repo_hygiene.sh
-
-# Live Gemini smoke test (needs GEMINI_API_KEY in .env; makes 5 API requests)
-python3.12 -m venv .venv-preflight
-.venv-preflight/bin/pip install -r scripts/preflight/requirements.txt
-.venv-preflight/bin/python scripts/preflight/gemini_smoke.py
-```
-
-## Security notes
-
-- `.env` is git-ignored. Only `.env.example` (no real values) is committed.
-- The Gemini key is backend-only and never goes in a `NEXT_PUBLIC_*` variable. `npm run check:bundle`
-  scans the build for the variable's name and for legacy `AIza…`-shaped keys. It checks for the exact
-  configured key only when `GEMINI_API_KEY` is set where it runs (not inside the Docker build). Run it
-  locally with the key set to cover newer key formats.
-- The database has no host port and no internet route. The API binds to
-  `127.0.0.1` only.
+- [Architecture overview](docs/architecture/overview.md)
+- [Architecture Decision Records](docs/decisions/)
+- [Evaluation report](docs/evaluation/results-2026-11-04.md) and [raw export](docs/evaluation/run-2026-11-04.json)
+- [Demo script](docs/interview/demo-script.md) and [technical Q&A](docs/interview/questions.md)
+- [Demo corpus](sample_data/README.md) and [prompt-injection test documents](backend/tests/fixtures/prompt_injection/README.md)
