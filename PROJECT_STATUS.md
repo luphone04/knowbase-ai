@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 IN_PROGRESS** (started 2026-11-04): all work done and pushed, including the approved live evaluation; **waiting only for the GitHub Actions result of the final commit** before READY_FOR_REVIEW. M8 approved by the owner on 2026-11-04 |
+| Status | **M9 READY_FOR_REVIEW** (2026-11-05): all work pushed, including the approved live evaluation; GitHub Actions run #60 on `6932ad2` green (all four jobs, verified by the owner). Waiting for the owner's final review and approval. Not approved; no release tag |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -23,7 +23,7 @@
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
 | M8 | Frontend product experience (minimal; ADR 0013) | APPROVED | `a8c83a4` (see Commits) | Owner accepted M8 and authorised M9, 2026-11-04 |
-| M9 | Evaluation, hardening, and portfolio finish | IN_PROGRESS | see Commits | — |
+| M9 | Evaluation, hardening, and portfolio finish | READY_FOR_REVIEW | `6932ad2` (see Commits) | — |
 
 ## M9 plan and checklist (SPEC.md §17.14, design in ADR 0014)
 
@@ -43,7 +43,7 @@ the estimated Gemini usage.
 | 5 | Evaluation page | Done: `/evaluations` (dataset, corpus readiness, request estimate, runs) and `/evaluations/{id}` (status and progress, retrieval comparison with the chance baseline, answer evaluation with confusion matrices, per-question inspection). 49 frontend tests (14 new component tests with React Testing Library). Browser check against the live API in a temporary account (removed): the missing-documents state, the estimate, the disabled button, an unknown run's 404, and no horizontal scroll at 390 px after a navigation fix |
 | 6 | Hardening review and fixes | Done: 413 and 500 responses now carry CORS headers (ADR 0010 deferred item; regression tests fail on the old order); `no-new-privileges` for api, worker, migrate, and frontend; Origin check test for evaluation runs. Migration 0010 applied to the dev database after a backup; fingerprints identical (see "Dev database migration (0009 → 0010)") |
 | 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | Done: owner approved Option C, one run, a clean workspace, and a CI gate (run #58 on `c1ee063`, reported green by the owner). Before the run, a rate limit was made to stop the run like the daily quota (owner decision; `eeb178b`, with a regression test) |
-| 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Done except READY_FOR_REVIEW (waiting for CI on the final commit): see "M9 live evaluation", "M9 acceptance checklist", and [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md) |
+| 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Done (READY_FOR_REVIEW after CI run #60 on `6932ad2` was reported green by the owner): see "M9 live evaluation", "M9 acceptance checklist", and [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md) |
 
 ### M9 live evaluation (2026-11-04, owner-approved Option C, one run)
 
@@ -147,8 +147,9 @@ The estimate presented before the run (the run used exactly this).
 - [x] **README and architecture documentation are accurate:** the system diagram and the evaluation
   section were checked against the code.
 - [x] **The interview demonstration script is prepared:** `docs/interview/`.
-- [ ] **GitHub Actions passes for the final pushed commit:** waiting for the owner's report (no `gh`;
-  credentials not used).
+- [x] **GitHub Actions passes for the final pushed commit:** run #60 on `6932ad2`, all four jobs green
+  (verified by the owner, 2026-11-05; `gh` not installed and credentials not used). This status-only
+  commit's own CI run is for the owner to confirm.
 - [x] **Known limitations are honestly documented:** README, results report, and this file.
 - Not done, by decision: **no demo video** was recorded (SPEC.md §17.14 item), and **no release tag**.
 
@@ -599,7 +600,8 @@ up to `2b8513e`.
 | M9 | `1f16b7b` | fix(frontend): keep the four navigation links in one row at phone width |
 | M9 | `c1ee063` | docs: record M9 progress and the live evaluation estimate (CI run #58: green, reported by the owner) |
 | M9 | `eeb178b` | fix(evaluation): stop a run on a Gemini rate limit, as on the daily quota |
-| M9 | see `git log` | docs: record the M9 live evaluation, results, README, architecture, interview material, and fresh-checkout check |
+| M9 | `6932ad2` | docs: record the M9 live evaluation, results, README, architecture, interview material, and fresh-checkout check (CI run #60: green, verified by the owner) |
+| M9 | see `git log` | docs: mark M9 READY_FOR_REVIEW (status only) |
 
 ## Blockers
 
