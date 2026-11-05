@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 IN_PROGRESS — review fixes** (2026-11-05): an independent review's confirmed findings are fixed and pushed (see "M9 review fixes"). READY_FOR_REVIEW again only after GitHub Actions for the final commit is confirmed green. Not approved; no release tag |
+| Status | **M9 READY_FOR_REVIEW** (2026-11-05): the independent review's confirmed findings are fixed (see "M9 review fixes"); GitHub Actions green for `db7a2ce` (run #64, verified by the owner) and for `2f99f91` (all four jobs, reported by the owner). Waiting for the owner's final review. Not approved; no release tag |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -23,7 +23,7 @@
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
 | M8 | Frontend product experience (minimal; ADR 0013) | APPROVED | `a8c83a4` (see Commits) | Owner accepted M8 and authorised M9, 2026-11-04 |
-| M9 | Evaluation, hardening, and portfolio finish | IN_PROGRESS (review fixes) | see Commits | — |
+| M9 | Evaluation, hardening, and portfolio finish | READY_FOR_REVIEW | `2f99f91` (see Commits) | — |
 
 ## M9 plan and checklist (SPEC.md §17.14, design in ADR 0014)
 
@@ -147,13 +147,16 @@ The estimate presented before the run (the run used exactly this).
 - [x] **README and architecture documentation are accurate:** the system diagram and the evaluation
   section were checked against the code.
 - [x] **The interview demonstration script is prepared:** `docs/interview/`.
-- [ ] **GitHub Actions passes for the final pushed commit:** pending for the review-fix commits.
-  Verified so far (none checked from this machine: no `gh`, credentials not used):
+- [x] **GitHub Actions passes for the final pushed commit:** green for `2f99f91`. Verified results
+  (none checked from this machine: no `gh`, credentials not used):
   - run #58 on `c1ee063`: green, reported by the owner;
   - run #60 on `6932ad2`: green, verified by the owner;
-  - run #61 on `69a5f3e`: green, verified by ChatGPT (reported by the owner).
+  - run #61 on `69a5f3e`: green, verified by ChatGPT (reported by the owner);
+  - run #64 on `db7a2ce`: green, all four jobs, verified by the owner;
+  - the run on `2f99f91`: green, all four jobs, reported by the owner (run number not recorded).
 
-  No other commit's CI result has been checked.
+  No other commit's CI result has been checked, including this status-only commit's own run (for the
+  owner to confirm).
 - [x] **Known limitations are honestly documented:** README, results report, and this file.
 - Not done, by decision: **no demo video** was recorded (SPEC.md §17.14 item), and **no release tag**.
 
@@ -224,7 +227,7 @@ checked in the browser.
 3. Review the README, the architecture diagram, and `docs/interview/`.
 4. Decide whether to test `english` OR keyword matching on a larger corpus (production unchanged until
    then).
-5. Confirm the GitHub Actions run for the final commit (after the review fixes) is green.
+5. Confirm the GitHub Actions run for this status-only commit is green.
 6. Optional: from a clean clone, follow the README with your own `.env`.
 
 ### M8 closeout (verified 2026-11-04)
@@ -666,7 +669,9 @@ up to `2b8513e`.
 | M9 | `69a5f3e` | docs: mark M9 READY_FOR_REVIEW (status only) (CI run #61: green, verified by ChatGPT) |
 | M9 | `e3aa313` | fix(evaluation): reserve budget for retried questions so the counters never under-count Gemini calls |
 | M9 | `60f7d64` | fix(evaluation): report failed-attempt latency separately from successful answers |
-| M9 | see `git log` | docs: correct the M9 documentation after the independent review |
+| M9 | `db7a2ce` | docs: correct the M9 documentation after the independent review (CI run #64: green, verified by the owner) |
+| M9 | `2f99f91` | docs: describe when a retry reservation is given back precisely; rename its test (CI green, reported by the owner) |
+| M9 | see `git log` | docs: mark M9 READY_FOR_REVIEW after the review fixes (status only) |
 
 ## Blockers
 
