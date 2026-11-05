@@ -180,8 +180,10 @@ with one ordering correction (terminal checks before any retry reservation).
   recorded on the run (`config.budget.retry_reservations`) and never given back.
 - If the reservation fails, the run stops with its completed results and makes no call.
 - When a run ends on a question that never saved, one attempt's worth of the original reservation is
-  held back (`held_from_original`) instead of being returned as unused. If the run changes hands
-  between the reservation and the first call, the reservation is given back.
+  held back (`held_from_original`) instead of being returned as unused. If ownership of the run is
+  lost after the retry reservation is taken but before it is recorded on the run (the fenced update
+  fails), this worker makes no call and gives the reservation back. Once recorded, it is kept, even if
+  ownership is lost before the first provider call.
 - **Effect:** the counters can over-count (an interrupted attempt that stopped before calling Gemini)
   but never under-count. The daily limits stay enforced by the same atomic reservations. The summary
   reports `retry_reservations`, and the page shows them when a run has any.

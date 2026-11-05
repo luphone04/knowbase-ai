@@ -861,10 +861,15 @@ def test_a_terminal_claim_after_an_interrupted_attempt_reserves_nothing(
     assert counted() == actual_calls(evaluator) == (1, 1)
 
 
-def test_a_retry_lost_before_calling_gives_its_reservation_back(
+def test_a_retry_reservation_is_given_back_when_ownership_is_lost_before_it_is_recorded(
     tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The run changes hands between the retry reservation and the first call."""
+    """Ownership is lost before the retry reservation is recorded on the run.
+
+    The reservation is taken, then the fenced update that records it finds another lock token, so
+    this worker makes no provider call and releases the reservation. (A reservation already recorded
+    is kept, even if ownership is lost before the first call.)
+    """
     seed_demo_corpus(tenant_a.workspace_id)
     run = start(tenant_a, answer_modes=["hybrid"])
     assert evaluator.worker.claim() is not None

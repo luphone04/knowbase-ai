@@ -126,7 +126,9 @@ and each result's `details` JSON):
   (a worker crash or a lost lease) may repeat Gemini calls the interrupted attempt already made, and
   the summary counts only saved results.
   - A retry now takes an **additional retry reservation**: one query embedding and one generation per
-    answer mode, all or nothing, in the current UTC day, taken before any call. It is never given back.
+    answer mode, all or nothing, in the current UTC day, taken before any call. Once recorded on the
+    run, it is never given back. The one exception is when ownership of the run is lost before the
+    reservation is recorded: that worker makes no call and releases it.
     If it can't be taken, the run stops with its completed results and makes no call.
   - Terminal claims (attempt limit, corpus change) reserve nothing. When a run ends on a question that
     never saved, one attempt's worth of the original reservation is held back instead of returned.
