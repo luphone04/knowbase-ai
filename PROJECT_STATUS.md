@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 READY_FOR_REVIEW** (2026-11-05): the independent review's confirmed findings are fixed (see "M9 review fixes"); GitHub Actions green for `db7a2ce` (run #64, verified by the owner) and for `2f99f91` (all four jobs, reported by the owner). Waiting for the owner's final review. Not approved; no release tag |
+| Status | **M9 APPROVED** (2026-11-05): final review and closeout completed at the owner's explicit request. The committed evaluation export, source documents, results report, implementation, tests, README, architecture, and interview materials were reviewed. The local browser session was not independently accessed in this review. GitHub Actions run #66 for the final pre-approval commit `3d8c35d` passed all four jobs. No release tag |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M9 live evaluation succeeded, 26/26; fresh-checkout check passed; backend 831 passed, 1 skipped; frontend 49 passed; original data identical to the pre-M9 snapshot) |
+| Last verified checkpoint | 2026-11-05 (M9 approved after delegated final review; live evaluation 26/26; fresh-checkout evidence retained; review-fix tests: backend 844 passed, 1 skipped; frontend 54 passed; pre-approval CI #66 green; no release tag) |
 
 ## Milestones
 
@@ -23,7 +23,7 @@
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
 | M8 | Frontend product experience (minimal; ADR 0013) | APPROVED | `a8c83a4` (see Commits) | Owner accepted M8 and authorised M9, 2026-11-04 |
-| M9 | Evaluation, hardening, and portfolio finish | READY_FOR_REVIEW | `2f99f91` (see Commits) | — |
+| M9 | Evaluation, hardening, and portfolio finish | **APPROVED** | `3d8c35d` (final reviewed implementation; approval recorded in closeout commit) | Owner explicitly delegated final review and approval to ChatGPT, 2026-11-05 |
 
 ## M9 plan and checklist (SPEC.md §17.14, design in ADR 0014)
 
@@ -147,16 +147,16 @@ The estimate presented before the run (the run used exactly this).
 - [x] **README and architecture documentation are accurate:** the system diagram and the evaluation
   section were checked against the code.
 - [x] **The interview demonstration script is prepared:** `docs/interview/`.
-- [x] **GitHub Actions passes for the final pushed commit:** green for `2f99f91`. Verified results
-  (none checked from this machine: no `gh`, credentials not used):
+- [x] **GitHub Actions passes for the final pre-approval commit:** run #66 on `3d8c35d` is green;
+  all four jobs were independently verified by ChatGPT. Verified history:
   - run #58 on `c1ee063`: green, reported by the owner;
-  - run #60 on `6932ad2`: green, verified by the owner;
-  - run #61 on `69a5f3e`: green, verified by ChatGPT (reported by the owner);
-  - run #64 on `db7a2ce`: green, all four jobs, verified by the owner;
-  - the run on `2f99f91`: green, all four jobs, reported by the owner (run number not recorded).
+  - run #60 on `6932ad2`: green, verified by ChatGPT;
+  - run #61 on `69a5f3e`: green, verified by ChatGPT;
+  - run #64 on `db7a2ce`: green, all four jobs, verified by ChatGPT;
+  - run #65 on `2f99f91`: green, all four jobs, verified by ChatGPT;
+  - run #66 on `3d8c35d`: green, all four jobs, verified by ChatGPT.
 
-  No other commit's CI result has been checked, including this status-only commit's own run (for the
-  owner to confirm).
+  M8-era commits remain unverified. No additional live Gemini evaluation was run for closeout.
 - [x] **Known limitations are honestly documented:** README, results report, and this file.
 - Not done, by decision: **no demo video** was recorded (SPEC.md §17.14 item), and **no release tag**.
 
@@ -217,18 +217,35 @@ with one ordering correction (terminal checks before any retry reservation).
 **Deployed locally** (api, worker, frontend rebuilt; no migration ran). The 4 November run's page was
 checked in the browser.
 
-### M9 manual review steps (owner)
+### M9 final review (delegated by owner, 2026-11-05)
 
-1. Sign in as the evaluation account (credentials in the conversation) at http://localhost:3000, open
-   **Evaluation**, then the 4 November run: check the retrieval table, the answer tables, and a few
-   questions (q06, q15, q17, u02).
-2. Read [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md) against what the
-   page shows.
-3. Review the README, the architecture diagram, and `docs/interview/`.
-4. Decide whether to test `english` OR keyword matching on a larger corpus (production unchanged until
-   then).
-5. Confirm the GitHub Actions run for this status-only commit is green.
-6. Optional: from a clean clone, follow the README with your own `.env`.
+The owner explicitly asked ChatGPT to perform the final repository review and close M9, rather than
+requiring the owner to read the technical materials. The review used the committed implementation,
+tests, source documents, persisted evaluation export, results report, README, architecture overview,
+and interview materials.
+
+1. **Evaluation evidence:** inspected the persisted 26-question run export and the five source
+   documents. Specifically reviewed q06 (RMA instructions), q15 (water damage and the missed product
+   guide source), q17 (express-shipping follow-up and its additional true fuel-canister fact), and u02
+   (correct abstention on undocumented battery capacity). The app was exercised locally and screenshots
+   were recorded by Claude as documented above; ChatGPT did not independently access the local
+   `localhost:3000` browser session.
+2. **Report consistency:** compared the results report with the stored JSON export. The run metadata,
+   corpus (five files, ten chunks), retrieval metrics, answer counts, provider errors, citation metrics,
+   abstentions, and successful-answer latency figures agree with the persisted export. The report
+   correctly identifies the small-corpus chance-baseline limitation and the source-level (not
+   claim-level) nature of citation metrics.
+3. **Portfolio documentation:** reviewed the README, architecture overview, 5–7 minute demo script,
+   and interview Q&A. The materials describe the implemented system and disclose its important
+   limitations; they do not claim claim-by-claim citation entailment or production readiness.
+4. **Retrieval follow-up:** the larger-corpus `english` OR experiment is deferred. Production remains
+   on the accepted `simple` AND configuration; no default was changed.
+5. **CI:** run #66 for commit `3d8c35d` passed all four jobs and was independently verified.
+6. **Fresh checkout:** the isolated fresh-checkout verification remains recorded in the M9 evidence;
+   it was not repeated during this final review.
+
+**Final decision:** M9 is **APPROVED** by the owner's explicit delegation of final review and
+closeout to ChatGPT. No release tag was created.
 
 ### M8 closeout (verified 2026-11-04)
 
@@ -670,8 +687,9 @@ up to `2b8513e`.
 | M9 | `e3aa313` | fix(evaluation): reserve budget for retried questions so the counters never under-count Gemini calls |
 | M9 | `60f7d64` | fix(evaluation): report failed-attempt latency separately from successful answers |
 | M9 | `db7a2ce` | docs: correct the M9 documentation after the independent review (CI run #64: green, verified by the owner) |
-| M9 | `2f99f91` | docs: describe when a retry reservation is given back precisely; rename its test (CI green, reported by the owner) |
-| M9 | see `git log` | docs: mark M9 READY_FOR_REVIEW after the review fixes (status only) |
+| M9 | `2f99f91` | docs: describe when a retry reservation is given back precisely; rename its test (CI run #65: green, verified by ChatGPT) |
+| M9 | `3d8c35d` | docs: mark M9 READY_FOR_REVIEW after the review fixes (status only) (CI run #66: green, verified by ChatGPT) |
+| M9 | see `git log` | docs: approve M9 after delegated final review (status only) |
 
 ## Blockers
 
