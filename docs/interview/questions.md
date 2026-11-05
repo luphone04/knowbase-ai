@@ -81,7 +81,9 @@ crash to redoing one question.
 
 **How do you stop the free tier from being exhausted?** Daily budgets in PostgreSQL counters, reserved
 atomically before the call and given back when Gemini refuses it. An evaluation reserves its whole
-budget up front, all or nothing. There are no automatic generation retries, and no paid fallback.
+budget up front, all or nothing. A question retried after an interrupted attempt takes an additional
+retry reservation before any call; that reservation is never given back, so the counters can over-count
+but never under-count. There are no automatic generation retries, and no paid fallback.
 
 **What would you do next?** Test `english` OR keyword matching on a larger corpus with distractor
 documents; add claim-level checks or a labelled model judge as a secondary signal; add streaming; and

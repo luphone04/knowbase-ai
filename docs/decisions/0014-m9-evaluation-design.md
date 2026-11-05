@@ -116,3 +116,25 @@ free tier only, and SPEC.md §6.1 sketches three evaluation tables.
   its own outputs. Retrieval metrics are deterministic for a fixed corpus and query embedding.
 - The small corpus limits what any metric can show. The chance baseline makes that visible.
 - `GET /analytics/overview` stays deferred (ADR 0013).
+
+## Amendment (M9 review fixes, 5 November 2026)
+
+An independent review found two gaps, both fixed without a migration (the run's `config.budget` JSON
+and each result's `details` JSON):
+
+- **Retried questions and the budget (decision 16):** a question redone after an interrupted attempt
+  (a worker crash or a lost lease) may repeat Gemini calls the interrupted attempt already made, and
+  the summary counts only saved results.
+  - A retry now takes an **additional retry reservation**: one query embedding and one generation per
+    answer mode, all or nothing, in the current UTC day, taken before any call. It is never given back.
+    If it can't be taken, the run stops with its completed results and makes no call.
+  - Terminal claims (attempt limit, corpus change) reserve nothing. When a run ends on a question that
+    never saved, one attempt's worth of the original reservation is held back instead of returned.
+  - The counters can over-count (an interrupted attempt that never reached Gemini), never under-count.
+- **Failed-attempt latency (decision 13):** a failed generation or query embedding stores its time
+  until the error in the result's details. Summaries report successful-call latency and
+  failed-attempt latency as separate statistics; runs from before the fix show the latter as not
+  measured.
+
+The 4 November run is unaffected by the first gap: the worker log shows single attempts and no
+retried questions.

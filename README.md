@@ -90,7 +90,7 @@ report, per-question findings, and caveats: [docs/evaluation/results-2026-11-04.
 | Abstention accuracy (decided questions) | 1.00 (23) | 1.00 (25) |
 | Citation precision / recall (answered answerable) | 0.97 / 0.97 (17) | 0.975 / 0.975 (20) |
 | Provider errors (Gemini 503/504, not counted as abstentions) | 3 | 1 |
-| End-to-end latency, median / p95 | 17.5 / 32.9 s | 15.4 / 43.3 s |
+| End-to-end latency of successful answers, median / p95 | 17.5 / 32.9 s (n = 23) | 15.4 / 43.3 s (n = 25) |
 
 What this does and doesn't show:
 
@@ -104,6 +104,10 @@ What this does and doesn't show:
   are checked per document, not per claim.
 - **The two answer modes can't be ranked:** they received identical excerpts here, and Gemini's
   latency, during a high-demand period, dominates end-to-end time.
+- **Latency counts successful answers only.** The run didn't record timing for its 4 failed attempts.
+  Estimates from the worker log (not measured evaluation results): the two 504s took about 90 s each
+  (the request timeout), and the two 503s about 20 s and 2 s. Runs since the review fix record
+  failed-attempt latency separately.
 
 ## Technical decisions
 
@@ -129,7 +133,9 @@ questions).
   ADR 0009), so hybrid mode mostly behaves like vector search.
 - **No relevance threshold:** nearest-chunk distances of answerable and unanswerable questions overlap,
   so abstention relies on the model and the citation check.
-- **Citations are checked per answer and per document**, not per claim. Answers can omit details.
+- **Citations are checked per answer and per document**, not per claim. The server shows an answer only
+  if it cites at least one excerpt it actually provided; it doesn't verify that each statement is
+  supported by its citation. Answers can omit details.
 - **Latency** is dominated by Gemini's free tier: a chat answer can take 15–60 s when it is busy. There
   is no streaming.
 - **No OCR**, no URL ingestion, no password reset or MFA, a single worker, fixed-window rate limits, and

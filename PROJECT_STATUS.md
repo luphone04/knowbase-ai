@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 READY_FOR_REVIEW** (2026-11-05): all work pushed, including the approved live evaluation; GitHub Actions run #60 on `6932ad2` green (all four jobs, verified by the owner). Waiting for the owner's final review and approval. Not approved; no release tag |
+| Status | **M9 IN_PROGRESS — review fixes** (2026-11-05): an independent review's confirmed findings are fixed and pushed (see "M9 review fixes"). READY_FOR_REVIEW again only after GitHub Actions for the final commit is confirmed green. Not approved; no release tag |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
@@ -23,7 +23,7 @@
 | M6 | Hybrid retrieval and RRF | APPROVED | see Commits | `APPROVE MILESTONE 6`, 2026-11-04 |
 | M7 | Grounded chat, citations, and abstention | APPROVED | `56a90d7` (see Commits) | `APPROVE MILESTONE 7`, 2026-11-04 |
 | M8 | Frontend product experience (minimal; ADR 0013) | APPROVED | `a8c83a4` (see Commits) | Owner accepted M8 and authorised M9, 2026-11-04 |
-| M9 | Evaluation, hardening, and portfolio finish | READY_FOR_REVIEW | `6932ad2` (see Commits) | — |
+| M9 | Evaluation, hardening, and portfolio finish | IN_PROGRESS (review fixes) | see Commits | — |
 
 ## M9 plan and checklist (SPEC.md §17.14, design in ADR 0014)
 
@@ -147,11 +147,70 @@ The estimate presented before the run (the run used exactly this).
 - [x] **README and architecture documentation are accurate:** the system diagram and the evaluation
   section were checked against the code.
 - [x] **The interview demonstration script is prepared:** `docs/interview/`.
-- [x] **GitHub Actions passes for the final pushed commit:** run #60 on `6932ad2`, all four jobs green
-  (verified by the owner, 2026-11-05; `gh` not installed and credentials not used). This status-only
-  commit's own CI run is for the owner to confirm.
+- [ ] **GitHub Actions passes for the final pushed commit:** pending for the review-fix commits.
+  Verified so far (none checked from this machine: no `gh`, credentials not used):
+  - run #58 on `c1ee063`: green, reported by the owner;
+  - run #60 on `6932ad2`: green, verified by the owner;
+  - run #61 on `69a5f3e`: green, verified by ChatGPT (reported by the owner).
+
+  No other commit's CI result has been checked.
 - [x] **Known limitations are honestly documented:** README, results report, and this file.
 - Not done, by decision: **no demo video** was recorded (SPEC.md §17.14 item), and **no release tag**.
+
+### M9 review fixes (2026-11-05, owner-approved plan)
+
+An independent engineering review was investigated read-only first. The owner approved the fix plan,
+with one ordering correction (terminal checks before any retry reservation).
+
+| Finding | Result | Fix |
+|---|---|---|
+| Budget under-counts Gemini calls when a question is retried after a crash or a lost lease | Confirmed; not triggered in the 4 November run (worker log: 26 + 52 single-attempt calls, no retries, no discarded results) | `e3aa313`: additional retry reservations |
+| Failed attempts have no latency; failed embeddings could enter embedding latency | Confirmed | `60f7d64`: separate failed-attempt statistics |
+| SPEC milestone table and branch/PR workflow out of date | Partly (a template and an already-amended section) | Notes in SPEC.md |
+| Stale CI notes and overstated citation description in this file | Confirmed | Corrected here |
+| Demo script overstated citation checking ("every claim is cited") | Confirmed | Reworded |
+| Division by zero in `context.py` | Not a defect (the reviewer's own correction; `_shingles` never returns an empty set) | None |
+| Punctuation-only chunks count as near-duplicates | True, harmless (drops content-free text within one document) | None (out of scope) |
+
+**Budget accounting (`e3aa313`):**
+- A claim of a question whose earlier attempt never saved first runs the terminal checks: the attempt
+  limit and the corpus fingerprint. A claim that won't call Gemini reserves nothing.
+- A retry that will proceed takes an **additional retry reservation**: 1 query embedding plus 1
+  generation per answer mode, in the current UTC day, all or nothing, before any provider call. It is
+  recorded on the run (`config.budget.retry_reservations`) and never given back.
+- If the reservation fails, the run stops with its completed results and makes no call.
+- When a run ends on a question that never saved, one attempt's worth of the original reservation is
+  held back (`held_from_original`) instead of being returned as unused. If the run changes hands
+  between the reservation and the first call, the reservation is given back.
+- **Effect:** the counters can over-count (an interrupted attempt that stopped before calling Gemini)
+  but never under-count. The daily limits stay enforced by the same atomic reservations. The summary
+  reports `retry_reservations`, and the page shows them when a run has any.
+
+**Failed-attempt latency (`60f7d64`):**
+- A failed generation stores `failed_attempt_ms` (end to end) and `failed_generation_ms` in the
+  result's `details`; `answer_latency_ms` stays for successful answers.
+- A failed query embedding stores `failed_embedding_ms` instead of filling `embedding_latency_ms`.
+- Summaries add `failed_attempt_latency_ms`, `failed_generation_latency_ms`, and
+  `failed_embedding_latency_ms`; successful-call statistics are unchanged.
+- The page labels "Answer latency (successful answers)" and shows failed attempts on their own line
+  and per question. The 4 November run shows "Not measured" (no timing was recorded; its stored
+  results are unchanged). The results report adds log-derived estimates, labelled as such.
+
+**Tests:**
+- 13 new backend tests: 6 retry-budget integration tests, 2 for the UTC day boundary, 2 for
+  failed-attempt latency, and 3 metric unit tests.
+- A mutation check: no retry reservation, no hold-back, or reserving before the terminal checks each
+  fail several tests.
+- 5 new frontend tests.
+- **Results:**
+  - backend 844 passed, 1 skipped (host);
+  - frontend 54 passed;
+  - ruff, format, strict mypy, typecheck, lint, build, the bundle scan with the exact key, repository
+    hygiene, and `alembic check` clean;
+  - no migration.
+
+**Deployed locally** (api, worker, frontend rebuilt; no migration ran). The 4 November run's page was
+checked in the browser.
 
 ### M9 manual review steps (owner)
 
@@ -163,7 +222,7 @@ The estimate presented before the run (the run used exactly this).
 3. Review the README, the architecture diagram, and `docs/interview/`.
 4. Decide whether to test `english` OR keyword matching on a larger corpus (production unchanged until
    then).
-5. Confirm the GitHub Actions run for the final commit is green.
+5. Confirm the GitHub Actions run for the final commit (after the review fixes) is green.
 6. Optional: from a clean clone, follow the README with your own `.env`.
 
 ### M8 closeout (verified 2026-11-04)
@@ -171,9 +230,10 @@ The estimate presented before the run (the run used exactly this).
 - The M8 acceptance evidence below is unchanged. The owner accepted M8 and authorised M9 on
   2026-11-04; the manual review steps listed under M8 were the owner's to perform, and are not
   recorded here as done.
-- **Still open from M8:** the GitHub Actions results for the M8 commits were never checked from
-  this machine (no `gh` CLI). The frontend CI job most likely failed on `949f879` … `ee826bb`
-  (fixed in `e5ad0fc`). The result for the latest commit must be confirmed during M9.
+- **CI after M8:** later commits were verified green: #58 on `c1ee063` (reported by the owner), #60 on
+  `6932ad2` (verified by the owner), and #61 on `69a5f3e` (verified by ChatGPT). The M8 commits
+  themselves remain **unverified**. The frontend job most likely failed on `949f879` … `ee826bb`
+  (fixed in `e5ad0fc`), but nobody checked.
 
 ## M8 plan and checklist (SPEC.md §17.13, as scoped by ADR 0013)
 
@@ -601,7 +661,10 @@ up to `2b8513e`.
 | M9 | `c1ee063` | docs: record M9 progress and the live evaluation estimate (CI run #58: green, reported by the owner) |
 | M9 | `eeb178b` | fix(evaluation): stop a run on a Gemini rate limit, as on the daily quota |
 | M9 | `6932ad2` | docs: record the M9 live evaluation, results, README, architecture, interview material, and fresh-checkout check (CI run #60: green, verified by the owner) |
-| M9 | see `git log` | docs: mark M9 READY_FOR_REVIEW (status only) |
+| M9 | `69a5f3e` | docs: mark M9 READY_FOR_REVIEW (status only) (CI run #61: green, verified by ChatGPT) |
+| M9 | `e3aa313` | fix(evaluation): reserve budget for retried questions so the counters never under-count Gemini calls |
+| M9 | `60f7d64` | fix(evaluation): report failed-attempt latency separately from successful answers |
+| M9 | see `git log` | docs: correct the M9 documentation after the independent review |
 
 ## Blockers
 
@@ -654,7 +717,7 @@ None.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
 - **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`). Kept by owner decision (2026-11-04). Measured in M9: no keyword match for 18 of 20 answerable questions, and production hybrid equals vector-only on the demo corpus. `english` OR is the candidate to test on a larger corpus.
 - **No relevance threshold:** an unanswerable question still retrieves the nearest chunks. Chat relies on the model saying the excerpts are not enough, and on the citation check. M9 measured the nearest distances: answerable 0.193–0.387, unanswerable 0.317–0.527. They overlap, so no threshold was set.
-- **Citation checks are per answer, not per claim:** one valid citation is enough for an answer to be shown; whether each sentence is supported is for M9's evaluation (citation precision and recall).
+- **Citation checks are per answer, not per claim:** one valid citation is enough for an answer to be shown. M9's citation precision and recall measure source-level relevance (whether the cited documents are the expected ones), not whether each statement is entailed by its citation; claim-level support is not measured.
 - **A URL quoted from an uploaded document survives validation,** because it is in an excerpt. Whether the model repeats an injected link is model behaviour (live check pending).
 - **A chat question can take up to about 90 s** when Gemini is slow (one generation attempt with the 90 s timeout). The HTTP request waits that long; streaming is not implemented.
 - **Generation has no automatic retry** (`GEMINI_GENERATION_MAX_RETRIES=0`): a brief Gemini overload fails the question with 503, and the user asks again.
@@ -684,6 +747,12 @@ Environment, Gemini, SDK, and pgvector compatibility were verified (live Gemini 
 Full details: [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md).
 
 ## M9 limitations and deferred work
+
+- **Retry accounting is conservative:** an interrupted attempt that never reached Gemini is still
+  charged one attempt's worth. Calls a provider retried internally (`GEMINI_MAX_RETRIES` for embeddings)
+  count as one request, as everywhere in the app.
+- **Failed-attempt latency was not recorded in the 4 November run;** only log-derived estimates exist
+  for its 4 failures.
 
 - **Evaluation scope:** 26 questions, a 10-chunk corpus, one live run. HitRate@5 is saturated, the
   differences come from 4 questions, and answers vary between runs. Not measured: claim-level

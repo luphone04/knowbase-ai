@@ -11,9 +11,10 @@ Gemini answer; keep to two or three.
 ## 1. The problem (30 s)
 
 > "Teams want to ask questions of their own documents. A general chatbot answers fluently whether or not
-> it knows. I built Knowbase so that answers come only from the uploaded documents, every claim is
-> cited, the server validates those citations, and the system says 'not found' when the documents
-> don't support an answer. And because 'it seems to work' isn't evidence, I built an evaluation that
+> it knows. I built Knowbase so that answers are drawn from the uploaded documents. The model is
+> asked to cite the excerpts it uses, and the server shows an answer only if it cites at least one
+> excerpt it actually provided. That check is per document, not per statement. The system says 'not
+> found' when the documents don't support an answer. And because 'it seems to work' isn't evidence, I built an evaluation that
 > measures it."
 
 ## 2. Architecture (1 min)

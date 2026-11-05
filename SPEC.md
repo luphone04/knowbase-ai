@@ -1512,6 +1512,10 @@ Claude Code must work in a strict human-in-the-loop cycle:
 8.  Commit meaningful work on the milestone branch.
 9.  Push the branch and open a PR against `main` if the remote and
     GitHub CLI are configured.
+
+    > **Superseded (v1.3, ADR 0002):** steps 8–9 and the branch, PR, and
+    > merge wording below mean "commit to and push `main`"; approval is
+    > the owner's `APPROVE MILESTONE N` alone, with no PR merge.
 10. Prepare the review package described in 17.4.
 11. **STOP and wait for the user.**
 
@@ -1553,6 +1557,9 @@ available. - Known blockers, risks, and deferred work. - Date of the
 last verified checkpoint.
 
 Use this starter table:
+
+> **Template only:** the rows below are the starting values. The live
+> milestone tracker is `PROJECT_STATUS.md`.
 
   ------------------------------------------------------------------------
   Milestone     Scope            Status        Branch / PR   Approval
@@ -1602,6 +1609,10 @@ available). Never mark user-only manual checks as passed on the user's
 behalf.
 
 ### 17.3 GitHub workflow --- one branch and one PR per milestone
+
+> **Superseded (v1.3, ADR 0002):** the project works directly on `main`;
+> there are no milestone branches or PRs. The rest of this section is kept
+> for history; its commit, push, CI, and secret-hygiene rules still apply.
 
 The goal is a genuine, reviewable engineering history. Keep `main`
 working at every approved checkpoint.
