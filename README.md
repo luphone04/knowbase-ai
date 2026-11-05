@@ -184,7 +184,5 @@ Open **http://localhost:3000** (`localhost`, not `127.0.0.1`), register, and upl
 ## Further Documentation
 
 - [Architecture overview](docs/architecture/overview.md)
-- [Architecture Decision Records](docs/decisions/)
 - [Evaluation report](docs/evaluation/results-2026-11-04.md) and [raw export](docs/evaluation/run-2026-11-04.json)
-- [Demo script](docs/interview/demo-script.md) and [technical Q&A](docs/interview/questions.md)
 - [Demo corpus](sample_data/README.md) and [prompt-injection test documents](backend/tests/fixtures/prompt_injection/README.md)

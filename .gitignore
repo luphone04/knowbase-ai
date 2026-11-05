@@ -58,3 +58,6 @@ logs/
 /PROJECT_STATUS.md
 /frontend/AGENTS.md
 /.github/PULL_REQUEST_TEMPLATE.md
+/docs/interview/
+/docs/decisions/
+/docs/m00-compatibility-report.md
