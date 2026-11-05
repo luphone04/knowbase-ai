@@ -1,0 +1,184 @@
+name: knowbase
+
+# Production stack for Coolify (Docker Compose build pack). compose.yaml stays the
+# local stack; this file differs only where the deployment needs it:
+# - Coolify's Traefik proxy serves HTTPS and routes the domains, so nothing publishes a port.
+# - The API trusts X-Forwarded-* only from FORWARDED_ALLOW_IPS (the proxy's network).
+# - Production settings are required here, so a missing one fails the deployment.
+#
+# Set every variable in Coolify, never in this repository. In Coolify, turn
+# "Build time" OFF for every secret and ON only for NEXT_PUBLIC_API_BASE_URL and
+# MAX_UPLOAD_MB, and set build arguments to "managed manually in Dockerfile".
+# Coolify adds its own .env (every variable) to every service, so db and frontend
+# override the secrets they don't need with placeholders. A non-empty value is
+# required: Coolify refills "" from its stored variables, and Compose fills a key
+# without a value from its --env-file.
+
+# Shared by migrate, api, and worker: one backend image, one configuration.
+x-backend: &backend
+  build:
+    context: ./backend
+  image: knowbase-backend:prod
+  env_file: .env
+  environment: &backend-environment
+    APP_ENV: ${APP_ENV:-production}
+    COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    # The public API host, e.g. api.example.com. 127.0.0.1 is added for the
+    # container's own healthcheck, which calls the API on loopback.
+    ALLOWED_HOSTS: ${ALLOWED_HOSTS:?},127.0.0.1
+    # The exact frontend origin, e.g. https://app.example.com.
+    FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?}
+    APP_SECRET_KEY: ${APP_SECRET_KEY:?}
+    JWT_SECRET: ${JWT_SECRET:?}
+    DATABASE_URL: ${DATABASE_URL:?}
+    # Only db needs it; the backend connects with DATABASE_URL, so a placeholder
+    # replaces the value from Coolify's .env.
+    POSTGRES_PASSWORD: not-available-in-backend
+    # Optional: without a key the app runs and reports AI features as unavailable.
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    # The exact IP of Coolify's Traefik container (coolify-proxy) on this resource's
+    # network, not the network's subnet: every service in this stack is on that
+    # network, so trusting the subnet would let any of them forge a visitor's IP.
+    # After the first deployment, read it on the server with
+    #   docker inspect coolify-proxy --format '{{(index .NetworkSettings.Networks "<resource-uuid>").IPAddress}}'
+    # set it in Coolify, and redeploy the API. Check it again after the proxy restarts
+    # and update it if it changed: until then visitors share one rate-limit bucket,
+    # and Docker may give the old address to another container on this network.
+    # Until it is set, only loopback is trusted.
+    FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+  networks: [data, egress]
+  # The images run as a non-root user; nothing in them may gain privileges (setuid) later.
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      # Not needed by PostgreSQL: placeholders replace the values from Coolify's .env.
+      GEMINI_API_KEY: not-available-in-db
+      DATABASE_URL: not-available-in-db
+      APP_SECRET_KEY: not-available-in-db
+      JWT_SECRET: not-available-in-db
+    volumes:
+      # PostgreSQL 18 images keep PGDATA at /var/lib/postgresql/18/docker,
+      # so the volume mounts the parent directory, not .../data.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # No published port.
+    networks: [data]
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    # Alembic loads the app settings, so the shared settings stay (APP_SECRET_KEY,
+    # JWT_SECRET, DATABASE_URL). It never calls Gemini, and DATABASE_URL carries the
+    # database credentials, so placeholders replace these two from Coolify's .env.
+    environment:
+      <<: *backend-environment
+      GEMINI_API_KEY: not-available-in-migrate
+      POSTGRES_PASSWORD: not-available-in-migrate
+    networks: [data]
+    depends_on:
+      db:
+        condition: service_healthy
+    # One-shot: Coolify leaves restart "no" services out of the stack's health status.
+    restart: "no"
+
+  api:
+    <<: *backend
+    # uvicorn reads FORWARDED_ALLOW_IPS itself and takes the client address from the
+    # rightmost X-Forwarded-For entry its trusted proxy added. A wildcard would let any
+    # visitor choose their own IP and dodge the per-IP rate limits, so it is refused.
+    command:
+      - python
+      - -c
+      - |
+        import os, sys
+        if "*" in os.environ.get("FORWARDED_ALLOW_IPS", ""):
+            sys.exit("FORWARDED_ALLOW_IPS must list the proxy network, never '*'")
+        os.execvp("uvicorn", ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"])
+    volumes:
+      - uploads_data:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker.runner"]
+    volumes:
+      - uploads_data:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Inlined into the browser bundle at build time, e.g. https://api.example.com/api/v1.
+        # Never a secret: these two are the frontend's only build arguments.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?}
+        NEXT_PUBLIC_MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+    image: knowbase-frontend:prod
+    security_opt: ["no-new-privileges:true"]
+    # The frontend needs no backend settings or secrets. Coolify still gives it every
+    # variable, so placeholders replace the secrets from Coolify's .env.
+    environment:
+      GEMINI_API_KEY: not-available-in-frontend
+      DATABASE_URL: not-available-in-frontend
+      POSTGRES_PASSWORD: not-available-in-frontend
+      APP_SECRET_KEY: not-available-in-frontend
+      JWT_SECRET: not-available-in-frontend
+    # It makes no server-side API calls. Under Coolify it can still reach db (see
+    # networks below), but it holds no database credentials.
+    networks: [web]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+# Under Coolify these networks isolate nothing: it attaches every service to every
+# network below and to its own resource network, so every service (frontend included)
+# can reach every other one, db too, and the internet. They are kept so the topology
+# matches compose.yaml. db publishes no port and requires its password.
+networks:
+  data:
+    internal: true
+  egress: {}
+  web: {}
