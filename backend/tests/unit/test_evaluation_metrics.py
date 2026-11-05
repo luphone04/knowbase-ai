@@ -326,3 +326,65 @@ def test_run_summary_groups_by_configuration() -> None:
     assert summary["nearest_vector_distance"]["answerable"]["median"] == 0.1
     assert summary["nearest_vector_distance"]["unanswerable"]["median"] == 0.4
     assert summary["embedding_latency_ms"]["count"] == 2
+
+
+def test_failed_attempts_have_their_own_latency_and_never_mix_with_answers() -> None:
+    rows = [
+        answered(question_key="q1", answer_latency_ms=1000, generation_latency_ms=900),
+        answered(
+            question_key="q2",
+            outcome="provider_error",
+            citation_precision=None,
+            citation_recall=None,
+            abstention_correct=None,
+            answer_latency_ms=None,
+            generation_latency_ms=None,
+            failed_attempt_ms=90_500,
+            failed_generation_ms=90_000,
+        ),
+    ]
+    summary = summarize_answers(rows)
+    assert summary["latency_ms"] == {
+        "count": 1,
+        "min": 1000,
+        "median": 1000,
+        "p95": 1000,
+        "max": 1000,
+    }
+    assert summary["generation_latency_ms"]["count"] == 1
+    assert summary["failed_attempt_latency_ms"]["max"] == 90_500
+    assert summary["failed_generation_latency_ms"]["count"] == 1
+
+
+def test_failures_recorded_before_timing_existed_are_not_measured() -> None:
+    """Runs from before failed-attempt timing (4 November 2026) have no such values."""
+    old_failure = answered(
+        outcome="provider_error",
+        citation_precision=None,
+        citation_recall=None,
+        abstention_correct=None,
+        answer_latency_ms=None,
+        generation_latency_ms=None,
+    )
+    summary = summarize_answers([old_failure])
+    assert summary["failed_attempt_latency_ms"] is None
+    assert summary["failed_generation_latency_ms"] is None
+    assert summary["latency_ms"] is None
+
+
+def test_failed_embeddings_stay_out_of_embedding_latency() -> None:
+    rows = [
+        replace(BASE, question_key="q1", variant="vector", embedding_latency_ms=800),
+        replace(
+            BASE,
+            question_key="q2",
+            variant="vector",
+            retrieval_error=True,
+            embedding_latency_ms=5000,  # an older row that timed the failure here
+            failed_embedding_ms=5000,
+        ),
+    ]
+    summary = summarize(rows, variants=["vector"], answer_modes=[], chance={})
+    assert summary["embedding_latency_ms"]["count"] == 1
+    assert summary["embedding_latency_ms"]["max"] == 800
+    assert summary["failed_embedding_latency_ms"]["max"] == 5000

@@ -70,6 +70,44 @@ describe("AnswerEvaluation", () => {
   });
 });
 
+describe("failed-attempt latency", () => {
+  it("labels successful-answer latency and shows failed attempts separately", () => {
+    render(<AnswerEvaluation run={runDetail()} />);
+    const hybrid = screen.getByTestId("answers-hybrid");
+    expect(within(hybrid).getByText("Answer latency (successful answers)")).toBeTruthy();
+    expect(within(hybrid).getByText("median 1500 ms · p95 3200 ms (n = 25)")).toBeTruthy();
+    expect(within(hybrid).getByText("Failed attempts, until the error")).toBeTruthy();
+    expect(within(hybrid).getByText("median 90.5 s · p95 90.5 s (n = 1)")).toBeTruthy();
+  });
+
+  it("shows not measured for a run that recorded no failure timing", () => {
+    const run = runDetail();
+    run.summary.answers = { hybrid: answerSummary({ failed_attempt_latency_ms: undefined }) };
+    render(<AnswerEvaluation run={run} />);
+    const line = screen.getByText("Failed attempts, until the error").closest("div")!;
+    expect(within(line).getByText("Not measured")).toBeTruthy();
+  });
+
+  it("has no failed-attempt line without provider errors", () => {
+    const run = runDetail();
+    run.summary.answers = { hybrid: answerSummary({ provider_errors: 0 }) };
+    render(<AnswerEvaluation run={run} />);
+    expect(screen.queryByText("Failed attempts, until the error")).toBeNull();
+  });
+
+  it("shows how long a failed question took, or that it wasn't recorded", () => {
+    render(<QuestionResults run={runDetail()} />);
+    expect(within(screen.getByTestId("question-u01")).getByText("Failed after 90.5 s")).toBeTruthy();
+    cleanup();
+    const old = runDetail();
+    old.questions[1].results[1] = { ...old.questions[1].results[1], details: {} };
+    render(<QuestionResults run={old} />);
+    expect(
+      within(screen.getByTestId("question-u01")).getByText(/not recorded for this run/),
+    ).toBeTruthy();
+  });
+});
+
 describe("QuestionResults", () => {
   it("lets a reviewer inspect expected documents, retrieval, answers, and errors", () => {
     render(<QuestionResults run={runDetail()} />);
@@ -137,6 +175,24 @@ describe("RunOverview", () => {
     expect(screen.getByRole("alert").textContent).toContain("stopped after 1 of 2 questions");
     expect(screen.getByText("Daily quota used up.")).toBeTruthy();
     expect(screen.getByText("Stopped")).toBeTruthy();
+  });
+});
+
+describe("retry reservations", () => {
+  it("shows additional retry reservations only when there were retries", () => {
+    const run = runDetail();
+    render(<RunOverview run={run} />);
+    expect(screen.queryByText("Additional retry reservations")).toBeNull();
+    cleanup();
+    run.summary.retry_reservations = {
+      count: 1,
+      query_embeddings: 1,
+      generations: 2,
+      held_from_original: { query_embeddings: 0, generation_requests: 0 },
+    };
+    render(<RunOverview run={run} />);
+    expect(screen.getByText("Additional retry reservations")).toBeTruthy();
+    expect(screen.getByText(/1 retried question\(s\): 1 query embeddings, 2 generations/)).toBeTruthy();
   });
 });
 

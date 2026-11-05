@@ -925,3 +925,44 @@ def test_giving_back_within_one_day_returns_only_the_original_unused_slots(
     )
     assert window_counts("evaluation-generations-daily") == {"2026-11-04": 10 + 2}
     assert window_counts("query-embeddings-daily") == {"2026-11-04": 5 + 1}
+
+
+# --- failed-attempt latency (M9 review fix) -------------------------------------------------
+
+
+def test_a_failed_generation_keeps_its_time_apart_from_successful_answers(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    unanswerable = next(q for q in DATASET.questions if not q.answerable)
+    evaluator.generator.failures[unanswerable.question] = ProviderUnavailable("Gemini is down.")
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    failed = results_for(body, unanswerable.key)["hybrid"]
+    assert failed["answer_latency_ms"] is None
+    assert failed["details"]["failed_attempt_ms"] >= failed["details"]["failed_generation_ms"] >= 0
+    answers = body["summary"]["answers"]["hybrid"]
+    assert answers["latency_ms"]["count"] == QUESTIONS - 1  # successful answers only
+    assert answers["generation_latency_ms"]["count"] == QUESTIONS - 1
+    assert answers["failed_attempt_latency_ms"]["count"] == 1
+    assert answers["failed_generation_latency_ms"]["count"] == 1
+
+
+def test_a_failed_query_embedding_stays_out_of_embedding_latency(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.embedder.failures["q02"] = ProviderUnavailable("Gemini is down.")
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    q02 = results_for(body, "q02")
+    assert all(r["embedding_latency_ms"] is None for r in q02.values())
+    assert q02["vector"]["details"]["failed_embedding_ms"] >= 0
+    assert "failed_attempt_ms" in q02["hybrid"]["details"]  # the answer attempt failed too
+    assert "failed_attempt_ms" not in q02["vector"]["details"]  # vector wasn't answered
+    summary = body["summary"]
+    assert summary["embedding_latency_ms"]["count"] == QUESTIONS - 1
+    assert summary["failed_embedding_latency_ms"]["count"] == 1
+    assert summary["answers"]["hybrid"]["failed_attempt_latency_ms"]["count"] == 1

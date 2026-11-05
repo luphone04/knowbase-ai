@@ -13,6 +13,7 @@ export function RunOverview({ run }: { run: EvaluationRunDetail }) {
   const config = run.config;
   const corpus = run.corpus;
   const requests = run.summary.gemini_requests;
+  const retries = run.summary.retry_reservations;
   const errors = providerErrorCount(run);
   const percent = run.questions_total ? Math.round((run.questions_done / run.questions_total) * 100) : 0;
 
@@ -80,9 +81,15 @@ export function RunOverview({ run }: { run: EvaluationRunDetail }) {
             value={`${String(corpus.total_chunks ?? "—")} chunks; ${corpus.other_sources?.length ?? 0} document(s) outside the dataset`}
           />
           <Info
-            label="Gemini requests"
+            label="Gemini requests (saved results)"
             value={`${requests?.query_embeddings ?? 0} query embeddings, ${requests?.generation_requests ?? 0} generations`}
           />
+          {retries && retries.count > 0 ? (
+            <Info
+              label="Additional retry reservations"
+              value={`${retries.count} retried question(s): ${retries.query_embeddings} query embeddings, ${retries.generations} generations reserved for interrupted attempts (an upper bound)`}
+            />
+          ) : null}
         </dl>
       </CardContent>
     </Card>

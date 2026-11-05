@@ -41,6 +41,8 @@ export function answerSummary(overrides: Partial<AnswerSummary> = {}): AnswerSum
     abstain_reasons: { model_insufficient: 5, no_valid_citation: 1 },
     latency_ms: { count: 25, min: 900, median: 1500, p95: 3200, max: 4000 },
     generation_latency_ms: { count: 25, min: 800, median: 1400, p95: 3100, max: 3900 },
+    failed_attempt_latency_ms: { count: 1, min: 90500, median: 90500, p95: 90500, max: 90500 },
+    failed_generation_latency_ms: { count: 1, min: 90000, median: 90000, p95: 90000, max: 90000 },
     ...overrides,
   };
 }
@@ -218,6 +220,7 @@ export function runDetail(overrides: Partial<EvaluationRunDetail> = {}): Evaluat
             error_stage: "generation",
             error_category: "unavailable",
             error_message: "Gemini is temporarily unavailable.",
+            details: { failed_attempt_ms: 90500, failed_generation_ms: 90000 },
           }),
         ],
       },

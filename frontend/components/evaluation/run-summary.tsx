@@ -12,6 +12,7 @@ export function RetrievalComparison({ run }: { run: EvaluationRun }) {
   const retrieval = run.summary.retrieval ?? {};
   const keys = variantKeys(run);
   const chance = retrieval.vector?.chance_hit_rate_at_5 ?? retrieval.hybrid?.chance_hit_rate_at_5;
+  const retrievalErrors = retrieval.vector?.errors ?? 0;
   return (
     <Card>
       <CardHeader>
@@ -103,8 +104,14 @@ export function RetrievalComparison({ run }: { run: EvaluationRun }) {
             keeps keyword AND (ADR 0009).
           </li>
           <li>
-            Search latency is the database search alone, after the shared query embedding (
-            <Latency stats={run.summary.embedding_latency_ms ?? undefined} />
+            Search latency is the database search alone, after the shared query embedding
+            (successful embeddings: <Latency stats={run.summary.embedding_latency_ms ?? undefined} />
+            {retrievalErrors > 0 ? (
+              <>
+                ; failed embeddings, until the error:{" "}
+                <Latency stats={run.summary.failed_embedding_latency_ms ?? undefined} />
+              </>
+            ) : null}
             ).
           </li>
         </ul>
@@ -171,9 +178,14 @@ function AnswerModeSummary({ mode, summary }: { mode: AnswerMode; summary: Answe
             {summary.provider_errors}
           </span>
         </Metric>
-        <Metric label="Answer latency" wide>
+        <Metric label="Answer latency (successful answers)" wide>
           <Latency stats={summary.latency_ms} />
         </Metric>
+        {summary.provider_errors > 0 ? (
+          <Metric label="Failed attempts, until the error" wide>
+            <Latency stats={summary.failed_attempt_latency_ms ?? undefined} />
+          </Metric>
+        ) : null}
       </dl>
       <table className="w-full text-sm" aria-label={`${MODE_LABEL[mode]} decisions`}>
         <thead>

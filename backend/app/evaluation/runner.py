@@ -291,12 +291,15 @@ class EvaluationWorker:
             vector = self.retriever.embed_query(query)
         except ProviderError as exc:
             spent = 0 if _refused(exc) else 1
+            # Time until the failure, kept apart from successful embedding latency.
+            failed_ms = _ms(started)
             failed: list[dict[str, Any]] = [
                 {
                     **base,
                     "variant": v.key,
                     "retrieval_mode": v.mode,
-                    "embedding_latency_ms": _ms(started),
+                    "details": {"failed_embedding_ms": failed_ms}
+                    | ({"failed_attempt_ms": failed_ms} if v.key in config["answer_modes"] else {}),
                     "answer_evaluated": v.key in config["answer_modes"],
                     "outcome": "provider_error" if v.key in config["answer_modes"] else None,
                     "error_stage": "embedding",
@@ -366,6 +369,7 @@ class EvaluationWorker:
             excerpts = build_context(
                 ranking.results, max_chars=self.settings.chat_context_max_chars
             )
+            generation_started = time.perf_counter()
             try:
                 answer = self.chat.answer(question.question, excerpts, history)
             except ProviderError as exc:
@@ -375,6 +379,11 @@ class EvaluationWorker:
                     error_category=exc.category,
                     error_message=exc.message,
                 )
+                # Time until the failure; answer_latency_ms stays for successful answers only.
+                row["details"] = {
+                    "failed_attempt_ms": embedding_ms + retrieval_ms + _ms(started),
+                    "failed_generation_ms": _ms(generation_started),
+                }
                 row["token_usage"] = {
                     **row["token_usage"],
                     "generation_requests": 0 if _refused(exc) else 1,

@@ -189,10 +189,20 @@ function AnswerResult({ result, answerable }: { result: EvaluationResult; answer
         {decision ? <StatusBadge {...decision} /> : null}
       </h3>
       {result.outcome === "provider_error" ? (
-        <p className="text-red-700">
-          {result.error_category === "skipped" ? "" : `${result.error_category}: `}
-          {result.error_message}
-        </p>
+        <>
+          <p className="text-red-700">
+            {result.error_category === "skipped" ? "" : `${result.error_category}: `}
+            {result.error_message}
+          </p>
+          {result.error_category === "skipped" ? null : (
+            <p className="text-xs text-muted-foreground">
+              Failed after{" "}
+              {typeof result.details.failed_attempt_ms === "number"
+                ? formatMs(result.details.failed_attempt_ms)
+                : "an unmeasured time (not recorded for this run)"}
+            </p>
+          )}
+        </>
       ) : (
         <>
           <p className="whitespace-pre-wrap">{result.answer}</p>

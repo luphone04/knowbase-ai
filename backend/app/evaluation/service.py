@@ -238,6 +238,9 @@ def result_row(result: EvaluationResult, question: EvaluationQuestion) -> Result
         abstention_correct=result.abstention_correct,
         answer_latency_ms=result.answer_latency_ms,
         generation_latency_ms=result.token_usage.get("generation_latency_ms"),
+        failed_attempt_ms=result.details.get("failed_attempt_ms"),
+        failed_generation_ms=result.details.get("failed_generation_ms"),
+        failed_embedding_ms=result.details.get("failed_embedding_ms"),
     )
 
 

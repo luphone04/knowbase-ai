@@ -240,17 +240,30 @@ export type AnswerSummary = {
   citation_precision: number | null;
   citation_recall: number | null;
   abstain_reasons: Record<string, number>;
+  /** Successful answers (answered or abstained) only. */
   latency_ms: LatencyStats;
   generation_latency_ms: LatencyStats;
+  /** Provider failures, until the error. Absent or null for runs that didn't record it. */
+  failed_attempt_latency_ms?: LatencyStats;
+  failed_generation_latency_ms?: LatencyStats;
 };
 
 export type EvaluationSummary = {
   questions_processed: number;
+  /** Successful query embeddings only. */
   embedding_latency_ms: LatencyStats;
+  failed_embedding_latency_ms?: LatencyStats;
   nearest_vector_distance: { answerable: DistanceStats; unanswerable: DistanceStats };
   retrieval: Record<string, RetrievalSummary>;
   answers: Partial<Record<AnswerMode, AnswerSummary>>;
   gemini_requests: { query_embeddings?: number; generation_requests?: number };
+  /** Budget reserved for questions retried after an interrupted attempt (an upper bound). */
+  retry_reservations?: {
+    count: number;
+    query_embeddings: number;
+    generations: number;
+    held_from_original: { query_embeddings: number; generation_requests: number };
+  };
 };
 
 export type VariantDetails = {
@@ -335,7 +348,15 @@ export type EvaluationResult = {
   abstention_correct: boolean | null;
   answer_latency_ms: number | null;
   token_usage: Record<string, unknown>;
-  details: { model_text?: string; invalid_citation_ids?: string[]; excerpts?: number };
+  details: {
+    model_text?: string;
+    invalid_citation_ids?: string[];
+    excerpts?: number;
+    /** Provider failures only: time until the error (not recorded before 5 November 2026). */
+    failed_attempt_ms?: number;
+    failed_generation_ms?: number;
+    failed_embedding_ms?: number;
+  };
   error_stage: "embedding" | "generation" | null;
   error_category: string | null;
   error_message: string | null;

@@ -14,6 +14,10 @@ Per answered answerable question (None otherwise):
 - citation precision: cited sources that are expected / cited sources;
 - citation recall: expected sources cited / expected sources.
 
+Latency statistics describe successful calls. A provider failure's time until the
+error is reported separately (`failed_*_latency_ms`), never mixed in; runs from
+before these were recorded show them as not measured (None).
+
 Abstention is correct when an answerable question is answered or an
 unanswerable one is abstained on. A provider failure has no correctness: it is
 neither an answer nor an abstention.
@@ -184,6 +188,10 @@ class ResultRow:
     abstention_correct: bool | None
     answer_latency_ms: int | None
     generation_latency_ms: int | None
+    # Time until a provider failure (provider_error rows only); never mixed with the above.
+    failed_attempt_ms: int | None = None
+    failed_generation_ms: int | None = None
+    failed_embedding_ms: int | None = None
 
 
 def summarize_retrieval(
@@ -243,10 +251,20 @@ def summarize_answers(rows: Sequence[ResultRow]) -> dict[str, Any]:
         "citation_precision": precision,
         "citation_recall": recall,
         "abstain_reasons": dict(sorted(reasons.items())),
+        # Successful answers (answered or abstained) only.
         "latency_ms": latency_stats(
             r.answer_latency_ms for r in evaluated if r.outcome != "provider_error"
         ),
-        "generation_latency_ms": latency_stats(r.generation_latency_ms for r in evaluated),
+        "generation_latency_ms": latency_stats(
+            r.generation_latency_ms for r in evaluated if r.outcome != "provider_error"
+        ),
+        # Provider failures, until the error: their own statistics.
+        "failed_attempt_latency_ms": latency_stats(
+            r.failed_attempt_ms for r in evaluated if r.outcome == "provider_error"
+        ),
+        "failed_generation_latency_ms": latency_stats(
+            r.failed_generation_ms for r in evaluated if r.outcome == "provider_error"
+        ),
     }
 
 
@@ -271,7 +289,13 @@ def summarize(
     }
     return {
         "questions_processed": len({r.question_key for r in rows}),
-        "embedding_latency_ms": latency_stats(r.embedding_latency_ms for r in shared),
+        # Successful query embeddings only; failed ones are reported on their own.
+        "embedding_latency_ms": latency_stats(
+            r.embedding_latency_ms for r in shared if not r.retrieval_error
+        ),
+        "failed_embedding_latency_ms": latency_stats(
+            r.failed_embedding_ms for r in shared if r.retrieval_error
+        ),
         "nearest_vector_distance": distances,
         "retrieval": {
             variant: summarize_retrieval(by_variant[variant], chance=chance) for variant in variants
