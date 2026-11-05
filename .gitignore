@@ -52,3 +52,9 @@ logs/
 .DS_Store
 .idea/
 *.swp
+
+# --- Local-only development and agent files (kept on disk, not tracked) ---
+/SPEC.md
+/PROJECT_STATUS.md
+/frontend/AGENTS.md
+/.github/PULL_REQUEST_TEMPLATE.md
