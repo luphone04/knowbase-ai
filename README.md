@@ -41,13 +41,29 @@ and each answer is checked before it is shown. Detailed diagrams:
 
 ## Screenshots
 
-| Dashboard | Document management |
-|---|---|
-| ![Dashboard: document counts and Gemini status](docs/screenshots/app-dashboard.png) | ![Documents: five indexed files](docs/screenshots/app-documents.png) |
-| **Chat with citations** | **Cited source excerpt** |
-| ![Chat: answers with citations and follow-up questions](docs/screenshots/app-chat-citations.png) | ![The excerpt behind citation S1](docs/screenshots/app-citation-source.png) |
-| **Follow-up questions** | **Evaluation** |
-| ![Chat: follow-ups searched with the previous question](docs/screenshots/app-chat-follow-ups.png) | ![Evaluation: dataset, corpus check, and run options](docs/screenshots/app-evaluation.png) |
+**Dashboard**
+
+<img src="docs/screenshots/app-dashboard.png" alt="Dashboard: document counts and Gemini status" width="100%">
+
+**Document management**
+
+<img src="docs/screenshots/app-documents.png" alt="Documents: five indexed files" width="100%">
+
+**Chat with citations**
+
+<img src="docs/screenshots/app-chat-citations.png" alt="Chat: answers with citations and follow-up questions" width="100%">
+
+**Cited source excerpt**
+
+<img src="docs/screenshots/app-citation-source.png" alt="The excerpt behind citation S1" width="100%">
+
+**Follow-up questions**
+
+<img src="docs/screenshots/app-chat-follow-ups.png" alt="Chat: follow-ups searched with the previous question" width="100%">
+
+**Evaluation**
+
+<img src="docs/screenshots/app-evaluation.png" alt="Evaluation: dataset, corpus check, and run options" width="100%">
 
 Screenshots of evaluation results are in [docs/screenshots/](docs/screenshots/).
 
