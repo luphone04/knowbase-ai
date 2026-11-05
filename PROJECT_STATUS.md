@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Current milestone | **M9 — Evaluation, hardening, and portfolio finish** ([ADR 0014](docs/decisions/0014-m9-evaluation-design.md)) |
-| Status | **M9 IN_PROGRESS** (started 2026-11-04): steps 0–6 done and pushed; **waiting for the owner's authorisation of the live evaluation** (step 7). M8 approved by the owner on 2026-11-04 |
+| Status | **M9 IN_PROGRESS** (started 2026-11-04): all work done and pushed, including the approved live evaluation; **waiting only for the GitHub Actions result of the final commit** before READY_FOR_REVIEW. M8 approved by the owner on 2026-11-04 |
 | GitHub repository | https://github.com/luphone04/knowbase-ai. Visibility: **private** (confirmed by owner 2026-11-01) |
 | Workflow | Work on `main`; one step at a time, then commit, push, report, and STOP ([ADR 0002](docs/decisions/0002-main-branch-workflow.md)) |
 | Current branch | `main` |
-| Last verified checkpoint | 2026-11-04 (M8 acceptance passed; temporary accounts removed; original data unchanged; M9 preflight: backend suite 746 passed, 1 skipped on the host) |
+| Last verified checkpoint | 2026-11-04 (M9 live evaluation succeeded, 26/26; fresh-checkout check passed; backend 831 passed, 1 skipped; frontend 49 passed; original data identical to the pre-M9 snapshot) |
 
 ## Milestones
 
@@ -42,12 +42,58 @@ the estimated Gemini usage.
 | 4 | Evaluation API (`/evaluations/questions`, `/run`, `/runs`, `/runs/{id}`) | Done: 27 integration tests with fake providers (full run, retrieval-only run, provider errors, embedding failure, daily quota stop and budget give-back, corpus change, crash takeover, fencing, one active run, all-or-nothing budget, per-workspace run limit, dataset immutability, isolation, authentication, validation, Origin check). Mutation check: fencing, corpus fingerprint, and provider-error handling broken one at a time, each caught |
 | 5 | Evaluation page | Done: `/evaluations` (dataset, corpus readiness, request estimate, runs) and `/evaluations/{id}` (status and progress, retrieval comparison with the chance baseline, answer evaluation with confusion matrices, per-question inspection). 49 frontend tests (14 new component tests with React Testing Library). Browser check against the live API in a temporary account (removed): the missing-documents state, the estimate, the disabled button, an unknown run's 404, and no horizontal scroll at 390 px after a navigation fix |
 | 6 | Hardening review and fixes | Done: 413 and 500 responses now carry CORS headers (ADR 0010 deferred item; regression tests fail on the old order); `no-new-privileges` for api, worker, migrate, and frontend; Origin check test for evaluation runs. Migration 0010 applied to the dev database after a backup; fingerprints identical (see "Dev database migration (0009 → 0010)") |
-| 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | **Waiting for the owner** (see "Live evaluation: estimate and authorisation") |
-| 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Pending |
+| 7 | Gemini usage estimate. **STOP for owner authorisation** before the live run | Done: owner approved Option C, one run, a clean workspace, and a CI gate (run #58 on `c1ee063`, reported green by the owner). Before the run, a rate limit was made to stop the run like the daily quota (owner decision; `eeb178b`, with a regression test) |
+| 8 | Live evaluation, results, README, architecture diagram, interview script, fresh-checkout check, READY_FOR_REVIEW | Done except READY_FOR_REVIEW (waiting for CI on the final commit): see "M9 live evaluation", "M9 acceptance checklist", and [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md) |
+
+### M9 live evaluation (2026-11-04, owner-approved Option C, one run)
+
+- **Account:** a dedicated evaluation account and workspace, "Northstar Evaluation", kept at the owner's
+  request. Its credentials were given to the owner in the conversation only (never in the repository,
+  docs, screenshots, or logs). `Test1` was not used or modified.
+- **Corpus:** the five demo files uploaded unchanged through the API (10 document embedding texts);
+  verified **10 chunks**, five sources ready with matching SHA-256, no other documents.
+- **Run** `5b8f8c46-7b38-4c88-81b7-7682976f3a7e`: queued 16:47:43 UTC, **succeeded** 17:10:15 UTC, 26/26
+  questions. Gemini use: **26 query embeddings and 52 generation requests**, as estimated. No quota or
+  rate-limit refusal. **4 provider errors**, recorded as `provider_error` and excluded from abstention
+  accuracy: vector q05 (503, "currently experiencing high demand"), q08 and q10 (504 deadline
+  exceeded); hybrid u03 (503).
+- **Results and findings:** [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md).
+  In short:
+  - HitRate@5 is 1.00 for all five configurations, but chance is 0.82, so it is saturated;
+  - MRR: vector 0.917, production hybrid 0.917 (the AND keyword query matched no chunk for 18 of 20
+    answerable questions), OR 1.000, `english` 0.950, `english` OR 0.975;
+  - abstention accuracy 1.00 for both modes (23 and 25 decided questions);
+  - citation precision 0.971 and 0.975;
+  - end-to-end latency median 17.5 and 15.4 s (Gemini-bound).
+  - **Production default unchanged**; `english` OR recommended for a larger test. Owner's decision.
+- **Monitoring mistake (corrected):** my progress polling logged in to the API every 20–30 s and tripped
+  Knowbase's own login rate limit (20 per IP per 15 minutes) for a few minutes. It did not affect the run
+  or Gemini; polling then switched to read-only database queries, and the limit cleared at the next
+  window.
+- **Data:** every original table (excluding only the new evaluation workspace and its user), the
+  uploads checksum, and `test.pdf` are identical to the pre-M9 snapshot.
+
+### Fresh-checkout check (2026-11-04)
+
+`git clone` of `eeb178b` into a scratch folder (no `.env`, no `test.pdf`). README steps: `cp .env.example
+.env` with only the two secrets replaced and no Gemini key, then `docker compose up --build -d`. For
+isolation only, a separate project name (`knowbase-fresh`), ports 8011 and 3010, and different image
+names (an uncommitted `compose.override.yaml`), so the owner's stack, volumes, and images were
+untouched. Result:
+
+- all 10 migrations ran and every service became healthy; `/ready` OK (pgvector 0.8.7);
+- the frontend answered 200;
+- register worked;
+- `/ai/status` reported `missing_key`, and an evaluation was refused with 503 `ai_not_configured`;
+- an upload was accepted (202);
+- `docker compose exec api pytest -q`: **812 passed, 20 skipped** (files outside the image).
+
+Teardown: `docker compose -p knowbase-fresh down`, then only that project's two volumes (checked by
+their Compose project label) and its two images were removed. `down -v` was never used.
 
 ### Live evaluation: estimate and authorisation (2026-11-04)
 
-No live evaluation has run. Every result so far comes from fake providers.
+The estimate presented before the run (the run used exactly this).
 
 | Choice | Query embeddings | Answer generations | Total requests |
 |---|---|---|---|
@@ -66,6 +112,58 @@ No live evaluation has run. Every result so far comes from fake providers.
 - `docker compose up -d --build` ran `migrate` (0009 → 0010) and recreated api, worker, and frontend; the db container was not recreated (same container id).
 - Per-table fingerprints (users, workspaces, members, sources, documents, chunks with vectors, jobs, embedding cache, traces, conversations, messages) and the uploads checksum are identical before and after. `test.pdf` untouched.
 - One frontend image build failed once at `npm ci` (transient, most likely a network error); the retry succeeded and nothing had been deployed in between.
+
+### M9 acceptance checklist (the owner's brief §15)
+
+- [x] **The five demo documents are verified and consistent:** SHA-256 recorded in the dataset; a
+  unit test checks every evidence quote and absent term against them.
+- [x] **At least 20 valid evaluation questions:** 26.
+- [x] **At least 15 answerable:** 20.
+- [x] **At least 5 unanswerable:** 6.
+- [x] **Expected source keys are valid and stable:** file names checked against name and hash, never
+  database ids.
+- [x] **Vector-only evaluation works:** live run, 20 answerable questions.
+- [x] **Hybrid evaluation works:** live run.
+- [x] **AND vs OR vs `english` lexical experiments are measured:** live run, labelled as experiments.
+- [x] **HitRate@5, Recall@5, and MRR are calculated correctly:** 22 metric unit tests on
+  hand-computed examples; integration tests with known rankings.
+- [x] **Citation precision and recall are calculated correctly where applicable:** NULL where
+  undefined.
+- [x] **Abstention accuracy is measured correctly:** provider errors are excluded and counted
+  separately; confusion matrices.
+- [x] **Latency is measured:** embedding, search per configuration, end to end per answer mode;
+  min, median, p95, max.
+- [x] **Results are persisted and reproducible:** PostgreSQL rows; dataset version and hash, corpus
+  snapshot, and configuration stored with the run; export in `docs/evaluation/`.
+- [x] **Per-question inspection works:** API and page, checked in the browser and in screenshots.
+- [x] **The evaluation UI uses actual API data:** no hardcoded results; component tests use fixtures.
+- [x] **Security and workspace isolation checks pass:** evaluation isolation, authentication,
+  Origin, and validation tests; CORS on 413/500; `no-new-privileges`.
+- [x] **Backend and frontend tests pass:** backend 831 passed, 1 skipped (host); 812 passed, 20 skipped
+  (fresh container); frontend 49 passed; ruff, format, strict mypy, `alembic check`, typecheck, lint,
+  build, and the bundle scan (including the exact configured key) all pass.
+- [x] **Docker Compose startup is verified:** fresh checkout, isolated.
+- [x] **Existing user data remains intact:** fingerprints identical.
+- [x] **README and architecture documentation are accurate:** the system diagram and the evaluation
+  section were checked against the code.
+- [x] **The interview demonstration script is prepared:** `docs/interview/`.
+- [ ] **GitHub Actions passes for the final pushed commit:** waiting for the owner's report (no `gh`;
+  credentials not used).
+- [x] **Known limitations are honestly documented:** README, results report, and this file.
+- Not done, by decision: **no demo video** was recorded (SPEC.md §17.14 item), and **no release tag**.
+
+### M9 manual review steps (owner)
+
+1. Sign in as the evaluation account (credentials in the conversation) at http://localhost:3000, open
+   **Evaluation**, then the 4 November run: check the retrieval table, the answer tables, and a few
+   questions (q06, q15, q17, u02).
+2. Read [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md) against what the
+   page shows.
+3. Review the README, the architecture diagram, and `docs/interview/`.
+4. Decide whether to test `english` OR keyword matching on a larger corpus (production unchanged until
+   then).
+5. Confirm the GitHub Actions run for the final commit is green.
+6. Optional: from a clean clone, follow the README with your own `.env`.
 
 ### M8 closeout (verified 2026-11-04)
 
@@ -139,7 +237,7 @@ Gemini use for all M8 checks: 6 answer requests (3 in the step 5 check, 3 in the
 - The scaffold enabled Cache Components and partial prefetching; both are off, since every page renders in the browser (ADR 0013).
 - Layout fixes found in screenshots: a long conversation title widened its column; the scroll to the newest message left an error under the sticky question box; the sidebar scrolled away with long chats; hard-wrapped excerpts read poorly (now shown as paragraphs, text unchanged).
 
-### Manual review steps (owner)
+### M8 manual review steps (owner)
 
 1. `docker compose up --build -d` (builds the frontend with `NEXT_PUBLIC_API_BASE_URL=http://localhost:8001/api/v1` from `.env`), then open http://localhost:3000. Use `localhost`, not `127.0.0.1`.
 2. Register a new account (or sign in), go to Documents, and upload the files in `sample_data/demo_store/`. Watch each go Queued → Processing → Ready.
@@ -499,7 +597,9 @@ up to `2b8513e`.
 | M9 | `7a7639f` | feat(frontend): add the evaluation page: dataset and corpus readiness, runs, metrics, and per-question results |
 | M9 | `04c8541` | fix(api): give 413 and 500 responses CORS headers so the browser can read them; harden containers |
 | M9 | `1f16b7b` | fix(frontend): keep the four navigation links in one row at phone width |
-| M9 | see `git log` | docs: record M9 progress and the live evaluation estimate |
+| M9 | `c1ee063` | docs: record M9 progress and the live evaluation estimate (CI run #58: green, reported by the owner) |
+| M9 | `eeb178b` | fix(evaluation): stop a run on a Gemini rate limit, as on the daily quota |
+| M9 | see `git log` | docs: record the M9 live evaluation, results, README, architecture, interview material, and fresh-checkout check |
 
 ## Blockers
 
@@ -544,15 +644,14 @@ None.
 - **The daily embedding budget is shared by all workspaces** (one Gemini project) and resets at 00:00 UTC. Gemini's own daily quota resets at midnight Pacific; those jobs wait until 08:05 UTC. Query embeddings have their own installation-wide limit (`DAILY_QUERY_EMBEDDING_LIMIT`). Chat is limited to 30 questions per user per day (`DAILY_CHAT_REQUEST_LIMIT`); there is no installation-wide generation limit, so many users together can exhaust Gemini's daily quota.
 - **Deleting a source also removes its job history.**
 - **Parsing runs in a child process** with a timeout and (on Linux) a memory cap, not a full sandbox: a parser exploit would still run as the worker's user.
-- **Deferred from the audit** (ADR 0010):
-  - CORS headers on middleware errors (M8);
+- **Deferred from the audit** (ADR 0010; CORS headers on 413/500 and `no-new-privileges` were done in M9):
   - missing indexes;
   - offline SQL for migration 0006;
-  - container and CI hardening;
+  - container and CI hardening (digest pinning, a CI image build, `migrate` receiving the whole `.env`);
   - several low items.
 - **The status endpoint (M3) is process-local:** it doesn't show the worker's provider errors.
-- **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`). Kept by owner decision (2026-11-04); M9 evaluates AND vs OR vs `english`.
-- **No relevance threshold:** an unanswerable question still retrieves the nearest chunks. Chat relies on the model saying the excerpts are not enough, and on the citation check (SPEC.md §10.3: calibrate any threshold in M9).
+- **Lexical recall for natural questions is low** (all-words AND in `websearch_to_tsquery`). Kept by owner decision (2026-11-04). Measured in M9: no keyword match for 18 of 20 answerable questions, and production hybrid equals vector-only on the demo corpus. `english` OR is the candidate to test on a larger corpus.
+- **No relevance threshold:** an unanswerable question still retrieves the nearest chunks. Chat relies on the model saying the excerpts are not enough, and on the citation check. M9 measured the nearest distances: answerable 0.193–0.387, unanswerable 0.317–0.527. They overlap, so no threshold was set.
 - **Citation checks are per answer, not per claim:** one valid citation is enough for an answer to be shown; whether each sentence is supported is for M9's evaluation (citation precision and recall).
 - **A URL quoted from an uploaded document survives validation,** because it is in an excerpt. Whether the model repeats an injected link is model behaviour (live check pending).
 - **A chat question can take up to about 90 s** when Gemini is slow (one generation attempt with the 90 s timeout). The HTTP request waits that long; streaming is not implemented.
@@ -564,7 +663,7 @@ None.
 - Registration enumeration (409); no refresh tokens, password reset, or MFA; fixed-window rate limits (M2).
 - **Deferred from M8 (ADR 0013), not scheduled:** `GET /analytics/overview` and the dashboard metrics that need it (job totals across history, a recent-jobs list, chat request counts, token usage). Not built: streaming, conversation rename/delete, workspace settings and members, a retrieval-mode switch, dark mode, multi-file upload, a file viewer.
 - **Frontend limitations (M8):** a question waits for the whole answer (no streaming; up to about 90 s when Gemini is slow); a new chat whose first question fails leaves an empty "New conversation" (there is no conversation deletion); the conversation list shows the newest 100; the dashboard's "last call" and "last error" are what the API process has seen since it started (not the worker's); citations show the excerpt saved with the answer, which can differ from a document re-indexed later; the app must be opened at the exact `FRONTEND_ORIGIN`; light theme only. The acceptance test needs live Gemini, so CI runs only lint, types, unit tests, build, and the key scan.
-- **Oversized uploads in the browser:** the body-size middleware's 413 has no CORS headers (ADR 0010 deferred item), so the frontend checks the size itself before uploading. The backend item stays open.
+- **Oversized uploads in the browser:** the frontend still checks the size before uploading. Since M9, the API's 413 also carries CORS headers, so the browser can read it.
 - `uv` isn't installed system-wide on the development machine. Docker and CI use pinned `uv` 0.13.6.
 - Port 8000 is used by another local project; use `API_HOST_PORT`.
 
@@ -581,3 +680,21 @@ None.
 
 Environment, Gemini, SDK, and pgvector compatibility were verified (live Gemini smoke test PASS), along with repository hygiene and the CI skeleton.
 Full details: [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md).
+
+## M9 limitations and deferred work
+
+- **Evaluation scope:** 26 questions, a 10-chunk corpus, one live run. HitRate@5 is saturated, the
+  differences come from 4 questions, and answers vary between runs. Not measured: claim-level
+  faithfulness (no LLM judge), larger corpora, load.
+- **Comparing answer modes:** vector and hybrid sent identical excerpts in this run, and provider
+  errors removed different questions, so their answer metrics aren't comparable as a retrieval effect.
+- **Follow-up questions in the evaluation** carry the previous user question as history, but no
+  generated earlier answer.
+- **The evaluation budget shares `DAILY_QUERY_EMBEDDING_LIMIT` with chat and search,** so a run (26)
+  reduces what chat can use that day.
+- **`GET /evaluations/questions` writes the shared dataset rows on first use** (idempotent; refuses a
+  changed file with the same version).
+- **The bundle scan inside the Docker build** checks only the variable's name and the legacy `AIza…`
+  key shape; it checks for the exact key only when it is set where the scan runs (done locally in M9).
+- **Not built:** a demo video, a release tag, `GET /analytics/overview`, streaming, conversation
+  deletion, account deletion. The evaluation account was kept on purpose.

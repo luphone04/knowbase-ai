@@ -2,8 +2,8 @@
 
 **Document type:** Product + engineering build specification\
 **Project name:** Knowbase AI\
-**Version:** 1.5 (Milestone 8 frontend scope, owner decision 4 November
-2026; see `docs/decisions/0013-m8-frontend-scope.md`). 1.4: generation
+**Version:** 1.6 (Milestone 9 evaluation design, 4 November 2026; see
+`docs/decisions/0014-m9-evaluation-design.md`). 1.5: Milestone 8 frontend scope (ADR 0013). 1.4: generation
 model `gemini-3.5-flash-lite` and separate generation retries (ADR 0012). 1.3:
 Milestone 0 decisions and main-branch workflow (ADRs 0001 and 0002)\
 **Prepared:** 1 November 2026\
@@ -24,6 +24,15 @@ open-source infrastructure.
 > chat, and citations using only the existing API. The evaluation page
 > moves to Milestone 9; `GET /analytics/overview` and the dashboard
 > metrics that need it are deferred. See §11, §12, §16, and §17.13.
+
+> **Evaluation design (4 November 2026, ADR 0014):** the dataset lives in
+> `backend/app/evaluation/datasets/` (inside the backend image) rather than
+> `sample_data/evaluation/`; the evaluation tables carry more columns than
+> §6.1 sketches (versioning, corpus snapshot, per-configuration rows, NULL
+> for unmeasured metrics, separate provider errors); runs execute in the
+> worker as a second durable queue; and one run compares five retrieval
+> configurations (two production modes, three labelled keyword experiments).
+> Metric definitions: ADR 0014 §9–14.
 
 ------------------------------------------------------------------------
 
@@ -756,6 +765,15 @@ GIN trigram index for fuzzy text search if performance warrants it.
 
 #### Evaluation tables
 
+> **As built (ADR 0014, migration 0010):** these columns exist, with
+> additions: questions carry a dataset version, file hash, key, category,
+> previous question, and reference evidence; runs carry a configuration and
+> corpus snapshot, progress, and queue fields (lock token, lease, attempts);
+> results have one row per question and retrieval configuration, and the
+> retrieval, citation, and abstention columns are NULL when not measured
+> (`abstained` is replaced by `outcome`: answered, abstained, or
+> provider_error).
+
 `evaluation_questions`: - `id UUID PRIMARY KEY` -
 `dataset_name TEXT NOT NULL` - `question TEXT NOT NULL` -
 `expected_answer TEXT NULL` -
@@ -1189,6 +1207,12 @@ must not take priority over working backend behavior.
 ------------------------------------------------------------------------
 
 ## 13. Evaluation design
+
+> **As built (ADR 0014):** relevance is source level (top-5 chunks collapsed
+> to documents by best rank) with a chance baseline per run; citation
+> metrics cover answered answerable questions only; provider failures are
+> excluded from abstention accuracy and counted separately. First results:
+> `docs/evaluation/results-2026-11-04.md`.
 
 Evaluation is a core feature, not an optional screenshot.
 
@@ -1982,6 +2006,11 @@ both desktop and mobile widths.
 **STOP after M8.**
 
 ### 17.14 Milestone 9 --- Evaluation, hardening, and portfolio finish
+
+> **As done (M9):** the work went directly to `main` (ADR 0002), not a
+> feature branch and PR. No demo video was recorded: the checklist item
+> "Record a short demo video" is not done. An interview demo script is in
+> `docs/interview/`. No release tag without separate owner approval.
 
 **Goal:** Demonstrate measurable engineering quality and prepare the
 project for an honest interview walkthrough.

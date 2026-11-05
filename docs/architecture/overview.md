@@ -12,8 +12,9 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 - The Gemini provider layer ("AI provider layer"). Ingestion uses it for document embeddings.
 - File ingestion: upload → durable job → parse → clean → chunk → embed → pgvector ("File ingestion" below).
 - Website crawling was built in M5 and removed by owner decision (M5 is descoped). The server never fetches user-supplied URLs.
+- Evaluation (M9): `/api/v1/evaluations*`, a versioned dataset, and evaluation runs processed by the worker ("Evaluation" below, [ADR 0014](../decisions/0014-m9-evaluation-design.md)).
 
-**Planned:** evaluation (M9). See
+**Not built:** `GET /analytics/overview` (deferred, ADR 0013), streaming, OCR, URL ingestion. See
 [ADR 0003](../decisions/0003-m1-service-foundation.md) (M1),
 [ADR 0004](../decisions/0004-m2-auth-and-tenancy.md) (M2),
 [ADR 0005](../decisions/0005-m3-gemini-provider.md) (M3),
@@ -24,7 +25,61 @@ Status: design from [SPEC.md](../../SPEC.md) §4.
 [ADR 0010](../decisions/0010-m0-m6-audit-remediation.md) (audit remediation), and
 [ADR 0011](../decisions/0011-m7-grounded-chat.md) (M7 grounded chat), and
 [ADR 0012](../decisions/0012-generation-model-gemini-3.5-flash-lite.md) (generation model `gemini-3.5-flash-lite`, separate generation retries), and
-[ADR 0013](../decisions/0013-m8-frontend-scope.md) (M8 minimal frontend scope).
+[ADR 0013](../decisions/0013-m8-frontend-scope.md) (M8 minimal frontend scope), and
+[ADR 0014](../decisions/0014-m9-evaluation-design.md) (M9 evaluation design).
+
+## The whole system
+
+Every box below exists in the code; nothing here is planned work.
+
+```mermaid
+flowchart TB
+    subgraph browser["Browser"]
+        UI["Next.js pages<br/>dashboard · documents · chat · evaluation"]
+    end
+    subgraph api["api (FastAPI)"]
+        MW["TrustedHost → CORS → JSON 500s →<br/>body limit → Origin check"]
+        AUTH["auth: JWT cookie, revocation,<br/>rate limits → AuthContext"]
+        GUARD["workspace-bound DB session<br/>(tenancy guard, fails closed)"]
+        SRC["sources: validate upload,<br/>store file, enqueue job"]
+        RET["retrieval: contextualize →<br/>query embedding → vector + full-text → RRF"]
+        CHAT["chat: excerpts S1..Sn → prompt →<br/>generate → validate citations / abstain"]
+        EVAPI["evaluations: dataset, corpus check,<br/>budget reservation, runs, results"]
+    end
+    subgraph worker["worker (one process)"]
+        ING["ingestion jobs: parse (child process) →<br/>clean → chunk → embed → publish"]
+        EVR["evaluation runs: one question per claim →<br/>rank with 5 configurations → answer per mode → metrics"]
+    end
+    subgraph pg["PostgreSQL 18 + pgvector"]
+        T1[("users · workspaces · members")]
+        T2[("sources · documents · chunks<br/>vector(768) HNSW · tsvector GIN")]
+        T3[("ingestion_jobs · evaluation_runs<br/>(durable queues: SKIP LOCKED, fencing, lease)")]
+        T4[("conversations · messages · query_traces")]
+        T5[("evaluation_questions · evaluation_results")]
+    end
+    GEM["Gemini API (free tier)<br/>gemini-embedding-001 · gemini-3.5-flash-lite"]
+    VOL[("uploads volume")]
+
+    UI -->|"REST, HttpOnly cookie"| MW --> AUTH --> GUARD
+    GUARD --> SRC & RET & CHAT & EVAPI
+    CHAT --> RET
+    SRC --> VOL
+    SRC --> T2 & T3
+    EVAPI --> T3 & T5
+    RET --> T2 & T4
+    CHAT --> T4
+    ING --> T3 & T2
+    ING --> VOL
+    EVR --> T3 & T5
+    EVR -. "same code" .-> RET & CHAT
+    RET -->|"RETRIEVAL_QUERY"| GEM
+    CHAT -->|"generate"| GEM
+    ING -->|"RETRIEVAL_DOCUMENT"| GEM
+    AUTH --> T1
+```
+
+The evaluation runner reuses the retrieval and chat code (dashed line): it calls the same
+`Retriever.rank` and `ChatService.answer`, inside the worker, with no HTTP request.
 
 ## Request flow (authenticated API call)
 
@@ -33,13 +88,15 @@ sequenceDiagram
     participant B as Browser
     participant TH as TrustedHost
     participant C as CORS
+    participant L as JSON 500s + body limit
     participant O as Origin check
     participant D as get_auth_context
     participant S as DB session (tenancy guard)
     participant R as Route handler
     B->>TH: request + kb_session cookie
     TH->>C: Host is allowed
-    C->>O: preflights answered here
+    C->>L: preflights answered here
+    L->>O: 413 / 500 answered inside CORS, so the browser can read them
     O->>D: unsafe method: Origin must be FRONTEND_ORIGIN
     D->>D: verify JWT (HS256, exp, iss, aud, required claims)
     D->>S: jti not revoked?
@@ -79,7 +136,7 @@ flowchart LR
 |---|---|---|
 | `frontend` | UI pages, calls to `/api/v1` with `credentials: "include"` | Hold any secret; call Gemini; compute metrics |
 | `api` | Auth, workspace scoping, source CRUD, enqueueing jobs, retrieval, chat, citation validation, evaluation endpoints, health | Parsing or bulk embedding inside a request |
-| `worker` | Claims `ingestion_jobs` with `FOR UPDATE SKIP LOCKED`; parses, cleans, chunks, embeds, and indexes files; stale-lock recovery; deletes | Serve HTTP; hold DB locks while calling Gemini |
+| `worker` | Claims `ingestion_jobs` with `FOR UPDATE SKIP LOCKED`; parses, cleans, chunks, embeds, and indexes files; stale-lock recovery; deletes. When no job is due, evaluates one question of a due `evaluation_runs` row | Serve HTTP; hold DB locks while calling Gemini |
 | `db` | Relational data, `vector(768)` embeddings (HNSW), full-text `tsvector` (GIN), the job queue | Expose a public port (localhost-only if bound) |
 | `migrate` | Applies Alembic migrations once, then exits | Run at request time |
 
@@ -191,6 +248,34 @@ flowchart LR
 | Outage or quota shown as an answer | Provider errors are 429/502/503 responses; nothing is saved; the trace records the category |
 | Gemini cost | `DAILY_CHAT_REQUEST_LIMIT` per user and `DAILY_QUERY_EMBEDDING_LIMIT` reserved first, given back when Gemini refuses the call; an empty workspace makes no call |
 
+## Evaluation (M9)
+
+```mermaid
+flowchart LR
+    DS["datasets/northstar-demo-v1.json<br/>26 questions, source keys + SHA-256"] --> Q[("evaluation_questions<br/>immutable per version")]
+    POST["POST /evaluations/run<br/>answer_modes"] --> CK["corpus check: 5 demo files,<br/>names + hashes, indexed, nothing indexing"]
+    CK --> BU["reserve budget (all or nothing):<br/>run slot, query embeddings, generations"]
+    BU --> RUN[("evaluation_runs: queued<br/>config + corpus snapshot")]
+    RUN --> W["worker: claim (SKIP LOCKED,<br/>fencing token, lease heartbeat)"]
+    W --> E["contextualize + embed once"]
+    E --> R["rank ×5: vector, hybrid (production),<br/>hybrid OR / english / english OR (experiments)"]
+    R --> A["answer with vector and/or hybrid<br/>(ChatService.answer, no conversation)"]
+    A --> M["metrics: hit@5, recall@5, RR,<br/>citation precision/recall, decision"]
+    M --> RES[("evaluation_results<br/>one row per question × configuration")]
+    RES --> W
+    RES --> S["GET /runs/{id}: summary computed<br/>from stored results"]
+```
+
+| Concern | Mechanism |
+|---|---|
+| Fair comparison | All configurations run on the same corpus, question, and query embedding in the same claim; the corpus fingerprint is re-checked before every question and a change stops the run |
+| Reproducibility | Dataset name, version, and SHA-256; corpus snapshot (source keys, hashes, chunk counts, other documents); models and retrieval settings stored on the run |
+| Relevance level | Source level: top-5 chunks collapsed to documents by best rank; a chance baseline per run |
+| Undefined metrics | NULL (shown as "Not measured"), never 0: unanswerable questions have no retrieval metrics; citation metrics only for answered answerable questions |
+| Provider failures | Their own outcome (`provider_error`), never an abstention; quota and rate-limit refusals stop the run with partial results kept |
+| Gemini cost | Budget reserved when the run is created and unused slots given back at the end; one question per claim with a pause between questions; experiments need no extra calls |
+| Isolation | Runs and results are workspace-owned (composite keys, tenancy guard, explicit filters); questions are a shared read-only dataset |
+
 ## AI provider layer (M3)
 
 ```mermaid
@@ -236,4 +321,4 @@ flowchart LR
 3. Fuse: Reciprocal Rank Fusion with `k=60`, top 5.
 4. Generate: Gemini answer from `[S#]`-keyed, escaped excerpts with bounded history (M7).
 5. Validate: drop unknown citation IDs and URLs; abstain when no valid citation is left (M7).
-6. Evaluate: compare vector-only and hybrid modes on the seeded dataset.
+6. Evaluate: run the versioned dataset through the same retrieval and answer code with every configuration, and store per-question results (M9).

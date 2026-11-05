@@ -1,42 +1,140 @@
 # Knowbase AI
 
-A locally runnable document knowledge assistant. Upload PDF, DOCX, TXT, or
-Markdown files. The system indexes them into PostgreSQL + pgvector, and
-answers questions with Gemini (free tier), grounded in your own documents
-and with validated citations. When the documents don't support an answer,
-it says so.
+A locally runnable document knowledge assistant. Upload PDF, DOCX, TXT, or Markdown files; Knowbase
+indexes them into PostgreSQL + pgvector and answers questions with Gemini (free tier), **grounded in
+your documents, with citations the server has validated**. When the documents don't support an answer,
+it says so instead of guessing. A built-in evaluation measures how well that works.
 
-This is a well-engineered prototype for local demos, not production software.
+This is a carefully engineered prototype for local use and technical review, **not production
+software** (see [Known limitations](#known-limitations)).
 
-> **Status:** File-upload-only (owner decision, 3 November 2026; see
-> [ADR 0008](docs/decisions/0008-file-upload-only-scope.md)). You can sign in
-> and upload PDF, DOCX, TXT, and Markdown files. The worker indexes them into
-> pgvector with Gemini embeddings, and content that hasn't changed isn't
-> embedded again. Website crawling (Milestone 5) was built and then removed;
-> it is descoped. **Milestone 6 (hybrid retrieval)** is approved: you can search in
-> vector-only or hybrid mode and inspect ranks, scores, and traces.
-> **Milestone 7 (grounded chat)** is approved: conversations with answers that
-> cite your documents, abstention when they don't support an answer, and clear
-> errors when Gemini is unavailable. **Milestone 8 (a minimal web interface over
-> this API)** is ready for review: register, upload and index documents, and chat
-> with cited answers at http://localhost:3000.
-> See [PROJECT_STATUS.md](PROJECT_STATUS.md) for progress.
+## The problem
 
-## Documents
+Ask a general chatbot about your company's returns policy and it answers fluently, whether or not it
+knows. Knowbase answers only from the documents you uploaded, and every answer must cite the excerpts
+it used. The server checks those citations and refuses to show an answer that cites nothing it was
+given. Unsupported questions get an explicit "not found in your documents".
 
-- [SPEC.md](SPEC.md): the implementation specification (source of truth)
-- [PROJECT_STATUS.md](PROJECT_STATUS.md): milestone tracker, test results, blockers
-- [docs/architecture/overview.md](docs/architecture/overview.md): service boundaries
-- [docs/m00-compatibility-report.md](docs/m00-compatibility-report.md): environment and compatibility findings
-- [docs/decisions/](docs/decisions/): decision records
+![Evaluation run: retrieval comparison](docs/screenshots/evaluation-retrieval.png)
 
-## Stack
+More screenshots: [dashboard](docs/screenshots/dashboard.png) ·
+[documents](docs/screenshots/documents.png) ·
+[evaluation runs](docs/screenshots/evaluation-overview.png) ·
+[a full run](docs/screenshots/evaluation-run.png) ·
+[answer metrics](docs/screenshots/evaluation-answers.png) ·
+[one question inspected](docs/screenshots/evaluation-question-q06.png) ·
+[phone width](docs/screenshots/evaluation-run-mobile.png). Taken from the running app with the
+evaluation workspace (account email masked). Chat screenshots were not taken, to avoid Gemini calls
+beyond the approved evaluation run.
 
-Next.js 16 (App Router, TypeScript, Node 24 LTS, Tailwind CSS, shadcn/ui) · FastAPI (Python
-3.12, dependencies locked with `uv`) · SQLAlchemy 2 + Alembic ·
-PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai` SDK
-(`gemini-3.5-flash-lite` for answers, `gemini-embedding-001` at 768 dims) · Docker Compose.
-Requires no paid services.
+## How it works
+
+1. **Ingest** (worker): an upload is stored and queued as a durable job in PostgreSQL. The worker parses
+   it in a killable child process, cleans and chunks it, embeds new chunks with
+   `gemini-embedding-001` (`RETRIEVAL_DOCUMENT`, 768 dims), and publishes the chunks in one transaction.
+2. **Retrieve** (api): the question (plus the previous question for a follow-up) is embedded once
+   (`RETRIEVAL_QUERY`). Vector search (pgvector, cosine) and PostgreSQL full-text search each return
+   10 candidates; hybrid mode fuses them with Reciprocal Rank Fusion (ranks only, k = 60) and keeps the
+   top 5. Full-text ranking is `ts_rank_cd`, **not BM25**.
+3. **Answer**: the excerpts go to `gemini-3.5-flash-lite` as escaped, numbered sources (`[S1]` …),
+   treated as untrusted data, with bounded history.
+4. **Validate**: only citation ids the server assigned survive; invented links are removed. An answer
+   with no valid citation is withheld, and the turn is recorded as an abstention. Gemini failures are
+   errors, never answers or abstentions.
+5. **Evaluate**: a versioned dataset runs through the same retrieval and answer code, comparing
+   retrieval configurations and measuring citations, abstention, and latency.
+
+Every query is scoped to the signed-in user's workspace twice: a fail-closed session guard and explicit
+filters, backed by composite foreign keys.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    B["Browser<br/>Next.js UI"] -->|"REST + HttpOnly cookie"| API["api (FastAPI)<br/>auth · workspace guard · sources<br/>retrieval + RRF · grounded chat · evaluations"]
+    API --> DB[("PostgreSQL 18 + pgvector<br/>chunks: vector(768) HNSW, tsvector GIN<br/>job and evaluation queues")]
+    W["worker<br/>ingestion jobs · evaluation runs"] --> DB
+    API --> UP[("uploads volume")]
+    W --> UP
+    API -->|"query embeddings, answers"| G["Gemini API (free tier)"]
+    W -->|"document embeddings, evaluation answers"| G
+```
+
+Full diagrams (the whole system, request flow, ingestion, retrieval, chat, evaluation):
+[docs/architecture/overview.md](docs/architecture/overview.md).
+
+## Technology
+
+Next.js 16 (App Router, TypeScript, Tailwind CSS, shadcn/ui, TanStack Query) · FastAPI (Python 3.12,
+`uv`) · SQLAlchemy 2 + Alembic · PostgreSQL 18 + pgvector 0.8.7 · Google `google-genai`
+(`gemini-3.5-flash-lite` for answers, `gemini-embedding-001` at 768 dims) · Docker Compose. No paid
+services, no Redis or Celery, no orchestration framework: PostgreSQL is the queue, and each RAG stage
+is plain code.
+
+## Evaluation results (4 November 2026)
+
+One live run on a clean workspace holding only the five fictional demo documents (**10 chunks**), with
+26 questions (20 answerable, 6 unanswerable). All numbers come from the run's stored results. Full
+report, per-question findings, and caveats: [docs/evaluation/results-2026-11-04.md](docs/evaluation/results-2026-11-04.md).
+
+| Retrieval (source level, 20 answerable) | HitRate@5 | Recall@5 | MRR |
+|---|---|---|---|
+| Vector only | 1.00 | 0.975 | 0.917 |
+| Hybrid, keyword AND (production) | 1.00 | 0.975 | 0.917 |
+| Hybrid, keyword OR (experiment) | 1.00 | 1.000 | 1.000 |
+| Hybrid, `english` AND (experiment) | 1.00 | 0.975 | 0.950 |
+| Hybrid, `english` OR (experiment) | 1.00 | 1.000 | 0.975 |
+
+| Answers | Vector only | Hybrid |
+|---|---|---|
+| Abstention accuracy (decided questions) | 1.00 (23) | 1.00 (25) |
+| Citation precision / recall (answered answerable) | 0.97 / 0.97 (17) | 0.975 / 0.975 (20) |
+| Provider errors (Gemini 503/504, not counted as abstentions) | 3 | 1 |
+| End-to-end latency, median / p95 | 17.5 / 32.9 s | 15.4 / 43.3 s |
+
+What this does and doesn't show:
+
+- **HitRate@5 is saturated:** a random ranking of 10 chunks already reaches 0.82. MRR is the useful
+  signal, and it comes from 4 questions.
+- **Production hybrid added nothing over vector-only here:** the all-words keyword query matched no
+  chunk for 18 of 20 answerable questions. OR matching helped on 4 questions but matches stop-words.
+  The default is unchanged until it is tested on a larger corpus.
+- **Every question that got a decision was decided correctly** in this run (37 answers, 11
+  abstentions). A manual review found no contradictions, but several answers omit details. Citations
+  are checked per document, not per claim.
+- **The two answer modes can't be ranked:** they received identical excerpts here, and Gemini's
+  latency, during a high-demand period, dominates end-to-end time.
+
+## Technical decisions
+
+Concise decision records live in [docs/decisions/](docs/decisions/), including:
+
+- the PostgreSQL job queue with fencing tokens and leases ([ADR 0006](docs/decisions/0006-m4-file-ingestion.md), [0010](docs/decisions/0010-m0-m6-audit-remediation.md));
+- file-upload-only scope ([0008](docs/decisions/0008-file-upload-only-scope.md));
+- hybrid retrieval with RRF on ranks, and keeping keyword AND ([0009](docs/decisions/0009-m6-hybrid-retrieval.md));
+- grounded chat, citation validation, and abstention ([0011](docs/decisions/0011-m7-grounded-chat.md));
+- the generation model ([0012](docs/decisions/0012-generation-model-gemini-3.5-flash-lite.md));
+- the minimal frontend ([0013](docs/decisions/0013-m8-frontend-scope.md));
+- the evaluation design ([0014](docs/decisions/0014-m9-evaluation-design.md)).
+
+Other documents: [SPEC.md](SPEC.md) (specification), [PROJECT_STATUS.md](PROJECT_STATUS.md)
+(milestones, test results, evidence), [docs/interview/](docs/interview/) (demo script and likely
+questions).
+
+## Known limitations
+
+- **Small evaluation:** 26 questions, 10 chunks, one run. The metrics separate configurations only
+  weakly, and answers vary between runs.
+- **Production keyword search rarely matches natural questions** (all-words AND; owner decision,
+  ADR 0009), so hybrid mode mostly behaves like vector search.
+- **No relevance threshold:** nearest-chunk distances of answerable and unanswerable questions overlap,
+  so abstention relies on the model and the citation check.
+- **Citations are checked per answer and per document**, not per claim. Answers can omit details.
+- **Latency** is dominated by Gemini's free tier: a chat answer can take 15–60 s when it is busy. There
+  is no streaming.
+- **No OCR**, no URL ingestion, no password reset or MFA, a single worker, fixed-window rate limits, and
+  local HTTP by default. Every workspace shares one free-tier Gemini project and its quota.
+- More in [PROJECT_STATUS.md](PROJECT_STATUS.md#risks-limitations-and-deferred-work).
 
 ## Prerequisites
 
@@ -47,6 +145,9 @@ Requires no paid services.
   without a key.
 
 ## Run the local stack
+
+This was checked from a fresh clone (4 November 2026): the steps below, with only the secrets set and
+no Gemini key, start every service healthy and pass the backend tests in the container.
 
 ```bash
 # 1. Create your local configuration (git-ignored)
@@ -133,6 +234,26 @@ It needs the full stack with a Gemini key and uses about 3 answer requests and
 `m8-e2e-…@example.com` account; the app has no account deletion, so remove it
 afterwards (delete its documents in the UI, then remove the user and workspace
 in the database).
+
+## Upload the demo corpus, chat, and run an evaluation
+
+1. Open http://localhost:3000, register (each account gets its own workspace), and go to
+   **Documents**.
+2. Upload the five files in [`sample_data/demo_store/`](sample_data/demo_store/) unchanged, and wait
+   until each shows **Ready**.
+3. **Chat:** ask "I bought a laptop 20 days ago. Can I return it?", then open the `S1` citation to see
+   the excerpt. Ask "What if the packaging is damaged?" (a follow-up), then something the documents
+   don't cover, to see the abstention.
+4. **Evaluation:** the page shows whether the workspace holds the demo documents, and how many Gemini
+   requests a run will reserve: 26 query embeddings, plus 26 answers per answer mode. Start a run. The
+   worker evaluates one question at a time (about 20–25 minutes for both answer modes on the free
+   tier), and the page shows progress. Open the run to compare retrieval configurations and to inspect
+   each question's retrieved documents, answer, citations, and decision.
+
+For reproducible numbers, use a workspace that holds only the five demo files. Other documents are
+searched too, and the run records them. Daily limits: `DAILY_EVALUATION_RUN_LIMIT` (per workspace),
+`DAILY_EVALUATION_GENERATION_LIMIT`, and `DAILY_QUERY_EMBEDDING_LIMIT`. A Gemini quota or rate-limit
+refusal stops a run and keeps its partial results.
 
 ## Try authentication and workspace isolation (curl)
 
@@ -412,6 +533,9 @@ python3.12 -m venv .venv-preflight
 ## Security notes
 
 - `.env` is git-ignored. Only `.env.example` (no real values) is committed.
-- The Gemini key is backend-only and never goes in a `NEXT_PUBLIC_*` variable.
+- The Gemini key is backend-only and never goes in a `NEXT_PUBLIC_*` variable. `npm run check:bundle`
+  scans the build for the variable's name and for legacy `AIza…`-shaped keys. It checks for the exact
+  configured key only when `GEMINI_API_KEY` is set where it runs (not inside the Docker build). Run it
+  locally with the key set to cover newer key formats.
 - The database has no host port and no internet route. The API binds to
   `127.0.0.1` only.

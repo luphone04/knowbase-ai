@@ -111,3 +111,17 @@ query):
 Option 3: keyword search keeps `websearch_to_tsquery` (every word required), unchanged, as
 SPEC.md §9.3 specifies. The low lexical recall for natural questions is a known limitation. M9's
 evaluation measures AND against OR and against the `english` configuration before any change.
+
+## Measured in M9 (4 November 2026; no decision changed)
+
+The M9 evaluation ([results](../evaluation/results-2026-11-04.md)) compared these options on the clean
+10-chunk demo corpus (20 answerable questions, source-level MRR):
+
+- production AND, `simple`: 0.917, the same as vector-only (no keyword match for 18 of 20 questions);
+- OR, `simple`: 1.000;
+- AND, `english`: 0.950;
+- OR, `english`: 0.975.
+
+The gains come from 4 questions. `simple` OR matched stop-words for every unanswerable question.
+Production keeps AND until `english` OR (the most promising option) is tested on a larger corpus with
+distractor documents; the change would be the owner's decision.
