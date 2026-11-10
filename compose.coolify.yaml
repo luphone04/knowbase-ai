@@ -23,9 +23,12 @@ x-backend: &backend
   environment: &backend-environment
     APP_ENV: ${APP_ENV:-production}
     COOKIE_SECURE: ${COOKIE_SECURE:-true}
-    # The public API host, e.g. api.example.com. 127.0.0.1 is added for the
-    # container's own healthcheck, which calls the API on loopback.
-    ALLOWED_HOSTS: ${ALLOWED_HOSTS:?},127.0.0.1
+    # Set KNOWBASE_ALLOWED_HOSTS in Coolify to the public API host, e.g. api.example.com.
+    # 127.0.0.1 is added for the container's own healthcheck, which calls the API on
+    # loopback. The source variable has its own name because Coolify shows a compose
+    # key whose value adds text to a reference as read-only, and then refuses to add a
+    # variable with that same name.
+    ALLOWED_HOSTS: ${KNOWBASE_ALLOWED_HOSTS:?},127.0.0.1
     # The exact frontend origin, e.g. https://app.example.com.
     FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?}
     APP_SECRET_KEY: ${APP_SECRET_KEY:?}
