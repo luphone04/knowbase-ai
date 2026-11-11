@@ -5,6 +5,11 @@ never Vertex AI. The only methods called are `models.generate_content` and
 `models.embed_content`, always with the configured model. No grounding tools,
 no batch API, and no other model is tried when one fails.
 
+Embedding token usage is not reported: `models.embed_content` returns no
+usage for the Developer API (a live `batchEmbedContents` response carried
+only `embeddings`, no `usageMetadata`), so `EmbeddingResult.input_tokens`
+stays None (unknown), never zero and never estimated from the text.
+
 Logs carry model names, counts, finish reasons, token usage, latency, attempts,
 and error categories. Never prompts, texts, vectors, or keys.
 """
@@ -249,6 +254,7 @@ def _token_usage(metadata: types.GenerateContentResponseUsageMetadata | None) ->
         output_tokens=metadata.candidates_token_count,
         thinking_tokens=metadata.thoughts_token_count,
         total_tokens=metadata.total_token_count,
+        cached_tokens=metadata.cached_content_token_count,
     )
 
 
@@ -323,7 +329,8 @@ class GeminiGenerationProvider:
         finish_reason, text = _finish_reason_and_text(response)
         logger.info(
             "Gemini generate model=%s finish=%s latency_ms=%d attempts=%d "
-            "prompt_tokens=%s output_tokens=%s thinking_tokens=%s total_tokens=%s",
+            "prompt_tokens=%s output_tokens=%s thinking_tokens=%s total_tokens=%s "
+            "cached_tokens=%s",
             self._model,
             finish_reason,
             latency_ms,
@@ -332,6 +339,7 @@ class GeminiGenerationProvider:
             usage.output_tokens,
             usage.thinking_tokens,
             usage.total_tokens,
+            usage.cached_tokens,
         )
         if finish_reason != "STOP":
             raise IncompleteGeneration(finish_reason, usage, latency_ms)

@@ -59,13 +59,19 @@ from app.evaluation.service import corpus_snapshot, run_questions, run_results, 
 from app.evaluation.variants import BY_KEY
 from app.providers.errors import (
     REFUSED_BEFORE_COUNTING,
+    IncompleteGeneration,
     ProviderConfigurationError,
     ProviderError,
     ProviderNotConfigured,
     ProviderQuotaExhausted,
     ProviderRateLimited,
 )
-from app.providers.interfaces import EmbeddingProvider, GenerationProvider
+from app.providers.interfaces import (
+    EmbeddingProvider,
+    EmbeddingResult,
+    GenerationProvider,
+    TokenUsage,
+)
 from app.retrieval.followup import contextualize
 from app.retrieval.service import Ranking, Retriever
 from app.worker.lease import Deadline, LeaseHeartbeat
@@ -288,9 +294,14 @@ class EvaluationWorker:
 
         started = time.perf_counter()
         try:
-            vector = self.retriever.embed_query(query)
+            embedded = self.retriever.embed_query_result(query)
         except ProviderError as exc:
             spent = 0 if _refused(exc) else 1
+            # Shared by every configuration: recorded on the vector row only (usage.py).
+            embedding_usage = {
+                "query_embeddings": spent,
+                "embedding_model": self.settings.gemini_embedding_model,
+            }
             # Time until the failure, kept apart from successful embedding latency.
             failed_ms = _ms(started)
             failed: list[dict[str, Any]] = [
@@ -305,7 +316,7 @@ class EvaluationWorker:
                     "error_stage": "embedding",
                     "error_category": exc.category,
                     "error_message": exc.message,
-                    "token_usage": {"query_embeddings": spent} if v.key == "vector" else {},
+                    "token_usage": embedding_usage if v.key == "vector" else {},
                 }
                 for v in variants
             ]
@@ -313,6 +324,7 @@ class EvaluationWorker:
                 failed, exc.message if isinstance(exc, STOPPING_ERRORS) else None
             )
         embedding_ms = _ms(started)
+        vector = embedded.vectors[0]
 
         rankings: dict[str, tuple[Ranking, int]] = {}
         for variant in variants:
@@ -342,7 +354,8 @@ class EvaluationWorker:
                     else None,
                     "embedding_latency_ms": embedding_ms,
                     "retrieval_latency_ms": retrieval_ms,
-                    "token_usage": {"query_embeddings": 1} if variant.key == "vector" else {},
+                    # One embedding, shared: its usage goes on the vector row only (usage.py).
+                    "token_usage": _embedding_usage(embedded) if variant.key == "vector" else {},
                 }
             )
 
@@ -384,10 +397,13 @@ class EvaluationWorker:
                     "failed_attempt_ms": embedding_ms + retrieval_ms + _ms(started),
                     "failed_generation_ms": _ms(generation_started),
                 }
-                row["token_usage"] = {
-                    **row["token_usage"],
-                    "generation_requests": 0 if _refused(exc) else 1,
-                }
+                requests = 0 if _refused(exc) else 1
+                row["token_usage"] = {**row["token_usage"], "generation_requests": requests}
+                if requests:
+                    row["token_usage"]["model"] = self.settings.gemini_chat_model
+                if isinstance(exc, IncompleteGeneration):
+                    # Gemini answered (and counted the tokens), just not completely.
+                    row["token_usage"].update(_token_fields(exc.usage))
                 if isinstance(exc, STOPPING_ERRORS):
                     stop = exc.message
                 continue
@@ -607,6 +623,27 @@ def _answer_details(answer: Answer) -> dict[str, Any]:
     return details
 
 
+def _embedding_usage(result: EmbeddingResult) -> dict[str, Any]:
+    """The question's query embedding. Tokens are None: Gemini embeddings report none."""
+    return {
+        "query_embeddings": 1,
+        "embedding_model": result.model,
+        "embedding_input_tokens": result.input_tokens,
+        "embedding_attempts": result.attempts,
+    }
+
+
+def _token_fields(usage: TokenUsage) -> dict[str, Any]:
+    """Reported generation tokens; None where Gemini reported nothing (usage.py)."""
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "output_tokens": usage.output_tokens,
+        "thinking_tokens": usage.thinking_tokens,
+        "total_tokens": usage.total_tokens,
+        "cached_tokens": usage.cached_tokens,
+    }
+
+
 def _generation_usage(answer: Answer) -> dict[str, Any]:
     result = answer.result
     if result is None:
@@ -614,10 +651,7 @@ def _generation_usage(answer: Answer) -> dict[str, Any]:
     return {
         "generation_requests": 1,
         "model": result.model,
-        "prompt_tokens": result.usage.prompt_tokens,
-        "output_tokens": result.usage.output_tokens,
-        "thinking_tokens": result.usage.thinking_tokens,
-        "total_tokens": result.usage.total_tokens,
+        **_token_fields(result.usage),
         "generation_latency_ms": result.latency_ms,
         "generation_attempts": result.attempts,
     }

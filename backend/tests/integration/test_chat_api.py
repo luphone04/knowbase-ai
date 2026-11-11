@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -25,7 +26,7 @@ from app.db.models import WorkspaceMember
 from app.db.session import get_engine
 from app.db.tenancy import bind_workspace
 from app.main import app
-from app.providers import factory
+from app.providers import factory, pricing
 from app.providers.errors import (
     IncompleteGeneration,
     ProviderError,
@@ -574,3 +575,189 @@ def test_one_successful_generation_attempt_is_saved_with_its_citation(
     assert answer["token_usage"]["model"] == "gemini-3.5-flash-lite"
     assert answer["token_usage"]["generation_attempts"] == 1
     assert sum(c.method == "generate_content" for c in client.models.calls) == 1
+
+
+# --- API usage & estimated cost ------------------------------------------------------------------
+
+CHAT_MODEL = "gemini-3.5-flash-lite"
+REPORTED = TokenUsage(
+    prompt_tokens=1000, output_tokens=50, thinking_tokens=30, total_tokens=1080, cached_tokens=400
+)
+# 600 input at $0.30, 400 cached at $0.03, 50 output + 30 thinking at $2.50, per 1M tokens.
+REPLY_USD = round((600 * 0.30 + 400 * 0.03 + 80 * 2.50) / 1_000_000, 10)
+
+
+def usage_of(tenant: Tenant, conversation_id: str) -> Any:
+    response = tenant.client.get(f"{CONVERSATIONS}/{conversation_id}/usage")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.fixture
+def reported(fakes: Fakes) -> Fakes:
+    fakes.generator.model = CHAT_MODEL
+    fakes.generator.usage = REPORTED
+    return fakes
+
+
+def test_a_reply_stores_its_usage_and_pricing_and_shows_its_estimate(
+    tenant_a: Tenant, reported: Fakes
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    conversation = start(tenant_a)
+    answer = ask(tenant_a, conversation, "Can I return a laptop?")["assistant_message"]
+
+    stored = answer["token_usage"]
+    assert stored["cached_tokens"] == 400 and stored["thinking_tokens"] == 30
+    assert stored["embedding_model"] == "gemini-embedding-001"
+    assert stored["embedding_input_tokens"] is None and stored["embedding_attempts"] == 1
+    assert stored["pricing"]["verified_on"] == pricing.VERIFIED_ON
+    assert set(stored["pricing"]["models"]) == {CHAT_MODEL, "gemini-embedding-001"}
+
+    usage = answer["usage"]  # shown with the new reply, no refresh needed
+    assert usage["generation"]["cost_usd"] == REPLY_USD
+    assert usage["generation"]["cached_input_tokens"] == 400
+    assert usage["embedding"]["requests"] == 1 and usage["embedding"]["input_tokens"] is None
+    assert usage["total"]["cost_usd"] == REPLY_USD and usage["total"]["cost_complete"] is False
+    assert "api_key" not in str(answer).lower()
+
+    # The same, after a reload.
+    messages = tenant_a.client.get(f"{CONVERSATIONS}/{conversation}").json()["messages"]
+    assert messages[1]["usage"] == usage
+    assert messages[0]["usage"] is None  # the question itself made no call
+
+
+def test_a_later_price_change_does_not_change_a_saved_reply(
+    tenant_a: Tenant, reported: Fakes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    conversation = start(tenant_a)
+    ask(tenant_a, conversation, "Can I return a laptop?")
+    monkeypatch.setitem(
+        pricing.PRICES, CHAT_MODEL, pricing.ModelPrice("generation", Decimal(9), Decimal(99))
+    )
+    messages = tenant_a.client.get(f"{CONVERSATIONS}/{conversation}").json()["messages"]
+    assert messages[1]["usage"]["generation"]["cost_usd"] == REPLY_USD
+    assert usage_of(tenant_a, conversation)["generation"]["cost_usd"] == REPLY_USD
+
+
+def test_conversation_usage_adds_up_replies_and_failed_questions(
+    tenant_a: Tenant, reported: Fakes
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    conversation = start(tenant_a)
+    assert usage_of(tenant_a, conversation)["total"]["requests"] == 0
+    ask(tenant_a, conversation, "Can I return a laptop?")
+    first = usage_of(tenant_a, conversation)
+    assert first["replies"] == 1 and first["total"]["requests"] == 2
+
+    reported.generator.failures.append(ProviderUnavailable("Gemini is temporarily unavailable."))
+    failed = tenant_a.client.post(
+        f"{CONVERSATIONS}/{conversation}/messages", json={"content": "And a tent?"}
+    )
+    assert failed.status_code == 503
+    reported.generator.failures.append(IncompleteGeneration("MAX_TOKENS", REPORTED, 5))
+    cut_off = tenant_a.client.post(
+        f"{CONVERSATIONS}/{conversation}/messages", json={"content": "And shoes?"}
+    )
+    assert cut_off.status_code == 502
+    ask(tenant_a, conversation, "What about a laptop bag?")
+    prompts = len(reported.generator.prompts)
+
+    usage = usage_of(tenant_a, conversation)
+    assert len(reported.generator.prompts) == prompts  # totals make no Gemini call
+    assert usage["replies"] == 2 and usage["replies_with_usage"] == 2
+    assert usage["failed_questions"] == 2
+    assert usage["embedding"]["requests"] == 4  # every question was embedded
+    assert usage["embedding"]["input_tokens"] is None
+    generation = usage["generation"]
+    assert generation["requests"] == 4
+    assert generation["requests_without_usage"] == 1  # the 503; the cut-off one reported
+    assert generation["input_tokens"] == 3000 and generation["cached_input_tokens"] == 1200
+    assert generation["output_tokens"] == 150 and generation["thinking_tokens"] == 90
+    assert usage["total"]["cost_usd"] == pytest.approx(3 * REPLY_USD)
+    assert usage["total"]["cost_complete"] is False
+    codes = {(i["code"], i.get("kind")) for i in usage["issues"]}
+    assert codes == {("usage_missing", "embedding"), ("usage_missing", "generation")}
+    assert usage["pricing"]["tier_label"] == pricing.TIER_LABEL
+
+
+def test_retried_attempts_are_disclosed_in_reply_and_conversation_usage(
+    tenant_a: Tenant, reported: Fakes
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    reported.embedder.attempts = 2
+    reported.generator.attempts = 3
+    conversation = start(tenant_a)
+    answer = ask(tenant_a, conversation, "Can I return a laptop?")["assistant_message"]
+    usage = answer["usage"]
+    assert usage["embedding"]["requests"] == 1 and usage["embedding"]["unmeasured_attempts"] == 1
+    assert usage["generation"]["requests"] == 1
+    assert usage["generation"]["unmeasured_attempts"] == 2
+    assert usage["generation"]["cost_usd"] == REPLY_USD  # the retries aren't priced
+    assert usage["generation"]["cost_complete"] is False
+    totals = usage_of(tenant_a, conversation)
+    assert totals["total"]["unmeasured_attempts"] == 3
+
+
+def test_a_reply_without_evidence_made_no_call_and_costs_nothing(
+    tenant_a: Tenant, reported: Fakes
+) -> None:
+    conversation = start(tenant_a)  # nothing indexed: no embedding, no generation
+    answer = ask(tenant_a, conversation, "Can I return a laptop?")["assistant_message"]
+    assert answer["usage"]["total"]["requests"] == 0
+    assert answer["usage"]["total"]["cost_usd"] == 0.0
+    assert "pricing" not in answer["token_usage"]
+
+
+def test_replies_saved_before_usage_was_recorded_still_load(
+    tenant_a: Tenant, reported: Fakes
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    conversation = start(tenant_a)
+    ask(tenant_a, conversation, "Can I return a laptop?")
+    ask(tenant_a, conversation, "Within how many days?")
+    with get_engine().begin() as connection:  # one reply from before usage, one before prices
+        connection.execute(text("UPDATE messages SET token_usage = '{}'::jsonb WHERE position = 2"))
+        connection.execute(
+            text("UPDATE messages SET token_usage = token_usage - 'pricing' WHERE position = 4")
+        )
+    detail = tenant_a.client.get(f"{CONVERSATIONS}/{conversation}")
+    assert detail.status_code == 200
+    first, second = detail.json()["messages"][1], detail.json()["messages"][3]
+    assert first["usage"] is None and first["content"]
+    assert second["usage"]["generation"]["input_tokens"] == 1000
+    assert second["usage"]["generation"]["cost_usd"] is None
+    totals = usage_of(tenant_a, conversation)
+    assert totals["replies"] == 2 and totals["replies_with_usage"] == 1
+    assert totals["total"]["cost_usd"] is None  # nothing left with a known cost
+    assert {"code": "cost_unavailable", "requests": 1} in totals["issues"]
+
+
+def test_conversation_usage_respects_ownership(
+    tenant_a: Tenant, tenant_b: Tenant, reported: Fakes, db: Session
+) -> None:
+    add_source(tenant_a.workspace_id, "returns.md", [(LAPTOPS, basis((0, 1)))])
+    conversation = start(tenant_a)
+    ask(tenant_a, conversation, "Can I return a laptop?")
+    for target in (conversation, str(uuid.uuid4())):
+        response = tenant_b.client.get(f"{CONVERSATIONS}/{target}/usage")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "not_found"
+    # Another member of the same workspace can't read it either.
+    bind_workspace(db, tenant_a.workspace_id)
+    db.add(
+        WorkspaceMember(workspace_id=tenant_a.workspace_id, user_id=tenant_b.user_id, role="member")
+    )
+    db.commit()
+    token, _ = create_access_token(
+        tenant_b.user_id,
+        tenant_a.workspace_id,
+        secret=get_settings().jwt_secret.get_secret_value(),
+        lifetime=timedelta(hours=1),
+    )
+    member = new_client("198.51.100.10")
+    member.cookies.set(AUTH_COOKIE, token)
+    assert member.get(f"{CONVERSATIONS}/{conversation}/usage").status_code == 404
+    anonymous = new_client("198.51.100.11")
+    assert anonymous.get(f"{CONVERSATIONS}/{conversation}/usage").status_code == 401

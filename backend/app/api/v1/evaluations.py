@@ -58,6 +58,7 @@ from app.evaluation.service import (
     run_summary,
 )
 from app.evaluation.variants import VARIANTS
+from app.providers import pricing
 from app.providers.errors import ProviderNotConfigured
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
@@ -288,6 +289,8 @@ def _run_config(
         "chunk_overlap_chars": settings.chunk_overlap_chars,
         "question_interval_seconds": settings.evaluation_question_interval_seconds,
         "budget": reserved,
+        # The prices its cost estimate uses, fixed now: later price-table edits don't change it.
+        "pricing": pricing.snapshot([settings.gemini_chat_model, settings.gemini_embedding_model]),
     }
 
 

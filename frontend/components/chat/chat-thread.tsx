@@ -9,12 +9,13 @@ import { useEffect, useRef, useState } from "react";
 import { CitationPanel } from "@/components/chat/citation-panel";
 import { ConversationList } from "@/components/chat/conversation-list";
 import { AssistantMessage, UserMessage } from "@/components/chat/message-item";
+import { ConversationMenu } from "@/components/chat/usage-details";
 import { ErrorAlert } from "@/components/error-alert";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { conversationKey, conversationsKey, useSources } from "@/lib/queries";
+import { conversationKey, conversationUsageKey, conversationsKey, useSources } from "@/lib/queries";
 import type { Citation, ConversationDetail, Message } from "@/lib/types";
 
 const MAX_QUESTION_CHARS = 1000; // MessageIn.content in the API
@@ -47,8 +48,13 @@ export function ChatThread({ conversation }: { conversation: ConversationDetail 
       if (!conversation) router.replace(`/chat/${id}`);
     },
     onError: (_error, content) => setDraft(content),
-    onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: conversationsKey, exact: true }),
+    onSettled: () => {
+      // A saved reply or a failed question both change the conversation's usage totals.
+      if (conversationId.current) {
+        void queryClient.invalidateQueries({ queryKey: conversationUsageKey(conversationId.current) });
+      }
+      return queryClient.invalidateQueries({ queryKey: conversationsKey, exact: true });
+    },
   });
 
   const messages = conversation?.messages ?? [];
@@ -80,12 +86,15 @@ export function ChatThread({ conversation }: { conversation: ConversationDetail 
           {conversation?.title ?? "New conversation"}
         </h1>
         {conversation ? (
-          <Button variant="outline" size="sm" asChild>
-            <Link href="/chat">
-              <MessageSquarePlus />
-              New chat
-            </Link>
-          </Button>
+          <>
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/chat">
+                <MessageSquarePlus />
+                New chat
+              </Link>
+            </Button>
+            <ConversationMenu conversationId={conversation.id} />
+          </>
         ) : null}
       </header>
 

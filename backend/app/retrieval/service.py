@@ -22,7 +22,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db.models import Chunk, QueryTrace
 from app.providers.errors import InvalidProviderResponse
-from app.providers.interfaces import QUERY_TASK, EmbeddingProvider
+from app.providers.interfaces import QUERY_TASK, EmbeddingProvider, EmbeddingResult
 from app.retrieval.followup import contextualize
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.search import (
@@ -88,6 +88,18 @@ class RetrievalResult:
     latency_ms: int
 
 
+def _embedding_usage(embedded: EmbeddingResult | None) -> dict[str, Any]:
+    """The query embedding's usage, for the trace: tokens are None when Gemini reports none."""
+    if embedded is None:
+        return {"query_embeddings": 0}
+    return {
+        "query_embeddings": 1,
+        "embedding_model": embedded.model,
+        "embedding_input_tokens": embedded.input_tokens,
+        "embedding_attempts": embedded.attempts,
+    }
+
+
 class Retriever:
     def __init__(
         self, settings: Settings, embedding_provider_factory: Callable[[], EmbeddingProvider]
@@ -97,6 +109,10 @@ class Retriever:
 
     def embed_query(self, query: str) -> list[float]:
         """One Gemini RETRIEVAL_QUERY embedding, checked against the request."""
+        return self.embed_query_result(query).vectors[0]
+
+    def embed_query_result(self, query: str) -> EmbeddingResult:
+        """`embed_query` with the whole result: model, requests, and reported tokens."""
         provider = self._provider_factory()
         result = provider.embed_query(query)
         if (
@@ -106,7 +122,7 @@ class Retriever:
             or len(result.vectors) != 1
         ):
             raise InvalidProviderResponse("The query embedding does not match the request.")
-        return result.vectors[0]
+        return result
 
     def has_indexed_chunks(self, db: Session, *, workspace_id: uuid.UUID) -> bool:
         """False when nothing could match, so a search needn't call Gemini at all."""
@@ -222,7 +238,8 @@ class Retriever:
         settings = self.settings
         query = contextualize(question, previous_question)
         # Embedded before the session's first statement: no connection is held meanwhile.
-        query_vector = self.embed_query(query) if embed else None
+        embedded = self.embed_query_result(query) if embed else None
+        query_vector = embedded.vectors[0] if embedded is not None else None
         ranking = self.rank(
             db, workspace_id=workspace_id, query=query, query_vector=query_vector, mode=mode
         )
@@ -255,7 +272,7 @@ class Retriever:
                 ],
             },
             latency_ms=latency_ms,
-            token_usage={"query_embeddings": 1 if embed else 0},
+            token_usage=_embedding_usage(embedded),
         )
         db.add(trace)
         db.flush()  # assigns the id; the caller commits

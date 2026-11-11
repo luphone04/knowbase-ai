@@ -3,6 +3,7 @@
 import { SearchX } from "lucide-react";
 
 import { AnswerMarkdown, CitationChip } from "@/components/chat/answer-markdown";
+import { ReplyUsageButton, ReplyUsagePanel, useReplyUsage } from "@/components/chat/usage-details";
 import { pageLabel } from "@/lib/citations";
 import type { AbstainReason, Citation, Message } from "@/lib/types";
 
@@ -45,7 +46,7 @@ export function AssistantMessage({
         {message.abstain_reason ? (
           <p className="mt-1 text-xs text-amber-800">{ABSTAIN_REASONS[message.abstain_reason]}</p>
         ) : null}
-        <RetrievalNote message={message} />
+        <ReplyFooter message={message} />
       </div>
     );
   }
@@ -75,13 +76,28 @@ export function AssistantMessage({
           </ul>
         </div>
       ) : null}
-      <RetrievalNote message={message} />
+      <ReplyFooter message={message} />
+    </div>
+  );
+}
+
+/** How the reply was found, and its usage behind an ⓘ (hidden until asked for). */
+function ReplyFooter({ message }: { message: Message }) {
+  const usage = useReplyUsage();
+  const note = retrievalNote(message);
+  return (
+    <div className="mt-2">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-xs text-muted-foreground">{note}</p>
+        <ReplyUsageButton open={usage.open} onToggle={usage.toggle} panelId={usage.panelId} />
+      </div>
+      {usage.open ? <ReplyUsagePanel id={usage.panelId} usage={message.usage} /> : null}
     </div>
   );
 }
 
 /** How the answer was found, from the metadata the API saved with it. */
-function RetrievalNote({ message }: { message: Message }) {
+function retrievalNote(message: Message): string | null {
   const meta = message.metadata;
   const parts: string[] = [];
   if (meta.retrieval_mode === "hybrid") parts.push("Hybrid search");
@@ -91,6 +107,5 @@ function RetrievalNote({ message }: { message: Message }) {
   }
   if (message.latency_ms !== null) parts.push(`${(message.latency_ms / 1000).toFixed(1)} s`);
   if (meta.contextualized === true) parts.push("follow-up: searched with your previous question");
-  if (parts.length === 0) return null;
-  return <p className="mt-2 text-xs text-muted-foreground">{parts.join(" · ")}</p>;
+  return parts.length ? parts.join(" · ") : null;
 }

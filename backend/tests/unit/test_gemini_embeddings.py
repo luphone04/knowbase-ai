@@ -13,7 +13,9 @@ from tests.fakes.gemini import (
     embedding_response,
     make_harness,
     per_input_embeddings,
+    rate_limit_error,
     raw_vector,
+    unavailable_error,
 )
 
 TEXTS = ["Returns within 30 days.", "Shipping takes 3-5 days.", "Warranty lasts two years."]
@@ -189,3 +191,45 @@ def test_logs_record_counts_never_texts(caplog: pytest.LogCaptureFixture) -> Non
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert "texts=1" in logged and "task=RETRIEVAL_DOCUMENT" in logged
     assert "PRIVATE-CHUNK-TEXT" not in logged
+
+
+# --- token usage: Gemini reports none for embeddings -----------------------------------
+
+
+def test_embeddings_use_the_public_sdk_method_only() -> None:
+    h = make_harness()
+    h.client.models.default_embed = per_input_embeddings
+    h.embedding.embed_query("Can I return a laptop?")
+    assert [call.method for call in h.calls] == ["embed_content"]
+    assert h.client.forbidden_access == []  # no private API client, no other surface
+
+
+def test_unreported_embedding_tokens_are_unknown_not_zero() -> None:
+    h = make_harness(batch_size=2)
+    h.client.models.default_embed = per_input_embeddings
+    assert h.embedding.embed_query("a question").input_tokens is None
+    assert h.embedding.embed_documents(TEXTS).input_tokens is None
+
+
+def test_a_successful_call_after_retries_keeps_requests_and_attempts_apart() -> None:
+    h = make_harness()
+    h.client.models.embed_script.extend(
+        [unavailable_error(), unavailable_error(), embedding_response([raw_vector("q")])]
+    )
+    result = h.embedding.embed_query("q")
+    assert (result.requests, result.attempts) == (1, 3)  # one logical request, three attempts
+    assert result.input_tokens is None
+    assert len(h.sleeps) == 2
+
+
+def test_attempts_are_added_up_across_batches_with_retries() -> None:
+    h = make_harness(batch_size=1)
+    h.client.models.embed_script.extend(
+        [
+            embedding_response([raw_vector("a")]),
+            rate_limit_error(),
+            embedding_response([raw_vector("b")]),
+        ]
+    )
+    result = h.embedding.embed_documents(["a", "b"])
+    assert (result.requests, result.attempts, result.input_tokens) == (2, 3, None)

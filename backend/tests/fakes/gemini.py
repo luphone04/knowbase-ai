@@ -137,6 +137,7 @@ def generation_response(
     *,
     finish_reason: types.FinishReason | None = types.FinishReason.STOP,
     usage: tuple[int, int, int | None, int] | None = (12, 1, None, 13),
+    cached_tokens: int | None = None,
     thought: str | None = None,
     no_candidates: bool = False,
     block_reason: types.BlockedReason | None = None,
@@ -154,6 +155,7 @@ def generation_response(
             candidates_token_count=output,
             thoughts_token_count=thinking,
             total_token_count=total,
+            cached_content_token_count=cached_tokens,
         )
     candidates = None
     if not no_candidates:

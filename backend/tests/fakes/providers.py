@@ -33,6 +33,8 @@ class MockGenerationProvider:
     failures: list[Exception] = field(default_factory=list)
     # Runs inside the "Gemini call" (e.g. to check no database connection is held).
     on_call: Callable[[], None] | None = None
+    usage: TokenUsage | None = None  # reported usage; None: word counts, as before
+    attempts: int = 1
 
     def generate(
         self,
@@ -51,11 +53,10 @@ class MockGenerationProvider:
             text=self.reply,
             model=self.model,
             finish_reason="STOP",
-            usage=TokenUsage(
-                prompt_tokens=len(prompt.split()), output_tokens=len(self.reply.split())
-            ),
+            usage=self.usage
+            or TokenUsage(prompt_tokens=len(prompt.split()), output_tokens=len(self.reply.split())),
             latency_ms=0,
-            attempts=1,
+            attempts=self.attempts,
         )
 
 

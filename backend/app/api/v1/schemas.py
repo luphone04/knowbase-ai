@@ -271,9 +271,26 @@ class MessageOut(BaseModel):
     abstain_reason: str | None  # "no_evidence", "model_insufficient", "no_valid_citation"
     citations: list[CitationOut]
     token_usage: dict[str, Any]
+    # Assistant only: tokens and estimated cost (app.chat.usage.message_usage); None when
+    # the reply has no usage record.
+    usage: dict[str, Any] | None = None
     latency_ms: int | None
     metadata: dict[str, Any]
     created_at: datetime
+
+
+class ConversationUsageOut(BaseModel):
+    """A conversation's tokens and estimated cost (app.chat.usage.conversation_usage)."""
+
+    conversation_id: uuid.UUID
+    replies: int  # assistant replies in the conversation
+    replies_with_usage: int  # of those, the ones with a usage record
+    failed_questions: int  # questions that failed at Gemini (no reply saved)
+    pricing: dict[str, Any] | None  # tier, date, and source of the most recent snapshot
+    embedding: dict[str, Any]
+    generation: dict[str, Any]
+    total: dict[str, Any]
+    issues: list[dict[str, Any]]
 
 
 class ConversationOut(BaseModel):

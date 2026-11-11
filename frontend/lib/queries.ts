@@ -12,6 +12,7 @@ export const sourcesKey = ["sources"] as const;
 export const sourceKey = (id: string) => ["sources", id] as const;
 export const conversationsKey = ["conversations"] as const;
 export const conversationKey = (id: string) => ["conversations", id] as const;
+export const conversationUsageKey = (id: string) => ["conversations", id, "usage"] as const;
 
 /** Every source in the workspace, polled while the worker still has work for any of them. */
 export function useSources() {

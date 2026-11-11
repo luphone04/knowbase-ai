@@ -1,36 +1,45 @@
+import { ChevronRight } from "lucide-react";
+
+import { CollapsibleCard } from "@/components/collapsible-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Score } from "@/components/evaluation/score";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  UNAVAILABLE,
   abstainReasonLabel,
   categoryLabel,
   decisionLabel,
   formatMs,
+  formatTokens,
   outcome,
+  unmeasuredAttemptsNote,
+  usageCost,
   variantDetails,
 } from "@/lib/evaluation";
-import type { EvaluationQuestion, EvaluationResult, EvaluationRunDetail } from "@/lib/types";
+import type {
+  EvaluationQuestion,
+  EvaluationResult,
+  EvaluationRunDetail,
+  QuestionUsage,
+} from "@/lib/types";
 
 /** Every question: what was expected, what each configuration retrieved, and what was answered. */
-export function QuestionResults({ run }: { run: EvaluationRunDetail }) {
+export function QuestionResults({ run, defaultOpen = true }: { run: EvaluationRunDetail; defaultOpen?: boolean }) {
+  const evaluated = run.questions.filter(({ results }) => results.length > 0).length;
+  const failed = run.questions.filter(({ results }) => results.some((r) => r.error_stage)).length;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          <h2>Per-question results</h2>
-        </CardTitle>
-        <CardDescription>
-          Open a question to see its expected documents and reference facts, the documents each
-          configuration retrieved (ranked), and the answer, citations, and decision.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-2">
-        {run.questions.map(({ question, results }) => (
-          <QuestionItem key={question.id} run={run} question={question} results={results} />
-        ))}
-      </CardContent>
-    </Card>
+    <CollapsibleCard
+      title="Per-question results"
+      defaultOpen={defaultOpen}
+      data-testid="section-questions"
+      summary={`${evaluated} of ${run.questions.length} questions evaluated${failed ? ` · ${failed} with errors` : ""}`}
+      description="Open a question to see its expected documents and reference facts, the documents each configuration retrieved (ranked), and the answer, citations, and decision. Several can be open at once."
+      contentClassName="grid gap-2"
+    >
+      {run.questions.map(({ question, results }) => (
+        <QuestionItem key={question.id} run={run} question={question} results={results} />
+      ))}
+    </CollapsibleCard>
   );
 }
 
@@ -47,9 +56,14 @@ function QuestionItem({
   const hybrid = results.find((r) => r.variant === "hybrid");
   const answered = results.filter((r) => r.answer_evaluated);
   const failed = results.some((r) => r.error_stage);
+  const usage = run.summary.usage?.by_question[question.key];
   return (
     <details className="group rounded-lg border" data-testid={`question-${question.key}`}>
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-3 py-2 text-sm outline-none hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden
+          className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90 motion-reduce:transition-none"
+        />
         <span className="w-8 shrink-0 font-mono text-xs text-muted-foreground">{question.key}</span>
         <span className="min-w-0 flex-1 font-medium">{question.question}</span>
         <span className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -66,6 +80,11 @@ function QuestionItem({
             <StatusBadge key={r.variant} {...outcome(r)} />
           ))}
           {failed ? <StatusBadge label="Error" tone="danger" /> : null}
+          {usage && results.length ? (
+            <span className="tabular-nums text-muted-foreground" data-testid={`question-cost-${question.key}`}>
+              {formatTokens(usage.total.total_tokens) ?? "?"} tokens · {usageCost(usage.total).text}
+            </span>
+          ) : null}
         </span>
       </summary>
       <div className="grid gap-4 border-t px-3 py-3 text-sm">
@@ -91,10 +110,56 @@ function QuestionItem({
             {answered.map((result) => (
               <AnswerResult key={result.variant} result={result} answerable={question.answerable} />
             ))}
+            {usage ? <QuestionUsageDetails questionKey={question.key} usage={usage} /> : null}
           </>
         )}
       </div>
     </details>
+  );
+}
+
+const ANSWER_MODE_LABEL: Record<string, string> = { vector: "Vector only", hybrid: "Hybrid" };
+
+/** Tokens and estimated cost of this question: its one shared query embedding, and each answer. */
+function QuestionUsageDetails({ questionKey, usage }: { questionKey: string; usage: QuestionUsage }) {
+  const embedding = usage.embedding;
+  return (
+    <section className="grid gap-1.5" data-testid={`usage-${questionKey}`}>
+      <h3 className="font-semibold">API usage &amp; estimated cost</h3>
+      <dl className="grid gap-1 text-xs">
+        <UsageLine label="Query embedding (one, shared by every configuration)">
+          {embedding.requests === 0
+            ? "no Gemini call"
+            : `${tokensOrUnreported(embedding.input_tokens)} input tokens · ${embedding.model ?? "unknown model"} · ${usageCost(embedding).text}${unmeasuredAttemptsNote(embedding.unmeasured_attempts)}`}
+        </UsageLine>
+        {Object.entries(usage.answers).map(([mode, answer]) => (
+          <UsageLine key={mode} label={`Answer (${ANSWER_MODE_LABEL[mode] ?? mode})`}>
+            {answer.requests === 0
+              ? "no Gemini call"
+              : answer.input_tokens === null
+                ? `no token counts reported · ${answer.model ?? "unknown model"} · ${UNAVAILABLE}`
+                : `${formatTokens(answer.input_tokens)} input · ${formatTokens(answer.output_tokens)} output · ${formatTokens(answer.thinking_tokens)} thinking tokens · ${answer.model ?? "unknown model"} · ${usageCost(answer).text}${unmeasuredAttemptsNote(answer.unmeasured_attempts)}`}
+          </UsageLine>
+        ))}
+        <UsageLine label="Question total">
+          {`${tokensOrUnreported(usage.total.total_tokens)} tokens · ${usageCost(usage.total).text}`}
+          {usage.total.usage_complete ? "" : " (incomplete: some calls or retried attempts reported no token counts)"}
+        </UsageLine>
+      </dl>
+    </section>
+  );
+}
+
+function tokensOrUnreported(value: number | null): string {
+  return formatTokens(value) ?? "unreported";
+}
+
+function UsageLine({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap gap-x-1.5">
+      <dt className="text-muted-foreground">{label}:</dt>
+      <dd className="tabular-nums">{children}</dd>
+    </div>
   );
 }
 

@@ -10,6 +10,7 @@ import type {
   ChatTurn,
   Conversation,
   ConversationDetail,
+  ConversationUsage,
   EvaluationOverview,
   EvaluationRun,
   EvaluationRunDetail,
@@ -102,6 +103,9 @@ export const api = {
     list: () => request<Conversation[]>("/conversations"),
     create: () => request<Conversation>("/conversations", json("POST", {})),
     get: (id: string) => request<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`),
+    /** Tokens and estimated cost of the whole conversation, from its stored usage. */
+    usage: (id: string) =>
+      request<ConversationUsage>(`/conversations/${encodeURIComponent(id)}/usage`),
     ask: (id: string, content: string) =>
       request<ChatTurn>(
         `/conversations/${encodeURIComponent(id)}/messages`,

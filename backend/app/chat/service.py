@@ -35,8 +35,9 @@ from app.chat.context import SourceExcerpt, build_context
 from app.chat.prompt import ABSTENTION, SYSTEM_INSTRUCTION, HistoryMessage, build_prompt
 from app.config import Settings
 from app.db.models import Conversation, Message, QueryTrace
-from app.providers.errors import ProviderError
-from app.providers.interfaces import GenerationProvider, GenerationResult
+from app.providers import pricing
+from app.providers.errors import IncompleteGeneration, ProviderError
+from app.providers.interfaces import GenerationProvider, GenerationResult, TokenUsage
 from app.retrieval.service import RetrievalMode, RetrievalResult, Retriever
 
 logger = logging.getLogger(__name__)
@@ -95,21 +96,45 @@ def citation_record(excerpt: SourceExcerpt) -> dict[str, Any]:
     }
 
 
-def _usage(result: GenerationResult | None, query_embeddings: int) -> dict[str, Any]:
-    usage: dict[str, Any] = {"query_embeddings": query_embeddings}
+EMBEDDING_FIELDS = ("embedding_model", "embedding_input_tokens", "embedding_attempts")
+
+
+def _token_fields(usage: TokenUsage) -> dict[str, Any]:
+    """Reported generation tokens; None where Gemini reported nothing (app.chat.usage)."""
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "output_tokens": usage.output_tokens,
+        "thinking_tokens": usage.thinking_tokens,
+        "total_tokens": usage.total_tokens,
+        "cached_tokens": usage.cached_tokens,
+    }
+
+
+def _pricing(settings: Settings) -> dict[str, Any]:
+    """The prices in force now, stored with the usage so its estimate never changes later."""
+    return {
+        "pricing": pricing.snapshot([settings.gemini_chat_model, settings.gemini_embedding_model])
+    }
+
+
+def _usage(
+    result: GenerationResult | None, trace_usage: dict[str, Any], settings: Settings
+) -> dict[str, Any]:
+    """What a reply stores: the query embedding (from its trace) and the generation."""
+    usage: dict[str, Any] = {"query_embeddings": int(trace_usage.get("query_embeddings", 0))}
+    usage.update({k: trace_usage[k] for k in EMBEDDING_FIELDS if k in trace_usage})
     if result is None:
         usage["generation_requests"] = 0
-        return usage
-    usage.update(
-        generation_requests=1,
-        model=result.model,
-        prompt_tokens=result.usage.prompt_tokens,
-        output_tokens=result.usage.output_tokens,
-        thinking_tokens=result.usage.thinking_tokens,
-        total_tokens=result.usage.total_tokens,
-        generation_latency_ms=result.latency_ms,
-        generation_attempts=result.attempts,
-    )
+    else:
+        usage.update(
+            generation_requests=1,
+            model=result.model,
+            **_token_fields(result.usage),
+            generation_latency_ms=result.latency_ms,
+            generation_attempts=result.attempts,
+        )
+    if usage["query_embeddings"] or usage["generation_requests"]:
+        usage.update(_pricing(settings))
     return usage
 
 
@@ -218,8 +243,7 @@ class ChatService:
 
         retrieval = prepared.retrieval
         trace = db.get(QueryTrace, retrieval.trace_id)
-        query_embeddings = int(trace.token_usage.get("query_embeddings", 0)) if trace else 0
-        usage = _usage(result, query_embeddings)
+        usage = _usage(result, trace.token_usage if trace else {}, self.settings)
         latency_ms = round((time.perf_counter() - prepared.started) * 1000)
 
         conversation = db.execute(
@@ -290,11 +314,10 @@ class ChatService:
         """Note on the turn's trace that generation failed. The turn itself is not saved."""
         trace = db.get(QueryTrace, prepared.retrieval.trace_id)
         if trace is not None:
-            trace.token_usage = {
-                **trace.token_usage,
-                "generation_requests": 1,
-                "generation_error": error.category,
-            }
+            failure: dict[str, Any] = {"generation_requests": 1, "generation_error": error.category}
+            if isinstance(error, IncompleteGeneration):  # cut off: Gemini reported its tokens
+                failure.update(model=self.settings.gemini_chat_model, **_token_fields(error.usage))
+            trace.token_usage = {**trace.token_usage, **failure, **_pricing(self.settings)}
             db.commit()
 
 

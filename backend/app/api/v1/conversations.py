@@ -38,15 +38,17 @@ from app.api.v1.schemas import (
     ConversationCreateIn,
     ConversationDetailOut,
     ConversationOut,
+    ConversationUsageOut,
     MessageIn,
     MessageOut,
     TurnRetrievalOut,
 )
 from app.auth.rate_limit import RateLimitExceeded, RateLimitRule
 from app.chat.service import DEFAULT_TITLE, ChatService, ConversationGone
-from app.config import Settings
+from app.chat.usage import conversation_usage, message_usage
+from app.config import Settings, get_settings
 from app.core.errors import AppError
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, QueryTrace
 from app.providers import factory
 from app.providers.errors import REFUSED_BEFORE_COUNTING, ProviderError, ProviderNotConfigured
 from app.retrieval.service import Retriever
@@ -99,6 +101,16 @@ def conversation_out(conversation: Conversation) -> ConversationOut:
 
 def message_out(message: Message) -> MessageOut:
     citations: list[dict[str, Any]] = message.citations or []
+    settings = get_settings()
+    usage = (
+        message_usage(
+            message.token_usage,
+            embedding_model=settings.gemini_embedding_model,
+            chat_model=settings.gemini_chat_model,
+        )
+        if message.role == "assistant"
+        else None
+    )
     return MessageOut(
         id=message.id,
         position=message.position,
@@ -108,6 +120,7 @@ def message_out(message: Message) -> MessageOut:
         abstain_reason=message.abstain_reason,
         citations=[CitationOut.model_validate(c) for c in citations],
         token_usage=message.token_usage,
+        usage=usage,
         latency_ms=message.latency_ms,
         metadata=message.meta,
         created_at=message.created_at,
@@ -153,6 +166,39 @@ def get_conversation(
         **conversation_out(conversation).model_dump(),
         messages=[message_out(m) for m in messages],
     )
+
+
+@router.get("/{conversation_id:uuid}/usage")
+def get_conversation_usage(
+    conversation_id: uuid.UUID, auth: CurrentAuth, db: DbSession, settings: SettingsDep
+) -> ConversationUsageOut:
+    """Tokens and estimated cost of the whole conversation, from its stored usage records.
+
+    Covers every saved reply and every question that failed at Gemini (its trace
+    recorded the calls; the turn itself wasn't saved). No Gemini call is made.
+    """
+    conversation = _owned(db, conversation_id, auth)
+    replies = db.scalars(
+        select(Message.token_usage)
+        .where(Message.conversation_id == conversation.id, Message.role == "assistant")
+        .order_by(Message.position)
+    ).all()
+    failed = db.scalars(
+        select(QueryTrace.token_usage)
+        .where(
+            QueryTrace.conversation_id == conversation.id,
+            QueryTrace.message_id.is_(None),
+            QueryTrace.token_usage.has_key("generation_error"),
+        )
+        .order_by(QueryTrace.created_at)
+    ).all()
+    totals = conversation_usage(
+        replies,
+        failed,
+        embedding_model=settings.gemini_embedding_model,
+        chat_model=settings.gemini_chat_model,
+    )
+    return ConversationUsageOut(conversation_id=conversation.id, **totals)
 
 
 @router.post("/{conversation_id:uuid}/messages", status_code=201)

@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -26,13 +27,16 @@ from app.db.tenancy import bind_workspace
 from app.evaluation import budget
 from app.evaluation.dataset import load_dataset
 from app.evaluation.runner import CORPUS_CHANGED, EvaluationWorker
+from app.providers import pricing
 from app.providers.errors import (
+    IncompleteGeneration,
     ProviderError,
     ProviderQuotaExhausted,
     ProviderRateLimited,
     ProviderUnavailable,
 )
 from app.providers.interfaces import QUERY_TASK, EmbeddingResult, GenerationResult, TokenUsage
+from app.providers.pricing import PRICES, ModelPrice
 from app.retrieval.followup import contextualize
 from app.worker.lease import Deadline
 from tests.fakes.retrieval import DIMS, MODEL, add_source, basis
@@ -95,6 +99,9 @@ class RoutingEmbedder:
     on_call: Any = None
     model: str = MODEL
     dimensions: int = DIMS
+    # Gemini reports no embedding token counts (None); set a number to test a provider that does.
+    input_tokens: int | None = None
+    attempts: int = 1  # HTTP attempts per successful query embedding
 
     def __post_init__(self) -> None:
         self.axis: dict[str, int] = {}
@@ -122,7 +129,8 @@ class RoutingEmbedder:
             task_type=QUERY_TASK,
             latency_ms=0,
             requests=1,
-            attempts=1,
+            attempts=self.attempts,
+            input_tokens=self.input_tokens,
         )
 
 
@@ -137,6 +145,11 @@ class ScriptedGenerator:
     failures: dict[str, ProviderError] = field(default_factory=dict)  # question text -> error
     on_call: Any = None
     model: str = "mock-generation"
+    # No thinking: Gemini leaves the count out, and the total proves it is zero.
+    usage: TokenUsage = field(
+        default_factory=lambda: TokenUsage(prompt_tokens=100, output_tokens=10, total_tokens=110)
+    )
+    attempts: int = 1  # HTTP attempts per successful answer
 
     def generate(
         self,
@@ -155,11 +168,11 @@ class ScriptedGenerator:
         reply = ABSTENTION if question in UNANSWERABLE_TEXT else "Here is the policy [S1]."
         return GenerationResult(
             text=reply,
-            model="mock-generation",
+            model=self.model,
             finish_reason="STOP",
-            usage=TokenUsage(prompt_tokens=100, output_tokens=10),
+            usage=self.usage,
             latency_ms=5,
-            attempts=1,
+            attempts=self.attempts,
         )
 
 
@@ -971,3 +984,254 @@ def test_a_failed_query_embedding_stays_out_of_embedding_latency(
     assert summary["embedding_latency_ms"]["count"] == QUESTIONS - 1
     assert summary["failed_embedding_latency_ms"]["count"] == 1
     assert summary["answers"]["hybrid"]["failed_attempt_latency_ms"]["count"] == 1
+
+
+# --- token usage and estimated cost ----------------------------------------------------------
+
+CHAT_MODEL = "gemini-3.5-flash-lite"
+
+
+def usd(tokens_in: int, tokens_out: int, rate_in: str, rate_out: str = "0") -> float:
+    return float(
+        round((tokens_in * Decimal(rate_in) + tokens_out * Decimal(rate_out)) / 1_000_000, 10)
+    )
+
+
+def test_a_run_records_token_usage_and_its_estimated_cost(
+    tenant_a: Tenant, evaluator: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.generator.model = CHAT_MODEL
+    evaluator.generator.usage = TokenUsage(
+        prompt_tokens=1000, output_tokens=50, thinking_tokens=30, total_tokens=1080
+    )
+    evaluator.embedder.input_tokens = 7  # as if embeddings reported usage (Gemini's don't)
+    run = start(tenant_a, answer_modes=["vector", "hybrid"])
+    snapshot = run["config"]["pricing"]
+    assert snapshot["tier"] == "paid_standard" and snapshot["verified_on"] == pricing.VERIFIED_ON
+    assert set(snapshot["models"]) == {CHAT_MODEL, MODEL} and snapshot["unpriced_models"] == []
+
+    # Prices change after the run started: its estimate keeps the prices it started with.
+    monkeypatch.setitem(PRICES, CHAT_MODEL, ModelPrice("generation", Decimal(9), Decimal(99)))
+    monkeypatch.setitem(PRICES, MODEL, ModelPrice("embedding", Decimal(5)))
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "succeeded"
+    usage = body["summary"]["usage"]
+
+    embedding = usage["embedding"]
+    assert embedding["requests"] == QUESTIONS  # one per question, not one per configuration
+    assert embedding["input_tokens"] == 7 * QUESTIONS
+    assert embedding["cost_usd"] == usd(7 * QUESTIONS, 0, "0.15")
+    generation = usage["generation"]
+    assert generation["requests"] == 2 * QUESTIONS  # each answer mode is its own call
+    assert generation["input_tokens"] == 1000 * 2 * QUESTIONS
+    assert generation["output_tokens"] == 50 * 2 * QUESTIONS
+    assert generation["thinking_tokens"] == 30 * 2 * QUESTIONS
+    assert generation["total_tokens"] == 1080 * 2 * QUESTIONS
+    # Thinking is billed as output: 80 output tokens per answer at the output rate.
+    assert generation["cost_usd"] == usd(1000 * 2 * QUESTIONS, 80 * 2 * QUESTIONS, "0.30", "2.50")
+    total = usage["total"]
+    assert total["requests"] == 3 * QUESTIONS
+    assert total["usage_complete"] is True and usage["issues"] == []
+    assert total["cost_usd"] == pytest.approx(embedding["cost_usd"] + generation["cost_usd"])
+    assert body["summary"]["gemini_requests"] == {
+        "query_embeddings": QUESTIONS,
+        "generation_requests": 2 * QUESTIONS,
+    }
+
+    q01 = usage["by_question"]["q01"]
+    assert q01["embedding"]["requests"] == 1 and q01["embedding"]["input_tokens"] == 7
+    assert set(q01["answers"]) == {"vector", "hybrid"}
+    assert q01["answers"]["hybrid"]["cost_usd"] == usd(1000, 80, "0.30", "2.50")
+    assert q01["total"]["requests"] == 3
+    # The shared embedding is stored once, on the vector row; the others carry none.
+    rows = results_for(body, "q01")
+    assert rows["vector"]["token_usage"]["embedding_input_tokens"] == 7
+    assert rows["vector"]["token_usage"]["embedding_model"] == MODEL
+    assert rows["hybrid_or"]["token_usage"] == {}
+    assert rows["hybrid"]["token_usage"]["thinking_tokens"] == 30
+    assert "query_embeddings" not in rows["hybrid"]["token_usage"]
+
+    # The summary stored when the run finished holds the same estimate.
+    listed = tenant_a.client.get(f"{EVALUATIONS}/runs").json()[0]
+    assert listed["summary"]["usage"]["total"]["cost_usd"] == total["cost_usd"]
+
+
+def test_a_retrieval_only_run_costs_only_its_query_embeddings(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=[])
+    evaluator.run_all()
+    usage = detail(tenant_a, run["id"])["summary"]["usage"]
+    assert usage["generation"]["requests"] == 0 and usage["generation"]["cost_usd"] == 0.0
+    # Gemini reports no embedding tokens: the calls are counted, their tokens and cost unknown.
+    assert usage["embedding"]["requests"] == QUESTIONS
+    assert usage["embedding"]["requests_without_usage"] == QUESTIONS
+    assert usage["total"]["input_tokens"] is None
+    assert usage["total"]["cost_usd"] is None and usage["total"]["usage_complete"] is False
+
+
+def test_a_stopped_runs_usage_covers_only_the_calls_it_made(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.generator.model = CHAT_MODEL
+    third = DATASET.questions[2]
+    evaluator.generator.failures[third.question] = ProviderQuotaExhausted("Daily quota used up.")
+    run = start(tenant_a, answer_modes=["vector", "hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    assert body["status"] == "failed"
+    usage = body["summary"]["usage"]
+    # Three embeddings; four answers (the refused one and the skipped one made no call).
+    assert usage["embedding"]["requests"] == 3
+    assert usage["generation"]["requests"] == 4
+    assert usage["generation"]["usage_complete"] is True
+    stopped = usage["by_question"][third.key]
+    assert stopped["generation"]["requests"] == 0
+    # Its only call was the query embedding, which reported no tokens: no cost, never $0.
+    assert stopped["embedding"]["requests"] == 1
+    assert stopped["total"]["input_tokens"] is None and stopped["total"]["cost_usd"] is None
+    # Retry reservations are budget, not calls: none here, and never added to usage.
+    assert body["summary"]["retry_reservations"]["count"] == 0
+
+
+def test_calls_without_reported_usage_make_the_estimate_incomplete(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.generator.model = CHAT_MODEL
+    # The default embedder reports no tokens, as Gemini embeddings never do.
+    first, second = DATASET.questions[0], DATASET.questions[1]
+    evaluator.generator.failures[first.question] = ProviderUnavailable("Gemini is down.")
+    evaluator.generator.failures[second.question] = IncompleteGeneration(
+        "MAX_TOKENS",
+        TokenUsage(prompt_tokens=1000, output_tokens=1190, thinking_tokens=10, total_tokens=2200),
+        5,
+    )
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    usage = detail(tenant_a, run["id"])["summary"]["usage"]
+
+    embedding = usage["embedding"]
+    assert embedding["requests"] == QUESTIONS
+    assert embedding["requests_without_usage"] == QUESTIONS
+    assert embedding["input_tokens"] is None and embedding["cost_usd"] is None
+    generation = usage["generation"]
+    assert generation["requests"] == QUESTIONS
+    assert generation["requests_without_usage"] == 1  # the 5xx; the cut-off answer reported
+    assert generation["usage_complete"] is False
+    assert generation["output_tokens"] == 1190 + 10 * (QUESTIONS - 2)
+    assert usage["by_question"][second.key]["answers"]["hybrid"]["cost_usd"] == usd(
+        1000, 1200, "0.30", "2.50"
+    )
+    assert usage["by_question"][first.key]["answers"]["hybrid"]["requests_without_usage"] == 1
+    # The total is what was reported (a lower bound), and says it is incomplete.
+    assert usage["total"]["usage_complete"] is False
+    assert usage["total"]["cost_usd"] == generation["cost_usd"]
+    codes = {(i["code"], i.get("kind")) for i in usage["issues"]}
+    assert codes == {("usage_missing", "embedding"), ("usage_missing", "generation")}
+
+
+def test_an_unpriced_model_has_tokens_but_no_cost(tenant_a: Tenant, evaluator: Harness) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.embedder.input_tokens = 7  # a priced call that reports tokens
+    run = start(tenant_a, answer_modes=["hybrid"])  # the generator reports "mock-generation"
+    evaluator.run_all()
+    usage = detail(tenant_a, run["id"])["summary"]["usage"]
+    assert usage["generation"]["input_tokens"] == 100 * QUESTIONS
+    assert usage["generation"]["cost_usd"] is None
+    assert usage["embedding"]["cost_usd"] is not None
+    assert usage["total"]["cost_usd"] is None
+    assert {"code": "model_unpriced", "kind": "generation", "model": "mock-generation"} in (
+        usage["issues"]
+    )
+
+
+def test_a_run_started_before_pricing_was_recorded_shows_tokens_without_cost(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    run = start(tenant_a, answer_modes=["hybrid"])
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE evaluation_runs SET config = config - 'pricing' WHERE id = :id"),
+            {"id": run["id"]},
+        )
+    evaluator.run_all()
+    usage = detail(tenant_a, run["id"])["summary"]["usage"]
+    assert usage["pricing"] is None
+    assert usage["generation"]["input_tokens"] == 100 * QUESTIONS
+    assert usage["total"]["cost_usd"] is None
+    assert usage["issues"][0] == {"code": "pricing_not_recorded"}
+
+
+def test_retried_attempts_are_disclosed_without_changing_requests_or_budget(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.generator.model = CHAT_MODEL
+    evaluator.embedder.attempts = 2  # every query embedding succeeded on its second attempt
+    evaluator.generator.attempts = 3  # every answer succeeded on its third attempt
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    usage = body["summary"]["usage"]
+
+    # Logical requests and the budget are unchanged by retries.
+    assert body["summary"]["gemini_requests"] == {
+        "query_embeddings": QUESTIONS,
+        "generation_requests": QUESTIONS,
+    }
+    assert slots_used("query-embeddings-daily") == QUESTIONS
+    assert slots_used("evaluation-generations-daily") == QUESTIONS
+    assert body["summary"]["retry_reservations"]["count"] == 0
+    assert usage["embedding"]["requests"] == QUESTIONS
+    assert usage["generation"]["requests"] == QUESTIONS
+    # Retried attempts are disclosed apart, with no tokens invented for them.
+    assert usage["embedding"]["unmeasured_attempts"] == QUESTIONS
+    assert usage["generation"]["unmeasured_attempts"] == 2 * QUESTIONS
+    assert usage["embedding"]["input_tokens"] is None  # Gemini reports none
+    assert usage["generation"]["input_tokens"] == 100 * QUESTIONS
+    assert usage["total"]["usage_complete"] is False
+    assert usage["total"]["cost_usd"] is not None  # a lower bound, not unavailable
+    assert {"code": "unmeasured_attempts", "kind": "embedding", "attempts": QUESTIONS} in (
+        usage["issues"]
+    )
+    assert results_for(body, "q01")["vector"]["token_usage"]["embedding_attempts"] == 2
+
+
+def test_unreported_embedding_tokens_leave_a_lower_bound_estimate(
+    tenant_a: Tenant, evaluator: Harness
+) -> None:
+    """The live case: every answer reports usage, Gemini embeddings report none."""
+    seed_demo_corpus(tenant_a.workspace_id)
+    evaluator.generator.model = CHAT_MODEL
+    run = start(tenant_a, answer_modes=["hybrid"])
+    evaluator.run_all()
+    body = detail(tenant_a, run["id"])
+    usage = body["summary"]["usage"]
+
+    embedding = usage["embedding"]
+    assert embedding["requests"] == QUESTIONS  # still counted, one per question
+    assert embedding["requests_without_usage"] == QUESTIONS
+    assert embedding["input_tokens"] is None and embedding["cost_usd"] is None  # never 0
+    assert embedding["unmeasured_attempts"] == 0
+    generation = usage["generation"]
+    assert generation["usage_complete"] is True
+    assert generation["cost_usd"] == usd(100 * QUESTIONS, 10 * QUESTIONS, "0.30", "2.50")
+    total = usage["total"]
+    assert total["requests"] == 2 * QUESTIONS
+    assert total["input_tokens"] == 100 * QUESTIONS  # the answers' tokens only
+    assert total["usage_complete"] is False
+    assert total["cost_usd"] == generation["cost_usd"]  # a lower bound
+    assert usage["issues"] == [
+        {"code": "usage_missing", "kind": "embedding", "requests": QUESTIONS}
+    ]
+    q01 = usage["by_question"]["q01"]
+    assert q01["embedding"]["input_tokens"] is None and q01["embedding"]["cost_usd"] is None
+    rows = results_for(body, "q01")
+    assert rows["vector"]["token_usage"]["embedding_input_tokens"] is None
+    assert rows["vector"]["token_usage"]["query_embeddings"] == 1

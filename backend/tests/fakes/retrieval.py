@@ -93,6 +93,7 @@ class FixedQueryProvider:
     queries: list[str] = field(default_factory=list)
     failure: Exception | None = None
     on_call: Callable[[], None] | None = None  # runs inside the "Gemini call"
+    attempts: int = 1  # HTTP attempts the successful embedding took
 
     def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
         raise AssertionError("retrieval must not embed documents")
@@ -110,5 +111,5 @@ class FixedQueryProvider:
             task_type=QUERY_TASK,
             latency_ms=0,
             requests=1,
-            attempts=1,
+            attempts=self.attempts,
         )

@@ -4,12 +4,18 @@ import {
   formatLatency,
   formatMs,
   formatScore,
+  formatTokens,
+  formatUsd,
   isRunActive,
   providerErrorCount,
   requestEstimate,
   runPollInterval,
   runStatus,
   runsPollInterval,
+  ratesLabel,
+  unmeasuredAttemptsNote,
+  usageCost,
+  usageIssueText,
   variantDetails,
 } from "./evaluation";
 import type { EvaluationRun } from "./types";
@@ -102,5 +108,62 @@ describe("variantDetails", () => {
     expect(variantDetails(run, "hybrid_or").label).toBe("Hybrid: keyword OR, simple");
     expect(variantDetails(run, "vector")).toMatchObject({ label: "vector", experimental: false });
     expect(variantDetails(run, "hybrid_english")).toMatchObject({ experimental: true });
+  });
+});
+
+describe("usage and cost formatting", () => {
+  it("formats small USD amounts with enough decimals, and nothing for unknown", () => {
+    expect(formatUsd(0)).toBe("$0.00");
+    expect(formatUsd(1.5)).toBe("$1.50");
+    expect(formatUsd(0.0123)).toBe("$0.0123");
+    expect(formatUsd(0.000468)).toBe("$0.000468");
+    expect(formatUsd(0.00000255)).toBe("$0.00000255");
+    expect(formatUsd(null)).toBeNull();
+    expect(formatUsd(undefined)).toBeNull();
+    expect(formatUsd(Number.NaN)).toBeNull();
+  });
+
+  it("formats token counts and keeps unknown distinct from zero", () => {
+    expect(formatTokens(1234567)).toBe("1,234,567");
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(null)).toBeNull();
+  });
+
+  it("shows a cost as unavailable, exact, or a lower bound", () => {
+    expect(usageCost({ cost_usd: null, usage_complete: true })).toEqual({ text: "Unavailable", incomplete: false });
+    expect(usageCost(undefined).text).toBe("Unavailable");
+    expect(usageCost({ cost_usd: 0.0005, usage_complete: true })).toEqual({ text: "$0.000500", incomplete: false });
+    expect(usageCost({ cost_usd: 0.0005, usage_complete: false })).toEqual({ text: "≥ $0.000500", incomplete: true });
+  });
+
+  it("labels rates and explains issues", () => {
+    expect(
+      ratesLabel({ kind: "embedding", input_per_million: "0.15", output_per_million: null, cached_input_per_million: null }),
+    ).toBe("$0.15 input");
+    expect(ratesLabel(null)).toBe("No price recorded");
+    expect(usageIssueText({ code: "model_unpriced", kind: "generation", model: "x-model" })).toMatch(
+      /No verified price for x-model/,
+    );
+  });
+
+  it("says Gemini doesn't report embedding tokens, and keeps the failed-call wording for answers", () => {
+    expect(usageIssueText({ code: "usage_missing", kind: "embedding", requests: 26 })).toBe(
+      "26 query embedding request(s) have no token counts: Gemini doesn't report token usage for embeddings. They are counted as requests but have no estimated cost, so the totals are a lower bound.",
+    );
+    expect(usageIssueText({ code: "usage_missing", kind: "generation", requests: 1 })).toMatch(
+      /1 answer generation request\(s\) returned no token counts \(for example, a failed call\)/,
+    );
+  });
+});
+
+describe("unmeasuredAttemptsNote", () => {
+  it("says how many retried attempts weren't measured, or nothing", () => {
+    expect(unmeasuredAttemptsNote(0)).toBe("");
+    expect(unmeasuredAttemptsNote(undefined)).toBe("");
+    expect(unmeasuredAttemptsNote(1)).toBe(" (+1 retried attempt, not measured)");
+    expect(unmeasuredAttemptsNote(3)).toBe(" (+3 retried attempts, not measured)");
+    expect(
+      usageIssueText({ code: "unmeasured_attempts", kind: "generation", attempts: 2 }),
+    ).toMatch(/^2 failed answer generation attempt\(s\) were retried/);
   });
 });

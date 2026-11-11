@@ -5,9 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 
 import { ErrorAlert } from "@/components/error-alert";
-import { RunOverview } from "@/components/evaluation/run-overview";
-import { QuestionResults } from "@/components/evaluation/question-results";
-import { AnswerEvaluation, RetrievalComparison } from "@/components/evaluation/run-summary";
+import { RunDetail } from "@/components/evaluation/run-detail";
 import { PageHeader } from "@/components/page-header";
 import { PageLoading } from "@/components/page-loading";
 import { Button } from "@/components/ui/button";
@@ -43,16 +41,7 @@ export default function EvaluationRunPage() {
         description={`Started ${formatDateTime(run.data.created_at)}`}
         actions={<BackLink />}
       />
-      <div className="grid gap-6 p-4 md:p-6">
-        <RunOverview run={run.data} />
-        {run.data.questions_done > 0 ? (
-          <>
-            <RetrievalComparison run={run.data} />
-            <AnswerEvaluation run={run.data} />
-          </>
-        ) : null}
-        <QuestionResults run={run.data} />
-      </div>
+      <RunDetail run={run.data} />
     </>
   );
 }

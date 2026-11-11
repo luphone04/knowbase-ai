@@ -7,7 +7,9 @@ import type {
   EvaluationQuestion,
   EvaluationResult,
   EvaluationRunDetail,
+  EvaluationUsage,
   RetrievalSummary,
+  UsageGroup,
 } from "@/lib/types";
 
 export function retrievalSummary(overrides: Partial<RetrievalSummary> = {}): RetrievalSummary {
@@ -43,6 +45,103 @@ export function answerSummary(overrides: Partial<AnswerSummary> = {}): AnswerSum
     generation_latency_ms: { count: 25, min: 800, median: 1400, p95: 3100, max: 3900 },
     failed_attempt_latency_ms: { count: 1, min: 90500, median: 90500, p95: 90500, max: 90500 },
     failed_generation_latency_ms: { count: 1, min: 90000, median: 90000, p95: 90000, max: 90000 },
+    ...overrides,
+  };
+}
+
+export function usageGroup(overrides: Partial<UsageGroup> = {}): UsageGroup {
+  return {
+    requests: 1,
+    requests_without_usage: 0,
+    unmeasured_attempts: 0,
+    usage_complete: true,
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    thinking_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0,
+    ...overrides,
+  };
+}
+
+const RATES = {
+  "gemini-3.5-flash-lite": {
+    kind: "generation",
+    input_per_million: "0.30",
+    output_per_million: "2.50",
+    cached_input_per_million: "0.03",
+  },
+  "gemini-embedding-001": {
+    kind: "embedding",
+    input_per_million: "0.15",
+    output_per_million: null,
+    cached_input_per_million: null,
+  },
+} as const;
+
+/** q01: an 8-token embedding and a hybrid answer (1000 in, 50 out, 30 thinking); u01: a 9-token embedding, no answer call. */
+export function usageSummary(overrides: Partial<EvaluationUsage> = {}): EvaluationUsage {
+  const embedding = usageGroup({ requests: 2, input_tokens: 17, total_tokens: 17, cost_usd: 0.00000255 });
+  const generation = usageGroup({
+    input_tokens: 1000,
+    output_tokens: 50,
+    thinking_tokens: 30,
+    total_tokens: 1080,
+    cost_usd: 0.0005,
+  });
+  return {
+    pricing: {
+      tier: "paid_standard",
+      tier_label: "Gemini Developer API, Paid tier, Standard",
+      currency: "USD",
+      unit: "per 1,000,000 tokens",
+      source_url: "https://aistudio.google.com/docs/pricing",
+      verified_on: "2026-11-11",
+      thinking_tokens: "billed at the output rate",
+      models: RATES,
+      unpriced_models: [],
+    },
+    embedding,
+    generation,
+    total: {
+      ...usageGroup({
+        requests: 3,
+        input_tokens: 1017,
+        output_tokens: 50,
+        thinking_tokens: 30,
+        total_tokens: 1097,
+        cost_usd: 0.00050255,
+      }),
+      embedding_cost_usd: 0.00000255,
+      generation_cost_usd: 0.0005,
+    },
+    models: [
+      { ...embedding, model: "gemini-embedding-001", kind: "embedding", rates: RATES["gemini-embedding-001"] },
+      { ...generation, model: "gemini-3.5-flash-lite", kind: "generation", rates: RATES["gemini-3.5-flash-lite"] },
+    ],
+    by_question: {
+      q01: {
+        embedding: { ...usageGroup({ input_tokens: 8, total_tokens: 8, cost_usd: 0.0000012 }), model: "gemini-embedding-001" },
+        generation: { ...generation, models: ["gemini-3.5-flash-lite"] },
+        answers: { hybrid: { ...generation, model: "gemini-3.5-flash-lite" } },
+        total: usageGroup({
+          requests: 2,
+          input_tokens: 1008,
+          output_tokens: 50,
+          thinking_tokens: 30,
+          total_tokens: 1088,
+          cost_usd: 0.0005012,
+        }),
+      },
+      u01: {
+        embedding: { ...usageGroup({ input_tokens: 9, total_tokens: 9, cost_usd: 0.00000135 }), model: "gemini-embedding-001" },
+        generation: { ...usageGroup({ requests: 0 }), models: [] },
+        answers: { hybrid: { ...usageGroup({ requests: 0 }), model: null } },
+        total: usageGroup({ input_tokens: 9, total_tokens: 9, cost_usd: 0.00000135 }),
+      },
+    },
+    issues: [],
     ...overrides,
   };
 }
@@ -166,6 +265,7 @@ export function runDetail(overrides: Partial<EvaluationRunDetail> = {}): Evaluat
       },
       answers: { hybrid: answerSummary() },
       gemini_requests: { query_embeddings: 2, generation_requests: 2 },
+      usage: usageSummary(),
     },
     questions: [
       {

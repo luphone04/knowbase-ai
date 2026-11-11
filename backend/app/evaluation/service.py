@@ -6,7 +6,8 @@
   them: each dataset source key is ready (name and content hash match, indexed),
   missing, not ready, or different; other documents are listed too, because
   they compete in retrieval. Its fingerprint changes when any document does.
-- `run_summary` computes a run's metrics from its stored results only.
+- `run_summary` computes a run's metrics from its stored results only, with
+  its Gemini token usage and estimated cost (usage.py).
 """
 
 import hashlib
@@ -32,6 +33,7 @@ from app.db.models import (
 from app.evaluation import budget
 from app.evaluation.dataset import Dataset
 from app.evaluation.metrics import ResultRow, chance_hit_rate, summarize
+from app.evaluation.usage import UsageRow, usage_summary
 from app.evaluation.variants import VARIANTS
 
 INDEXING_STATUSES = ("pending", "processing")
@@ -287,4 +289,15 @@ def run_summary(
     summary["gemini_requests"] = dict(usage)
     # Budget reserved for retried questions (an upper bound on unrecorded calls; ADR 0014).
     summary["retry_reservations"] = budget.retry_totals(run.config.get("budget", {}))
+    # Tokens and estimated cost, priced with the snapshot stored when the run started.
+    summary["usage"] = usage_summary(
+        [
+            UsageRow(by_id[r.question_id].question_key, r.variant, r.token_usage)
+            for r in results
+            if r.question_id in by_id
+        ],
+        pricing=config.get("pricing"),
+        embedding_model=config.get("embedding_model"),
+        chat_model=config.get("chat_model"),
+    )
     return summary

@@ -109,9 +109,54 @@ export type Message = {
   abstain_reason: AbstainReason | null;
   citations: Citation[];
   token_usage: Record<string, unknown>;
+  /** Assistant replies: tokens and estimated cost. null: no usage was recorded. */
+  usage?: MessageUsage | null;
   latency_ms: number | null;
   metadata: Record<string, unknown>;
   created_at: string;
+};
+
+/** Chat usage of a group of Gemini calls (app/chat/usage.py). Unknown values are null, never 0. */
+export type ChatUsageGroup = {
+  requests: number;
+  requests_without_usage: number;
+  unmeasured_attempts: number;
+  usage_complete: boolean;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  thinking_tokens: number | null;
+  total_tokens: number | null;
+  /** The cost of the requests that have one; a lower bound unless `cost_complete`. */
+  cost_usd: number | null;
+  cost_complete: boolean;
+};
+
+export type ChatUsageIssue =
+  | { code: "cost_unavailable"; requests: number }
+  | { code: "usage_missing"; kind: "embedding" | "generation"; requests: number }
+  | { code: "unmeasured_attempts"; kind: "embedding" | "generation"; attempts: number };
+
+export type ChatPricing = { tier_label: string; verified_on: string; source_url: string };
+
+export type MessageUsage = {
+  pricing: ChatPricing | null;
+  embedding: ChatUsageGroup & { model: string | null };
+  generation: ChatUsageGroup & { model: string | null };
+  total: ChatUsageGroup;
+  issues: ChatUsageIssue[];
+};
+
+export type ConversationUsage = {
+  conversation_id: string;
+  replies: number;
+  replies_with_usage: number;
+  failed_questions: number;
+  pricing: ChatPricing | null;
+  embedding: ChatUsageGroup;
+  generation: ChatUsageGroup;
+  total: ChatUsageGroup;
+  issues: ChatUsageIssue[];
 };
 
 export type Conversation = { id: string; title: string; created_at: string; updated_at: string };
@@ -264,6 +309,76 @@ export type EvaluationSummary = {
     generations: number;
     held_from_original: { query_embeddings: number; generation_requests: number };
   };
+  /** Gemini tokens and estimated cost. Absent from summaries stored before it was measured. */
+  usage?: EvaluationUsage;
+};
+
+/**
+ * Tokens Gemini reported for a group of calls, and their estimated cost (USD). Token counts are
+ * null when no call in the group reported usage; cost_usd is null when it can't be estimated
+ * (no price for the model, or none recorded with the run). usage_complete is false when some
+ * calls reported no usage, or succeeded after retried attempts that report none: the numbers
+ * then cover only what was measured.
+ */
+export type UsageGroup = {
+  /** Logical calls (one per query embedding, one per answer). */
+  requests: number;
+  requests_without_usage: number;
+  /** Failed HTTP attempts before a request succeeded; Gemini reports no tokens for them. */
+  unmeasured_attempts: number;
+  usage_complete: boolean;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  thinking_tokens: number | null;
+  total_tokens: number | null;
+  cost_usd: number | null;
+};
+
+/** USD per 1,000,000 tokens, as decimal strings (exact). */
+export type ModelRates = {
+  kind: "generation" | "embedding";
+  input_per_million: string;
+  output_per_million: string | null;
+  cached_input_per_million: string | null;
+};
+
+/** The prices recorded when the run started. */
+export type PricingSnapshot = {
+  tier: string;
+  tier_label: string;
+  currency: string;
+  unit: string;
+  source_url: string;
+  verified_on: string;
+  thinking_tokens: string;
+  models: Record<string, ModelRates>;
+  unpriced_models: string[];
+};
+
+export type UsageIssue =
+  | { code: "pricing_not_recorded" }
+  | { code: "model_unpriced"; kind: "generation" | "embedding"; model: string }
+  | { code: "usage_missing"; kind: "generation" | "embedding"; requests: number }
+  | { code: "unmeasured_attempts"; kind: "generation" | "embedding"; attempts: number };
+
+export type QuestionUsage = {
+  /** The question's one query embedding, shared by every configuration. */
+  embedding: UsageGroup & { model: string | null };
+  generation: UsageGroup & { models: string[] };
+  /** One generation per answer mode. */
+  answers: Record<string, UsageGroup & { model: string | null }>;
+  total: UsageGroup;
+};
+
+export type EvaluationUsage = {
+  pricing: PricingSnapshot | null;
+  embedding: UsageGroup;
+  generation: UsageGroup;
+  total: UsageGroup & { embedding_cost_usd: number | null; generation_cost_usd: number | null };
+  models: (UsageGroup & { model: string; kind: "generation" | "embedding"; rates: ModelRates | null })[];
+  by_question: Record<string, QuestionUsage>;
+  issues: UsageIssue[];
 };
 
 export type VariantDetails = {

@@ -11,6 +11,9 @@ import type {
   EvaluationRun,
   EvaluationRunStatus,
   LatencyStats,
+  ModelRates,
+  UsageGroup,
+  UsageIssue,
   VariantDetails,
 } from "./types";
 
@@ -128,6 +131,73 @@ export function variantDetails(run: Pick<EvaluationRun, "config">, key: string):
 
 export function variantKeys(run: Pick<EvaluationRun, "config" | "summary">): string[] {
   return run.config.variants ?? Object.keys(run.summary.retrieval ?? {});
+}
+
+// --- token usage and estimated cost ----------------------------------------------------------
+
+export const UNAVAILABLE = "Unavailable";
+
+const tokenNumber = new Intl.NumberFormat("en-US");
+
+/** "12,345", or null when nothing was reported (never shown as 0). */
+export function formatTokens(value: number | null | undefined): string | null {
+  return typeof value === "number" && Number.isFinite(value) ? tokenNumber.format(value) : null;
+}
+
+/**
+ * USD with enough decimals for small amounts: $1.50, $0.0123, $0.000468, $0.00. null when the
+ * cost couldn't be estimated.
+ */
+export function formatUsd(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  if (value === 0) return "$0.00";
+  const decimals = Math.min(10, Math.max(2, Math.ceil(-Math.log10(value)) + 2));
+  return `$${value.toFixed(decimals)}`;
+}
+
+/**
+ * The estimated cost of a group of calls, as shown: unavailable, exact, or a lower bound when
+ * some calls reported no usage.
+ */
+export function usageCost(group: Pick<UsageGroup, "cost_usd" | "usage_complete"> | undefined): {
+  text: string;
+  incomplete: boolean;
+} {
+  const usd = formatUsd(group?.cost_usd);
+  if (!group || usd === null) return { text: UNAVAILABLE, incomplete: false };
+  return group.usage_complete ? { text: usd, incomplete: false } : { text: `≥ ${usd}`, incomplete: true };
+}
+
+/** "$0.30 input · $2.50 output (incl. thinking) · $0.03 cached input" per 1M tokens. */
+export function ratesLabel(rates: ModelRates | null | undefined): string {
+  if (!rates) return "No price recorded";
+  const parts = [`$${rates.input_per_million} input`];
+  if (rates.output_per_million !== null) parts.push(`$${rates.output_per_million} output (incl. thinking)`);
+  if (rates.cached_input_per_million !== null) parts.push(`$${rates.cached_input_per_million} cached input`);
+  return parts.join(" · ");
+}
+
+const KIND_LABEL = { embedding: "query embedding", generation: "answer generation" } as const;
+
+/** " (+2 retried attempts, not measured)", or "" when every request took one attempt. */
+export function unmeasuredAttemptsNote(attempts: number | undefined): string {
+  return attempts ? ` (+${attempts} retried attempt${attempts === 1 ? "" : "s"}, not measured)` : "";
+}
+
+/** Why an estimate is incomplete or unavailable, in a sentence. */
+export function usageIssueText(issue: UsageIssue): string {
+  switch (issue.code) {
+    case "pricing_not_recorded":
+      return "This run started before prices were recorded with each run, so it has no cost estimate. Token counts are shown where Gemini reported them.";
+    case "model_unpriced":
+      return `No verified price for ${issue.model} (${KIND_LABEL[issue.kind]}): its cost is unavailable rather than guessed.`;
+    case "usage_missing":
+      if (issue.kind === "embedding")
+        return `${issue.requests} query embedding request(s) have no token counts: Gemini doesn't report token usage for embeddings. They are counted as requests but have no estimated cost, so the totals are a lower bound.`;
+      return `${issue.requests} ${KIND_LABEL[issue.kind]} request(s) returned no token counts (for example, a failed call). They are left out, so the totals are a lower bound.`;
+    case "unmeasured_attempts":
+      return `${issue.attempts} failed ${KIND_LABEL[issue.kind]} attempt(s) were retried before the request succeeded. Gemini reports no token counts for failed attempts, and whether they are billed isn't known, so they are not included: the totals are a lower bound.`;
+  }
 }
 
 const CATEGORY: Record<string, string> = {

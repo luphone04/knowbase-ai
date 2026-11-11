@@ -16,12 +16,18 @@ QUERY_TASK: EmbeddingTask = "RETRIEVAL_QUERY"
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Token counts reported by the provider; None where it reported nothing."""
+    """Token counts reported by the provider; None where it reported nothing.
+
+    `output_tokens` excludes thinking: Gemini reports thoughts separately, and its
+    total is prompt + tool-use prompt + thoughts + output. `cached_tokens` is the
+    part of `prompt_tokens` served from a (possibly implicit) context cache.
+    """
 
     prompt_tokens: int | None = None
     output_tokens: int | None = None
     thinking_tokens: int | None = None
     total_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,10 @@ class EmbeddingResult:
     Model, dimensions, and task type travel with the vectors so they can be
     stored together. Vectors from different models or dimensions must never
     share an index.
+
+    `input_tokens` is a provider-reported input token count. It is None when the
+    provider reports none, which is always the case for Gemini embeddings: the
+    count is unknown, never zero and never estimated from the text.
     """
 
     vectors: list[list[float]]
@@ -50,6 +60,7 @@ class EmbeddingResult:
     latency_ms: int
     requests: int
     attempts: int
+    input_tokens: int | None = None
 
 
 class GenerationProvider(Protocol):

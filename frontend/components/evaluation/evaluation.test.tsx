@@ -7,7 +7,8 @@ import { QuestionResults } from "./question-results";
 import { RunOverview } from "./run-overview";
 import { AnswerEvaluation, RetrievalComparison } from "./run-summary";
 import { DatasetPanel, StartRun } from "./start-run";
-import { answerSummary, overview, runDetail } from "./test-fixtures";
+import { answerSummary, overview, runDetail, usageGroup, usageSummary } from "./test-fixtures";
+import { UsageCost } from "./usage-cost";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -263,5 +264,218 @@ describe("DatasetPanel and StartRun", () => {
       "/evaluations/run-9",
     );
     expect((screen.getByRole("button", { name: /Start evaluation/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("UsageCost", () => {
+  it("shows totals, the cost breakdown, models, and pricing, labelled as a paid-tier estimate", () => {
+    render(<UsageCost run={runDetail()} />);
+    expect(screen.getByRole("heading", { name: "API Usage & Estimated Cost" })).toBeTruthy();
+    expect(screen.getByText("Estimated cost at standard paid-tier API pricing.")).toBeTruthy();
+    expect(screen.getByText(/This is not what Google billed/)).toBeTruthy();
+
+    const value = (label: string) => screen.getByText(label).closest("div")!.querySelector("dd")!.textContent;
+    expect(value("Estimated total API cost")).toBe("$0.000503");
+    expect(value("Total input tokens")).toBe("1,017");
+    expect(value("Total output tokens")).toBe("50");
+    expect(value("Total thinking tokens")).toBe("30");
+    expect(value("Total reported tokens")).toBe("1,097");
+    expect(value("Total Gemini requests")).toBe("3");
+
+    const cells = (id: string) =>
+      within(screen.getByTestId(`breakdown-${id}`)).getAllByRole("cell").map((c) => c.textContent);
+    expect(cells("embedding")).toEqual(["Query embeddings", "2", "17", "$0.00000255"]);
+    expect(cells("generation")).toEqual(["Answer generation", "1", "1,080", "$0.000500"]);
+    expect(cells("total")).toEqual(["Total", "3", "1,097", "$0.000503"]);
+
+    const chat = screen.getByTestId("model-gemini-3.5-flash-lite");
+    expect(within(chat).getByText("$0.30 input · $2.50 output (incl. thinking) · $0.03 cached input")).toBeTruthy();
+    expect(within(screen.getByTestId("model-gemini-embedding-001")).getByText("$0.15 input")).toBeTruthy();
+
+    const pricing = screen.getByRole("region", { name: "Pricing information" });
+    expect(within(pricing).getByText("Gemini Developer API, Paid tier, Standard")).toBeTruthy();
+    expect(within(pricing).getByText("2026-11-11")).toBeTruthy();
+    const link = within(pricing).getByRole("link", { name: "https://aistudio.google.com/docs/pricing" });
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(screen.getByText(/does not include document embeddings performed earlier, during ingestion/)).toBeTruthy();
+    expect(screen.queryByText("incomplete")).toBeNull();
+  });
+
+  it("shows an unavailable cost instead of guessing, and says why", () => {
+    const run = runDetail();
+    const usage = usageSummary({ pricing: null, issues: [{ code: "pricing_not_recorded" }] });
+    for (const group of [usage.embedding, usage.generation, usage.total]) group.cost_usd = null;
+    usage.total.embedding_cost_usd = usage.total.generation_cost_usd = null;
+    usage.models = usage.models.map((m) => ({ ...m, rates: null, cost_usd: null }));
+    run.summary.usage = usage;
+    render(<UsageCost run={run} />);
+    const total = screen.getByText("Estimated total API cost").closest("div")!;
+    expect(within(total).getByText("Unavailable")).toBeTruthy();
+    expect(within(screen.getByTestId("breakdown-generation")).getByText("Unavailable")).toBeTruthy();
+    expect(screen.getByText("No prices were recorded with this run.")).toBeTruthy();
+    expect(screen.getByText(/started before prices were recorded/)).toBeTruthy();
+    expect(within(screen.getByTestId("model-gemini-3.5-flash-lite")).getByText("No price recorded")).toBeTruthy();
+    expect(screen.queryByText(/\$0\.0/)).toBeNull(); // no made-up zero cost anywhere
+  });
+
+  it("marks a lower bound when some calls reported no token counts", () => {
+    const run = runDetail();
+    const usage = usageSummary({
+      issues: [{ code: "usage_missing", kind: "generation", requests: 1 }],
+    });
+    usage.generation = { ...usage.generation, requests: 2, requests_without_usage: 1, usage_complete: false };
+    usage.total = { ...usage.total, requests: 4, requests_without_usage: 1, usage_complete: false };
+    run.summary.usage = usage;
+    render(<UsageCost run={run} />);
+    const total = screen.getByText("Estimated total API cost").closest("div")!;
+    expect(within(total).getByText(/≥ \$0\.000503/)).toBeTruthy();
+    expect(within(total).getByText("incomplete")).toBeTruthy();
+    expect(within(screen.getByTestId("breakdown-generation")).getByText("1 without usage")).toBeTruthy();
+    expect(screen.getByText(/1 answer generation request\(s\) returned no token counts/)).toBeTruthy();
+  });
+
+  it("shows tokens as not reported when no call reported any", () => {
+    const run = runDetail();
+    const usage = usageSummary();
+    usage.embedding = usageGroup({
+      requests: 2,
+      requests_without_usage: 2,
+      usage_complete: false,
+      input_tokens: null,
+      total_tokens: null,
+      cost_usd: null,
+    });
+    run.summary.usage = usage;
+    render(<UsageCost run={run} />);
+    const row = screen.getByTestId("breakdown-embedding");
+    expect(within(row).getByText("Not reported")).toBeTruthy();
+    expect(within(row).getByText("Unavailable")).toBeTruthy();
+  });
+
+  it("shows the live Gemini case: embeddings counted, their tokens and cost not reported", () => {
+    const run = runDetail();
+    const usage = usageSummary({ issues: [{ code: "usage_missing", kind: "embedding", requests: 2 }] });
+    const unreported = { input_tokens: null, total_tokens: null, cost_usd: null, usage_complete: false };
+    usage.embedding = usageGroup({ requests: 2, requests_without_usage: 2, ...unreported });
+    usage.total = { ...usage.total, input_tokens: 1000, total_tokens: 1080, requests_without_usage: 2, usage_complete: false, cost_usd: 0.0005, embedding_cost_usd: null };
+    usage.models = usage.models.map((m) => (m.kind === "embedding" ? { ...m, requests_without_usage: 2, ...unreported } : m));
+    usage.by_question.q01.embedding = { ...usage.by_question.q01.embedding, requests_without_usage: 1, ...unreported };
+    run.summary.usage = usage;
+    render(<UsageCost run={run} />);
+    const cells = (id: string) =>
+      within(screen.getByTestId(`breakdown-${id}`)).getAllByRole("cell").map((c) => c.textContent);
+    expect(cells("embedding")).toEqual(["Query embeddings", "22 without usage", "Not reported", "Unavailable"]);
+    expect(cells("total")[3]).toBe("≥ $0.000500incomplete");
+    expect(screen.getByText(/Gemini doesn't report token usage for embeddings/)).toBeTruthy();
+    const model = screen.getByTestId("model-gemini-embedding-001");
+    expect(within(model).getByText("Not reported")).toBeTruthy();
+    expect(within(model).getByText("Unavailable")).toBeTruthy();
+    cleanup();
+
+    render(<QuestionResults run={run} />);
+    const q01 = within(screen.getByTestId("question-q01")).getByTestId("usage-q01");
+    expect(within(q01).getByText("unreported input tokens · gemini-embedding-001 · Unavailable")).toBeTruthy();
+    expect(screen.queryByText(/\$0\.00 /)).toBeNull(); // never a made-up zero for the embedding
+  });
+
+  it("says usage wasn't measured for a summary saved before it was", () => {
+    const run = runDetail();
+    delete run.summary.usage;
+    render(<UsageCost run={run} />);
+    expect(screen.getByText(/saved before token usage was recorded/)).toBeTruthy();
+  });
+
+  it("notes that retry reservations are budget, not usage", () => {
+    const run = runDetail();
+    run.summary.retry_reservations = {
+      count: 1,
+      query_embeddings: 1,
+      generations: 1,
+      held_from_original: { query_embeddings: 0, generation_requests: 0 },
+    };
+    render(<UsageCost run={run} />);
+    expect(screen.getByText(/Retry reservations are budget, not usage/)).toBeTruthy();
+  });
+});
+
+describe("per-question usage", () => {
+  it("shows each question's tokens and cost, with the shared embedding once", () => {
+    render(<QuestionResults run={runDetail()} />);
+    expect(screen.getByTestId("question-cost-q01").textContent).toBe("1,088 tokens · $0.000501");
+    const usage = within(screen.getByTestId("question-q01")).getByTestId("usage-q01");
+    expect(within(usage).getAllByText(/Query embedding/)).toHaveLength(1);
+    expect(
+      within(usage).getByText("8 input tokens · gemini-embedding-001 · $0.00000120"),
+    ).toBeTruthy();
+    expect(
+      within(usage).getByText(
+        "1,000 input · 50 output · 30 thinking tokens · gemini-3.5-flash-lite · $0.000500",
+      ),
+    ).toBeTruthy();
+    expect(within(usage).getByText("Answer (Hybrid):")).toBeTruthy();
+    const u01 = within(screen.getByTestId("question-u01")).getByTestId("usage-u01");
+    expect(within(u01).getByText("no Gemini call")).toBeTruthy();
+  });
+
+  it("shows unreported answer usage as unavailable", () => {
+    const run = runDetail();
+    const usage = usageSummary();
+    usage.by_question.u01.answers.hybrid = {
+      ...usageGroup({
+        requests_without_usage: 1,
+        usage_complete: false,
+        input_tokens: null,
+        output_tokens: null,
+        thinking_tokens: null,
+        total_tokens: null,
+        cost_usd: null,
+      }),
+      model: "gemini-3.5-flash-lite",
+    };
+    run.summary.usage = usage;
+    render(<QuestionResults run={run} />);
+    const u01 = within(screen.getByTestId("question-u01")).getByTestId("usage-u01");
+    expect(
+      within(u01).getByText("no token counts reported · gemini-3.5-flash-lite · Unavailable"),
+    ).toBeTruthy();
+  });
+});
+
+describe("retried attempts", () => {
+  it("discloses retried attempts apart from requests and marks the cost a lower bound", () => {
+    const run = runDetail();
+    const usage = usageSummary({
+      issues: [{ code: "unmeasured_attempts", kind: "embedding", attempts: 2 }],
+    });
+    usage.embedding = { ...usage.embedding, unmeasured_attempts: 2, usage_complete: false };
+    usage.total = { ...usage.total, unmeasured_attempts: 2, usage_complete: false };
+    usage.by_question.q01.embedding = {
+      ...usage.by_question.q01.embedding,
+      unmeasured_attempts: 2,
+      usage_complete: false,
+    };
+    run.summary.usage = usage;
+    render(<UsageCost run={run} />);
+    const row = screen.getByTestId("breakdown-embedding");
+    expect(within(row).getAllByRole("cell")[1].textContent).toBe("2+2 retried attempt(s), not measured");
+    expect(within(row).getByText("≥ $0.00000255")).toBeTruthy();
+    const total = screen.getByText("Estimated total API cost").closest("div")!;
+    expect(within(total).getByText("incomplete")).toBeTruthy();
+    expect(screen.getByText(/2 failed query embedding attempt\(s\) were retried/)).toBeTruthy();
+    expect(screen.getByText(/whether they are billed isn't known/)).toBeTruthy();
+    cleanup();
+
+    render(<QuestionResults run={run} />);
+    const q01 = within(screen.getByTestId("question-q01")).getByTestId("usage-q01");
+    expect(
+      within(q01).getByText(
+        "8 input tokens · gemini-embedding-001 · ≥ $0.00000120 (+2 retried attempts, not measured)",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("shows no retry note when every request took one attempt", () => {
+    render(<UsageCost run={runDetail()} />);
+    expect(screen.queryByText(/retried attempt\(s\), not measured/)).toBeNull();
   });
 });

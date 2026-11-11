@@ -191,7 +191,13 @@ def test_every_search_writes_a_trace(tenant_a: Tenant, provider: FixedQueryProvi
     scores = trace["retrieval_scores"]
     assert scores["rrf_k"] == 60 and scores["candidates"] == 10 and scores["top_n"] == 5
     assert scores["vector"][0]["rank"] == 1 and scores["lexical"][0]["rank"] == 1
-    assert trace["token_usage"] == {"query_embeddings": 1}
+    # One query embedding; Gemini reports no token count for it (None, never 0).
+    assert trace["token_usage"] == {
+        "query_embeddings": 1,
+        "embedding_model": "gemini-embedding-001",
+        "embedding_input_tokens": None,
+        "embedding_attempts": 1,
+    }
     assert trace["latency_ms"] >= 0
     with get_engine().connect() as connection:
         owner = connection.execute(text("SELECT workspace_id FROM query_traces")).scalar_one()

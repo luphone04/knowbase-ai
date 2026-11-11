@@ -210,3 +210,13 @@ def test_one_generate_call_is_exactly_one_http_request() -> None:
         provider.generate(PROMPT)
     assert excinfo.value.finish_reason == "CONTINUATION"
     assert len(requests) == 1
+
+
+def test_cached_prompt_tokens_are_reported_apart() -> None:
+    h = make_harness()
+    h.client.models.generate_script.append(
+        generation_response("An answer.", usage=(2000, 40, 25, 2065), cached_tokens=1024)
+    )
+    usage = h.generation.generate(PROMPT).usage
+    assert (usage.prompt_tokens, usage.cached_tokens) == (2000, 1024)
+    assert (usage.output_tokens, usage.thinking_tokens, usage.total_tokens) == (40, 25, 2065)
