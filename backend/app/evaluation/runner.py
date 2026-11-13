@@ -14,12 +14,21 @@ the run's progress, then releases the run with `next_run_at` a little later:
   so before any call the retry takes an additional retry reservation (budget.py);
   if today's budget can't cover it, the run stops with its completed results.
 
+The run's dataset, question selection (e.g. the development split only), and
+passage mapping are all read from the run itself, never from the current
+configuration, so a restarted worker continues exactly the run that was started.
+
 One question, every configuration: the retrieval query (with the previous
 question for a follow-up, exactly as chat builds it) is embedded once; each
 configuration then ranks with that embedding; each answer mode builds the
 context and answers through `ChatService.answer`, the code chat uses. Nothing
 is written to conversations, and no database connection is held while Gemini
 works.
+
+Passage-level runs (Asia Cement) also record retrieval diagnostics
+(diagnostics.py): deeper candidate lists, hypothetical top-K analyses, and for a
+follow-up one extra query embedding of the follow-up alone. They come from
+separate searches after the production-equivalent rankings and never change them.
 
 Provider failures are results, not abstentions. A quota or rate-limit
 refusal, a missing key, or a rejected key stops the run (partial results are
@@ -47,14 +56,16 @@ from app.chat.service import Answer, ChatService
 from app.config import Settings
 from app.db.models import EvaluationQuestion, EvaluationResult, EvaluationRun
 from app.db.tenancy import SKIP_WORKSPACE_SCOPE, bind_workspace
-from app.evaluation import budget
+from app.evaluation import budget, diagnostics
 from app.evaluation.metrics import (
     SourceRef,
     abstention_correct,
     citation_score,
+    passage_score,
     rank_sources,
     retrieval_score,
 )
+from app.evaluation.passages import evidence_groups
 from app.evaluation.service import corpus_snapshot, run_questions, run_results, run_summary
 from app.evaluation.variants import BY_KEY
 from app.providers.errors import (
@@ -73,6 +84,7 @@ from app.providers.interfaces import (
     TokenUsage,
 )
 from app.retrieval.followup import contextualize
+from app.retrieval.search import lexical_search, vector_search
 from app.retrieval.service import Ranking, Retriever
 from app.worker.lease import Deadline, LeaseHeartbeat
 
@@ -119,6 +131,12 @@ def _ms(started: float) -> int:
 
 def _refused(exc: ProviderError) -> bool:
     return isinstance(exc, REFUSED_BEFORE_COUNTING)
+
+
+def embeddings_per_attempt(config: dict[str, Any], question: EvaluationQuestion) -> int:
+    """Query embeddings one attempt at a question may spend (a diagnosed follow-up: two)."""
+    extra = config.get("diagnostics", {}).get("follow_up_alone") and question.previous_question
+    return 2 if extra else 1
 
 
 class EvaluationWorker:
@@ -253,6 +271,7 @@ class EvaluationWorker:
                     status="failed",
                     message=ABANDONED.format(key=question.question_key),
                     interrupted=True,
+                    embeddings=embeddings_per_attempt(row.config, question),
                 )
                 return
             snapshot = corpus_snapshot(
@@ -260,10 +279,16 @@ class EvaluationWorker:
                 workspace_id=run.workspace_id,
                 source_hashes=row.corpus.get("source_hashes", {}),
                 embedding_model=self.settings.gemini_embedding_model,
+                source_files=row.corpus.get("source_files"),
             )
             if snapshot.fingerprint != row.corpus.get("fingerprint"):
                 self._finish(
-                    db, run, status="failed", message=CORPUS_CHANGED, interrupted=run.attempts > 1
+                    db,
+                    run,
+                    status="failed",
+                    message=CORPUS_CHANGED,
+                    interrupted=run.attempts > 1,
+                    embeddings=embeddings_per_attempt(row.config, question),
                 )
                 return
             config, corpus = dict(row.config), dict(row.corpus)
@@ -289,6 +314,13 @@ class EvaluationWorker:
         query = contextualize(question.question, question.previous_question)
         expected = list(question.relevant_source_keys)
         keys = {s["source_id"]: s["key"] for s in corpus["sources"] if s["status"] == "ready"}
+        # Passage relevance: each evidence passage's chunks, as mapped when the run started.
+        evidence = (
+            evidence_groups(corpus.get("passages", {}).get(question.question_key))
+            if config.get("relevance") == "passage"
+            else None
+        )
+        passage = config.get("relevance") == "passage"
         variants = [BY_KEY[key] for key in config["variants"]]
         base = {"question_id": question.id, "retrieval_query": query}
 
@@ -338,6 +370,11 @@ class EvaluationWorker:
                 lexical=variant.lexical,
             )
             rankings[variant.key] = (ranking, _ms(started))
+        diagnosed = (
+            self._diagnose(db, run, query, vector, variants, rankings, config, corpus, question)
+            if config.get("diagnostics")
+            else {}
+        )
         db.commit()  # end the search transaction before any generation
 
         rows: list[dict[str, Any]] = []
@@ -346,7 +383,9 @@ class EvaluationWorker:
             rows.append(
                 {
                     **base,
-                    **_retrieval_fields(ranking, keys, expected),
+                    **_retrieval_fields(
+                        ranking, keys, expected, passage=passage, evidence=evidence
+                    ),
                     "variant": variant.key,
                     "retrieval_mode": variant.mode,
                     "lexical_candidates": len(ranking.lexical_hits)
@@ -413,15 +452,179 @@ class EvaluationWorker:
             )
             row["details"] = {**_answer_details(answer), "excerpts": len(excerpts)}
             row["token_usage"] = {**row["token_usage"], **_generation_usage(answer)}
+        if diagnosed:
+            follow_up = None
+            if config["diagnostics"].get("follow_up_alone") and question.previous_question:
+                follow_up, stop = self._follow_up_alone(
+                    db, run, question, variants, config, corpus, by_variant, stop
+                )
+            for row in rows:
+                extra = (
+                    {"follow_up_alone": follow_up}
+                    if row["variant"] == "vector" and follow_up is not None
+                    else {}
+                )
+                row["details"] = {
+                    **row.get("details", {}),
+                    "diagnostics": {**diagnosed[row["variant"]], **extra},
+                }
         return QuestionOutcome(rows, stop)
+
+    # --- diagnostics (passage-level runs only; never change the results above) ------------
+
+    def _analyses(
+        self,
+        db: Session,
+        run: ClaimedRun,
+        query: str,
+        vector: list[float],
+        variants: list[Any],
+        rankings: dict[str, Ranking],
+        config: dict[str, Any],
+        evidence: list[dict[str, Any]] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Deeper candidate lists and top-K analyses per configuration (read-only searches)."""
+        depth = int(config["diagnostics"].get("depth", diagnostics.DEPTH))
+        deep_vector = vector_search(
+            db,
+            workspace_id=run.workspace_id,
+            query_vector=vector,
+            model=self.settings.gemini_embedding_model,
+            limit=depth,
+        )
+        top_n = str(config.get("top_n", 5))
+        settings = {
+            "rrf_k": int(config.get("rrf_k", self.settings.rrf_k)),
+            "max_chars": int(
+                config.get("chat_context_max_chars", self.settings.chat_context_max_chars)
+            ),
+        }
+        out: dict[str, dict[str, Any]] = {}
+        for variant in variants:
+            ranking = rankings[variant.key]
+            deep_lexical = (
+                lexical_search(
+                    db,
+                    workspace_id=run.workspace_id,
+                    query=query,
+                    limit=depth,
+                    config=variant.lexical.config,
+                    match=variant.lexical.match,
+                )
+                if variant.mode == "hybrid"
+                else []
+            )
+            original = diagnostics.analyse(
+                variant.mode,
+                ranking.vector_hits,
+                ranking.lexical_hits,
+                evidence=evidence,
+                **settings,
+            )
+            production = [str(r.hit.chunk_id) for r in ranking.results]
+            out[variant.key] = {
+                "depth": depth,
+                "candidates": len(ranking.vector_hits),  # the original candidate pool per list
+                "lexical": diagnostics.candidates(deep_lexical)
+                if variant.mode == "hybrid"
+                else None,
+                "lexical_matches_at_depth": len(deep_lexical) if variant.mode == "hybrid" else None,
+                "original": original,
+                # K = the run's top N, recomputed from the original lists: must equal production.
+                "matches_production": original.get(top_n, {}).get("chunk_ids") == production
+                if top_n in original
+                else None,
+                "pool20": diagnostics.analyse(
+                    variant.mode, deep_vector, deep_lexical, evidence=evidence, **settings
+                ),
+            }
+        out["vector"]["vector"] = diagnostics.candidates(deep_vector)
+        return out
+
+    def _diagnose(
+        self,
+        db: Session,
+        run: ClaimedRun,
+        query: str,
+        vector: list[float],
+        variants: list[Any],
+        rankings: dict[str, tuple[Ranking, int]],
+        config: dict[str, Any],
+        corpus: dict[str, Any],
+        question: EvaluationQuestion,
+    ) -> dict[str, dict[str, Any]]:
+        evidence = corpus.get("passages", {}).get(question.question_key, {}).get("evidence")
+        return self._analyses(
+            db,
+            run,
+            query,
+            vector,
+            variants,
+            {key: ranking for key, (ranking, _) in rankings.items()},
+            config,
+            evidence,
+        )
+
+    def _follow_up_alone(
+        self,
+        db: Session,
+        run: ClaimedRun,
+        question: EvaluationQuestion,
+        variants: list[Any],
+        config: dict[str, Any],
+        corpus: dict[str, Any],
+        by_variant: dict[str, dict[str, Any]],
+        stop: str | None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """The follow-up question on its own: experimental, never scored as production.
+
+        One extra query embedding, counted on the vector row like the shared one. Skipped
+        when the run is already stopping (Gemini wants fewer requests).
+        """
+        alone = question.question
+        if stop is not None:
+            return {"query": alone, "skipped": "the run is stopping"}, stop
+        usage = by_variant["vector"]["token_usage"]
+        try:
+            embedded = self.retriever.embed_query_result(alone)
+        except ProviderError as exc:
+            spent = 0 if _refused(exc) else 1
+            usage["query_embeddings"] = int(usage.get("query_embeddings", 0)) + spent
+            usage["diagnostic_query_embeddings"] = spent
+            if isinstance(exc, STOPPING_ERRORS):
+                stop = exc.message
+            return {"query": alone, "error": exc.category}, stop
+        usage["query_embeddings"] = int(usage.get("query_embeddings", 0)) + 1
+        usage["embedding_attempts"] = int(usage.get("embedding_attempts", 0)) + embedded.attempts
+        usage["diagnostic_query_embeddings"] = 1
+        vector = embedded.vectors[0]
+        rankings = {
+            v.key: self.retriever.rank(
+                db,
+                workspace_id=run.workspace_id,
+                query=alone,
+                query_vector=vector,
+                mode=v.mode,
+                lexical=v.lexical,
+            )
+            for v in variants
+        }
+        evidence = corpus.get("passages", {}).get(question.question_key, {}).get("evidence")
+        analyses = self._analyses(db, run, alone, vector, variants, rankings, config, evidence)
+        db.commit()
+        return {"query": alone, "variants": analyses}, stop
 
     def _reserve_retry(
         self, db: Session, run: ClaimedRun, question: EvaluationQuestion, config: dict[str, Any]
     ) -> bool:
         """Take an additional retry reservation before a retry calls Gemini. False: stop here."""
+        embeddings = embeddings_per_attempt(config, question)
         try:
             retry = budget.reserve_retry(
-                self.limiter, self.settings, generations=len(config["answer_modes"])
+                self.limiter,
+                self.settings,
+                generations=len(config["answer_modes"]),
+                query_embeddings=embeddings,
             )
         except RateLimitExceeded:
             self._finish(
@@ -430,6 +633,7 @@ class EvaluationWorker:
                 status="failed",
                 message=RETRY_BUDGET.format(key=question.question_key),
                 interrupted=True,
+                embeddings=embeddings,
             )
             return False
         recorded = dict(config.get("budget", {}))
@@ -453,10 +657,11 @@ class EvaluationWorker:
             return False
         logger.warning(
             "Evaluation run %s retries question %s (attempt %d): additional retry reservation "
-            "of 1 query embedding and %d generation(s)",
+            "of %d query embedding(s) and %d generation(s)",
             run.id,
             question.question_key,
             run.attempts,
+            retry["query_embeddings"],
             retry["generations"],
         )
         return True
@@ -508,6 +713,7 @@ class EvaluationWorker:
         message: str | None = None,
         row: EvaluationRun | None = None,
         interrupted: bool = False,
+        embeddings: int = 1,
     ) -> None:
         """End the run, store its summary, and give back the budget it didn't use.
 
@@ -520,7 +726,10 @@ class EvaluationWorker:
             db.rollback()
             return
         modes = len(row.config.get("answer_modes", []))
-        held = {"query_embeddings": int(interrupted), "generation_requests": modes * interrupted}
+        held = {
+            "query_embeddings": embeddings * interrupted,
+            "generation_requests": modes * interrupted,
+        }
         row.config = {
             **row.config,
             "budget": {**row.config.get("budget", {}), "held_from_original": held},
@@ -552,13 +761,27 @@ def _source(chunk_source_id: uuid.UUID, keys: dict[str, str], name: str) -> Sour
 
 
 def _retrieval_fields(
-    ranking: Ranking, keys: dict[str, str], expected: list[str]
+    ranking: Ranking,
+    keys: dict[str, str],
+    expected: list[str],
+    *,
+    passage: bool = False,
+    evidence: list[set[str]] | None = None,
 ) -> dict[str, Any]:
+    """Retrieved chunks and sources, scored at source level, or at passage level when
+    the run judges relevance by evidence passage (then `evidence` holds each passage's
+    chunk ids, or is None when they couldn't all be mapped: no score, never a guess)."""
     refs = [
         _source(r.hit.source_id, keys, r.hit.filename or r.hit.source_name) for r in ranking.results
     ]
     ranked = rank_sources(refs)
-    score = retrieval_score(ranked, expected)
+    chunk_ids = [str(r.hit.chunk_id) for r in ranking.results]
+    score = (
+        passage_score(chunk_ids, evidence)
+        if passage and expected
+        else retrieval_score(ranked, expected)
+    )
+    holds_evidence = set().union(*evidence) if evidence else set()
     return {
         "retrieved": [
             {
@@ -574,6 +797,7 @@ def _retrieval_fields(
                 "vector_distance": r.vector_distance,
                 "lexical_rank": r.lexical_rank,
                 "lexical_score": r.lexical_score,
+                **({"evidence": str(r.hit.chunk_id) in holds_evidence} if passage else {}),
             }
             for r, ref in zip(ranking.results, refs, strict=True)
         ],

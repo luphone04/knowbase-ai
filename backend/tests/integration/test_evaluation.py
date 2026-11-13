@@ -289,7 +289,8 @@ def test_other_documents_are_reported_and_compete_in_retrieval(
     overview = tenant_a.client.get(f"{EVALUATIONS}/questions").json()
     assert overview["corpus"]["ready"] is True
     assert overview["corpus"]["other_sources"] == [
-        {"name": "thesis.pdf", "chunks": 1, "status": "ready"}
+        # chunker: the strategy its chunks were made with (None: not recorded, as here)
+        {"name": "thesis.pdf", "chunks": 1, "status": "ready", "chunker": None}
     ]
     assert overview["corpus"]["total_chunks"] == 11
     run = start(tenant_a, answer_modes=[])

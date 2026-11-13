@@ -18,6 +18,16 @@ Latency statistics describe successful calls. A provider failure's time until th
 error is reported separately (`failed_*_latency_ms`), never mixed in; runs from
 before these were recorded show them as not measured (None).
 
+Passage relevance (datasets that cite evidence passages, e.g. Asia Cement): a
+retrieved chunk is relevant when it holds one of the question's evidence
+quotations (app/evaluation/passages.py). Chunks are not collapsed to sources:
+- hit@5: at least one top-5 chunk holds evidence;
+- recall@5: evidence passages held by a top-5 chunk / evidence passages;
+- reciprocal rank: 1 / (chunk rank of the first chunk holding evidence), 0 if none.
+A question whose evidence couldn't all be mapped has no passage score (None),
+never a guessed one. The right document with the wrong chunk is a miss here;
+document-level results are summarized separately (`summarize_documents`).
+
 Abstention is correct when an answerable question is answered or an
 unanswerable one is abstained on. A provider failure has no correctness: it is
 neither an answer nor an abstention.
@@ -85,6 +95,27 @@ def retrieval_score(
     return RetrievalScore(
         hit=first is not None,
         recall=len(found) / len(expected),
+        reciprocal_rank=0.0 if first is None else 1.0 / first,
+    )
+
+
+def passage_score(
+    retrieved_chunk_ids: Sequence[str], evidence: Sequence[Collection[str]] | None
+) -> RetrievalScore | None:
+    """Passage-level scores for one question's ranked chunks (best first).
+
+    `evidence`: each evidence passage's chunk ids (any of them holds the whole
+    passage). None when the evidence isn't fully mapped: no score, not a zero.
+    """
+    if not evidence:
+        return None
+    relevant = set().union(*evidence)
+    top = list(retrieved_chunk_ids)
+    first = next((rank for rank, cid in enumerate(top, start=1) if cid in relevant), None)
+    found = sum(any(cid in group for cid in top) for group in evidence)
+    return RetrievalScore(
+        hit=first is not None,
+        recall=found / len(evidence),
         reciprocal_rank=0.0 if first is None else 1.0 / first,
     )
 
@@ -265,6 +296,37 @@ def summarize_answers(rows: Sequence[ResultRow]) -> dict[str, Any]:
         "failed_generation_latency_ms": latency_stats(
             r.failed_generation_ms for r in evaluated if r.outcome == "provider_error"
         ),
+    }
+
+
+def summarize_documents(
+    rows: Iterable[tuple[str, str, Sequence[Mapping[str, Any]]]],
+    *,
+    expected: Mapping[str, Sequence[str]],
+    variants: Sequence[str],
+) -> dict[str, Any]:
+    """Document-level hit@5, recall@5, and MRR per configuration, from stored results.
+
+    `rows`: (variant, question key, retrieved_sources) for answerable questions whose
+    retrieval ran. For passage datasets, where these are not the headline metrics.
+    """
+    scores: dict[str, list[RetrievalScore]] = {v: [] for v in variants}
+    for variant, key, retrieved_sources in rows:
+        ranked = [
+            RankedSource(int(s["rank"]), SourceRef(str(s["rank"]), s.get("source_key"), ""), ())
+            for s in retrieved_sources
+        ]
+        score = retrieval_score(ranked, expected.get(key, []))
+        if score is not None:
+            scores.setdefault(variant, []).append(score)
+    return {
+        variant: {
+            "questions": len(items),
+            "hit_rate_at_5": _mean(float(s.hit) for s in items)[0],
+            "recall_at_5": _mean(s.recall for s in items)[0],
+            "mrr": _mean(s.reciprocal_rank for s in items)[0],
+        }
+        for variant, items in scores.items()
     }
 
 

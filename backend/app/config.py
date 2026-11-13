@@ -104,6 +104,20 @@ class Settings(BaseSettings):
     daily_evaluation_run_limit: int = Field(default=3, ge=0)
     daily_evaluation_generation_limit: int = Field(default=120, ge=0)
     evaluation_question_interval_seconds: float = Field(default=6, ge=0, le=300)
+    # Which evaluation dataset a workspace uses, by workspace id (a JSON object, e.g.
+    # {"<workspace uuid>": "asia-cement-realworld"}). Unlisted workspaces use Northstar.
+    # "asia-cement-realworld" is private (held-out split; not in the repository);
+    # "asia-cement-realworld-dev" is its public development split; "asia-cement-followups"
+    # is the development-only follow-up extension (Experiment 006).
+    evaluation_workspace_datasets: dict[
+        uuid.UUID,
+        Literal[
+            "northstar-demo",
+            "asia-cement-realworld",
+            "asia-cement-realworld-dev",
+            "asia-cement-followups",
+        ],
+    ] = Field(default_factory=dict)
 
     worker_poll_seconds: float = Field(default=5, gt=0)
     job_max_attempts: int = Field(default=3, ge=1, le=10)

@@ -337,6 +337,8 @@ class EvaluationRunIn(StrictRequest):
 class EvidenceOut(BaseModel):
     source_key: str
     quote: str
+    page: int | None = None  # PDF page (passage datasets)
+    section: str | None = None
 
 
 class EvaluationQuestionOut(BaseModel):
@@ -352,29 +354,40 @@ class EvaluationQuestionOut(BaseModel):
     evidence: list[EvidenceOut]
     absent_terms: list[str]
     notes: str | None
+    split: str | None = None  # "dev" or "heldout" (Asia Cement)
+    required_facts: list[str] = Field(default_factory=list)
 
 
 class DatasetOut(BaseModel):
+    id: str = "northstar-demo"
     name: str
     version: str
     sha256: str
     description: str
-    questions: int
+    questions: int  # what one run evaluates
     answerable: int
     unanswerable: int
     source_keys: list[str]
+    source_files: dict[str, str] | None = None  # key -> original file name (if not the key)
+    relevance: Literal["source", "passage"] = "source"
+    split: str | None = None  # the split a run evaluates (None: every question)
+    held_out_questions: int = 0  # never run automatically
+    # Passage datasets, once the corpus is ready: evidence quotations mapped to chunks.
+    evidence_mapping: dict[str, Any] | None = None
 
 
 class CorpusSourceOut(BaseModel):
     key: str
     status: str  # ready, missing, not_ready, content_differs
     chunks: int
+    chunker: str | None = None  # the chunking strategy fingerprint its chunks were made with
 
 
 class OtherSourceOut(BaseModel):
     name: str
     chunks: int
     status: str
+    chunker: str | None = None
 
 
 class CorpusOut(BaseModel):

@@ -9,7 +9,12 @@
 
 Runs belong to the workspace: any member can start and read them, nobody else
 (another workspace's run id gets the same 404 as a random id). The workspace
-always comes from the session, never from the request.
+always comes from the session, never from the request, and so does the dataset:
+EVALUATION_WORKSPACE_DATASETS maps a workspace id to its dataset (Asia Cement);
+every other workspace evaluates Northstar, as before. A run records its dataset,
+the questions it evaluates (Asia Cement: the development split only, never the
+held-out one), and, for passage relevance, where each evidence quotation sits
+in the workspace's chunks; the worker uses only what the run recorded.
 
 Starting a run needs a configured Gemini key, the dataset's five documents
 indexed in this workspace with their original content, no document still
@@ -46,13 +51,15 @@ from app.api.v1.schemas import (
 from app.config import Settings
 from app.core.errors import AppError
 from app.db.models import EvaluationQuestion, EvaluationResult, EvaluationRun
-from app.evaluation import budget
-from app.evaluation.dataset import Dataset, load_dataset
+from app.evaluation import budget, diagnostics
+from app.evaluation.dataset import Dataset, DatasetUnavailable, dataset_for, dataset_id_for
 from app.evaluation.service import (
     CorpusSnapshot,
     DatasetChanged,
     corpus_snapshot,
     ensure_questions,
+    map_passages,
+    passage_overview,
     run_questions,
     run_results,
     run_summary,
@@ -76,15 +83,22 @@ class RunNotFound(AppError):
         super().__init__(404, "not_found", "Evaluation run not found.")
 
 
-def _dataset() -> Dataset:
-    return load_dataset()
+def _dataset(auth: CurrentAuth, settings: Settings) -> Dataset:
+    """The authenticated workspace's dataset (server-side only)."""
+    try:
+        return dataset_for(auth.workspace_id, settings.evaluation_workspace_datasets)
+    except DatasetUnavailable as exc:  # a private dataset that isn't installed here
+        raise AppError(409, "evaluation_dataset_unavailable", str(exc)) from exc
 
 
 def _questions(db: DbSession, dataset: Dataset) -> list[EvaluationQuestion]:
+    """The questions a run of this dataset evaluates (all are stored; only these run)."""
     try:
-        return ensure_questions(db, dataset)
+        stored = ensure_questions(db, dataset)
     except DatasetChanged as exc:
         raise AppError(409, "evaluation_dataset_changed", str(exc)) from exc
+    selected = {q.key for q in dataset.run_questions}
+    return [q for q in stored if q.question_key in selected]
 
 
 def _snapshot(
@@ -94,6 +108,22 @@ def _snapshot(
         db,
         workspace_id=auth.workspace_id,
         source_hashes=dataset.source_hashes,
+        embedding_model=settings.gemini_embedding_model,
+        source_files=dataset.source_files,
+    )
+
+
+def _passages(
+    db: DbSession, auth: CurrentAuth, dataset: Dataset, snapshot: CorpusSnapshot, settings: Settings
+) -> dict[str, Any] | None:
+    """Passage datasets: the evidence-to-chunk mapping, once the corpus is ready."""
+    if dataset.relevance != "passage" or not snapshot.ready:
+        return None
+    return map_passages(
+        db,
+        workspace_id=auth.workspace_id,
+        questions=list(dataset.run_questions),
+        snapshot=snapshot,
         embedding_model=settings.gemini_embedding_model,
     )
 
@@ -113,6 +143,8 @@ def question_out(question: EvaluationQuestion) -> EvaluationQuestionOut:
         evidence=[EvidenceOut.model_validate(e) for e in reference.get("evidence", [])],
         absent_terms=list(reference.get("absent_terms", [])),
         notes=reference.get("notes"),
+        split=reference.get("split"),
+        required_facts=list(reference.get("required_facts", [])),
     )
 
 
@@ -145,26 +177,34 @@ def get_questions(
     auth: CurrentAuth, db: DbSession, settings: SettingsDep, limiter: RateLimiterDep
 ) -> EvaluationOverviewOut:
     """The dataset, this workspace's readiness for it, and today's remaining budget."""
-    dataset = _dataset()
+    dataset = _dataset(auth, settings)
     questions = _questions(db, dataset)
     snapshot = _snapshot(db, auth, dataset, settings)
+    passages = _passages(db, auth, dataset, snapshot, settings)
     db.commit()
-    count = len(dataset.questions)
+    count = len(questions)  # what one run evaluates (Asia Cement: the development split)
+    answerable = sum(not q.is_unanswerable for q in questions)
     return EvaluationOverviewOut(
         dataset=DatasetOut(
+            id=dataset_id_for(auth.workspace_id, settings.evaluation_workspace_datasets),
             name=dataset.name,
             version=dataset.version,
             sha256=dataset.sha256,
             description=dataset.description,
             questions=count,
-            answerable=dataset.answerable,
-            unanswerable=dataset.unanswerable,
+            answerable=answerable,
+            unanswerable=count - answerable,
             source_keys=sorted(dataset.source_hashes),
+            source_files=dict(dataset.source_files) if dataset.source_files else None,
+            relevance=dataset.relevance,
+            split=dataset.run_split,
+            held_out_questions=dataset.excluded_questions,
+            evidence_mapping=passage_overview(passages) if passages is not None else None,
         ),
         corpus=CorpusOut(
             ready=snapshot.ready,
             sources=[
-                CorpusSourceOut(key=s.key, status=s.status, chunks=s.chunks)
+                CorpusSourceOut(key=s.key, status=s.status, chunks=s.chunks, chunker=s.chunker)
                 for s in snapshot.sources
             ],
             other_sources=[OtherSourceOut.model_validate(o) for o in snapshot.other_sources],
@@ -172,7 +212,7 @@ def get_questions(
             indexing=snapshot.indexing,
         ),
         limits=EvaluationLimitsOut(
-            query_embeddings_per_run=count,
+            query_embeddings_per_run=_query_embeddings(dataset, questions),
             generations_per_answer_mode=count,
             runs_left=limiter.remaining(budget.run_rule(settings), str(auth.workspace_id)),
             query_embeddings_left=limiter.remaining(query_embedding_rule(settings), INSTALLATION),
@@ -183,15 +223,19 @@ def get_questions(
     )
 
 
-def _corpus_problem(snapshot: CorpusSnapshot) -> AppError:
+def _corpus_problem(snapshot: CorpusSnapshot, dataset: Dataset) -> AppError:
     missing = [s for s in snapshot.sources if s.status != "ready"]
     if missing:
-        names = ", ".join(f"{s.key} ({_STATUS_TEXT[s.status]})" for s in missing)
+        names = ", ".join(f"{dataset.file_name(s.key)} ({_STATUS_TEXT[s.status]})" for s in missing)
+        documents = (
+            f"the {len(dataset.source_hashes)} {dataset.name} documents"
+            if dataset.source_files
+            else "the five Northstar demo documents from sample_data/demo_store"
+        )
         return AppError(
             409,
             "evaluation_corpus_incomplete",
-            "The evaluation needs the five Northstar demo documents from "
-            f"sample_data/demo_store, uploaded unchanged and indexed. Missing: {names}.",
+            f"The evaluation needs {documents}, uploaded unchanged and indexed. Missing: {names}.",
             details=[{"key": s.key, "status": s.status} for s in snapshot.sources],
         )
     return AppError(
@@ -210,14 +254,15 @@ def start_run(
     settings: SettingsDep,
     limiter: RateLimiterDep,
 ) -> EvaluationRunOut:
-    """Queue a run of the whole dataset against this workspace's documents."""
+    """Queue a run of the dataset's run questions against this workspace's documents."""
     if not settings.gemini_configured:
         raise provider_failure(ProviderNotConfigured())
-    dataset = _dataset()
+    dataset = _dataset(auth, settings)
     questions = _questions(db, dataset)
     snapshot = _snapshot(db, auth, dataset, settings)
     if not snapshot.ready:
-        raise _corpus_problem(snapshot)
+        raise _corpus_problem(snapshot, dataset)
+    passages = _passages(db, auth, dataset, snapshot, settings)
     active = db.scalar(
         select(EvaluationRun.id).where(EvaluationRun.status.in_(("queued", "running")))
     )
@@ -226,11 +271,12 @@ def start_run(
     db.commit()  # end the reads before the budget's own transactions
 
     count = len(questions)
+    diagnosis = _diagnostics(dataset)
     reservation = budget.reserve(
         limiter,
         settings,
         workspace_id=str(auth.workspace_id),
-        query_embeddings=count,
+        query_embeddings=_query_embeddings(dataset, questions),
         generations=count * len(body.answer_modes),
     )
     run = EvaluationRun(
@@ -241,8 +287,16 @@ def start_run(
         dataset_sha256=dataset.sha256,
         status="queued",
         questions_total=count,
-        config=_run_config(settings, body.answer_modes, reservation.as_json()),
-        corpus=snapshot.as_json(),
+        config={
+            **_run_config(settings, body.answer_modes, reservation.as_json()),
+            "dataset_id": dataset_id_for(auth.workspace_id, settings.evaluation_workspace_datasets),
+            "relevance": dataset.relevance,
+            "question_split": dataset.run_split,
+            # The worker evaluates exactly these, whatever the dataset file says later.
+            "question_keys": [q.question_key for q in questions],
+            **({"diagnostics": diagnosis} if diagnosis else {}),
+        },
+        corpus={**snapshot.as_json(), **({"passages": passages} if passages is not None else {})},
     )
     db.add(run)
     try:
@@ -253,6 +307,24 @@ def start_run(
         raise AppError(409, "evaluation_running", "An evaluation is already running here.") from exc
     db.refresh(run)
     return run_out(run)
+
+
+def _query_embeddings(dataset: Dataset, questions: Sequence[EvaluationQuestion]) -> int:
+    """Query embeddings a run reserves: one per question, plus one more per follow-up when
+    the run records diagnostics (the follow-up embedded on its own; diagnostics.py)."""
+    follow_ups = sum(q.previous_question is not None for q in questions)
+    return len(questions) + (follow_ups if _diagnostics(dataset) else 0)
+
+
+def _diagnostics(dataset: Dataset) -> dict[str, Any] | None:
+    """Retrieval diagnostics for passage-level datasets (Asia Cement); none for Northstar."""
+    if dataset.relevance != "passage":
+        return None
+    return {
+        "depth": diagnostics.DEPTH,
+        "top_ks": list(diagnostics.TOP_KS),
+        "follow_up_alone": True,
+    }
 
 
 def _run_config(

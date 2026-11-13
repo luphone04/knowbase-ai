@@ -1,0 +1,530 @@
+{
+  "name": "asia-cement-realworld-dev",
+  "version": "1.0.0",
+  "created_date": "2026-11-11",
+  "status": "Public development split of asia-cement-realworld 1.0.0: its 16 development questions, verbatim. The held-out split is private and not included.",
+  "purpose": "Real-company document-grounded QA, retrieval and follow-up evaluation. Not legally authoritative.",
+  "compatibility": "Loaded by Knowbase's Asia Cement parser as dataset 'asia-cement-realworld-dev'. Same four PDFs as asia-cement-realworld 1.0.0; the PDFs themselves are not distributed.",
+  "source_of_truth": "Four user-uploaded original PDF files (SHA256 pinned). No Gemini or Knowbase generated answers used as ground truth.",
+  "extends": {
+    "dataset": "asia-cement-realworld",
+    "version": "1.0.0",
+    "sha256": "c74fae181d09f25d04f07854ea84982fa747422e0e3358a34f3d5ab978868cf9",
+    "relationship": "the development split only, questions copied verbatim; the 8 held-out questions and their evidence are kept private"
+  },
+  "documents": [
+    {
+      "key": "cobc",
+      "filename": "ACC_Code of Business Conduct 2024_0.pdf",
+      "title": "Code of Business Conduct",
+      "version_or_date": "January 2024",
+      "pdf_pages": 21,
+      "sha256": "2f943365e84ae79e4cba07bd766df832fc68f0633b36c23f0d64f1f8d08a9028",
+      "bytes": 511193
+    },
+    {
+      "key": "acp",
+      "filename": "Anti-Corruption Policy.pdf",
+      "title": "Anti-Corruption Policy",
+      "version_or_date": "21 September 2023",
+      "pdf_pages": 13,
+      "sha256": "69b68d1160eebc8e84a123b16f26396b83b7ca0cfb33b83fcd4f767c90501348",
+      "bytes": 252976
+    },
+    {
+      "key": "bpcc",
+      "filename": "Business Partner Code of Conduct_for publication.pdf",
+      "title": "Business Partner Code of Conduct",
+      "version_or_date": "October 2025",
+      "pdf_pages": 7,
+      "sha256": "81533b2eae25783fa1545755afc091afcb1cd3875c4d6b1683ddc693d2a1afd7",
+      "bytes": 336585
+    },
+    {
+      "key": "terms",
+      "filename": "general_purchasing_terms_and_conditions.pdf",
+      "title": "General Purchasing Terms and Conditions",
+      "version_or_date": "May 2019",
+      "pdf_pages": 3,
+      "sha256": "cc14e770a0227c30aff572d90f1e1eff39751d9b6767fb554e724a1513f8cf76",
+      "bytes": 501940
+    }
+  ],
+  "questions": [
+    {
+      "id": "AC-001",
+      "category": "direct",
+      "split": "dev",
+      "question": "Does Asia Cement prohibit employees from accepting money or gift cards as gifts?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Yes. The Code of Business Conduct says employees must never accept money or gift cards as a gift.",
+      "required_facts": [
+        "Clear prohibition",
+        "Money and gift cards"
+      ],
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Never accept money or gift cards as a gift."
+        }
+      ],
+      "notes": "Known regression topic from manual Tests 002 and 003."
+    },
+    {
+      "id": "AC-002",
+      "category": "direct",
+      "split": "dev",
+      "question": "Under the General Purchasing Terms, when are suppliers paid and what discount is specified?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Unless otherwise expressly agreed in writing, payment is made within 90 days from delivery and receipt of the invoice, with a 5% prompt-payment discount.",
+      "required_facts": [
+        "Unless otherwise expressly agreed in writing",
+        "90 days",
+        "Both delivery and invoice",
+        "5% prompt-payment discount"
+      ],
+      "expected_source_keys": [
+        "terms"
+      ],
+      "evidence": [
+        {
+          "source_key": "terms",
+          "pdf_page": 2,
+          "section": "VIII. Invoicing and payment, 4",
+          "quote": "Unless otherwise expressly agreed in writing, we shall effect payment within 90 days from the day of delivery and receipt of the invoice with 5 % prompt payment discount."
+        },
+        {
+          "source_key": "terms",
+          "pdf_page": 2,
+          "section": "VIII. Invoicing and payment, 2",
+          "quote": "no earlier than after delivery/performance as per contract and receipt of a proper invoice."
+        }
+      ],
+      "notes": "Do not misstate the payment period as starting on invoice date alone."
+    },
+    {
+      "id": "AC-004",
+      "category": "direct",
+      "split": "dev",
+      "question": "How often must Asia Cement employees receive anti-corruption training?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "At least once every two years. The policy also requires initial and refresher training to be recorded.",
+      "required_facts": [
+        "At least once every two years",
+        "Training must be recorded"
+      ],
+      "expected_source_keys": [
+        "acp"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 12,
+          "section": "10. Training, 10.3",
+          "quote": "Initial and refresher training must be recorded. All employees must receive anti-corruption training at least once every two (2) years."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-005",
+      "category": "direct",
+      "split": "dev",
+      "question": "What channels does the Code of Business Conduct recommend for an employee reporting misconduct?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "First speak to a supervisor (or the supervisor’s supervisor); alternatively contact Compliance, or use Speak Up, including anonymously.",
+      "required_facts": [
+        "Supervisor or their supervisor",
+        "Compliance Department",
+        "Speak Up allows anonymous reporting"
+      ],
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "1.Talk to your supervisor, or their supervisor."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "2. Contact the Compliance Department if you do not feel comfortable raising the topic directly with your supervisor."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "3. Use Speak Up if you prefer to submit your concerns through the system or if you wish to remain completely anonymous."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-007",
+      "category": "paraphrase",
+      "split": "dev",
+      "question": "My spouse works for a company that competes with Asia Cement. Does the anti-corruption policy say I should disclose that?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Yes. Employees must inform the company if a spouse, child or other close family member works for a competitor; potential conflicts should be disclosed.",
+      "required_facts": [
+        "Tell the company",
+        "Spouse employed by competitor is covered"
+      ],
+      "expected_source_keys": [
+        "acp"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 9,
+          "section": "6. Conflicts of Interest, 6.2",
+          "quote": "Employees must inform the Company if a spouse, child, or other close family member works for a competitor."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-008",
+      "category": "paraphrase",
+      "split": "dev",
+      "question": "A contractor keeps workers’ identity documents so they cannot leave. Is that consistent with the business-partner code?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "No. The code forbids forced or compulsory labor and identifies withholding workers’ identification documents as an example.",
+      "required_facts": [
+        "No / prohibited",
+        "Forced or compulsory labor",
+        "Withholding identification documents"
+      ],
+      "expected_source_keys": [
+        "bpcc"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 3,
+          "section": "Working/Labor Conditions, 4. Forced labor",
+          "quote": "The Business Partners must not use any form of forced labor or compulsory labor as defined in the ILO's Forced Labor Convention, such as debt bondage, human trafficking, recruitment fees, or withholding workers' identification documents."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-009",
+      "category": "paraphrase",
+      "split": "dev",
+      "question": "Can an employee privately share nonpublic internal pricing plans with a friend?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "No, not merely because the sharing is private. Nonpublic business and financial information, including prices, is confidential; disclosure is allowed only where legally required or authorized for business purposes, with the stated notification requirement.",
+      "required_facts": [
+        "Internal nonpublic prices are confidential",
+        "Not allowed simply because sharing is private",
+        "Legal requirement or business authorization exception"
+      ],
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 18,
+          "section": "2.13 Business Secrets",
+          "quote": "Confidential information includes all strategic, financial, technical, and business information that is not publicly known."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 18,
+          "section": "2.13 Business Secrets",
+          "quote": "We may only disclose confidential information if required by law or authorised for business purposes."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 18,
+          "section": "2.13 Business Secrets",
+          "quote": "In all such cases, we must inform our direct supervisor or the person responsible for the confidential information before disclosure."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-011",
+      "category": "exact_term",
+      "split": "dev",
+      "question": "What is the Code of Business Conduct’s 0.5% exception for disclosing shareholdings?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Its specified shareholding-disclosure expectation does not apply when an employee holds less than 0.5% of the shares of a listed company. This does not cancel the broader duty to disclose actual or potential conflicts.",
+      "required_facts": [
+        "Less than 0.5%",
+        "Listed company",
+        "Specific shareholding disclosure exception, not blanket exemption"
+      ],
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 10,
+          "section": "2.5 Conflicts of Interest",
+          "quote": "This requirement does not apply if you hold less than 0.5% of shares in a listed company."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 10,
+          "section": "2.5 Conflicts of Interest",
+          "quote": "Disclose any actual or potential conflict of interest to your supervisor immediately."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-012",
+      "category": "negative_policy",
+      "split": "dev",
+      "question": "Can Asia Cement employees make facilitation payments to speed up routine actions by public officials?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "No. Facilitation payments, including cash or noncash benefits used to expedite routine actions by public officials or private employees, are prohibited.",
+      "required_facts": [
+        "No / prohibited",
+        "Applies to payments or benefits to expedite routine actions"
+      ],
+      "expected_source_keys": [
+        "acp"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 8,
+          "section": "5. Gifts Offered to Public Officials, 5.3",
+          "quote": "Facilitation payments (cash or non-cash benefits, invitations, gifts, or advantages intended to expedite routine actions by public officials or private employees) are prohibited."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-014",
+      "category": "multi_source",
+      "split": "dev",
+      "question": "Compare the rules for Asia Cement employees receiving gifts and for business partners giving gifts to influence decisions.",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Employees must not accept unjustified gifts or benefits and must never accept money or gift cards; business partners must not offer money, gifts, entertainment or other benefits to employees or third parties to influence how they act.",
+      "required_facts": [
+        "Employee-side restriction",
+        "Ban on employees accepting money/gift cards",
+        "Partner-side ban on influencing with benefits"
+      ],
+      "expected_source_keys": [
+        "bpcc",
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "We are prohibited from directly or indirectly offering, providing, demanding, or accepting gifts, hospitality, benefits, or any other unjustified advantage of value in connection with our business activities."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Never accept money or gift cards as a gift."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 6,
+          "section": "Business Ethics, 1",
+          "quote": "There should be no offering or giving of money, services, gifts, entertainment, or other benefits to employees of the Company, or third parties, with the intention of influencing how the employees of the Company, or third parties, conduct their operations."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-016",
+      "category": "multi_source",
+      "split": "dev",
+      "question": "How should employees report misconduct, and what must business partners do when they find a breach of their code?",
+      "previous_question": null,
+      "expected_behavior": "answer",
+      "reference_answer": "Employees are directed to their supervisor, Compliance or anonymous Speak Up. Business partners must analyze risks, give the company written notice of potential violations, take appropriate corrective actions on breaches, and inform employees and downstream partners of SpeakUp.",
+      "required_facts": [
+        "Employee reporting channels",
+        "Partners’ written notice and risk analysis",
+        "Partner corrective action",
+        "Partners must inform their workforce/downstream partners about SpeakUp"
+      ],
+      "expected_source_keys": [
+        "bpcc",
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "1.Talk to your supervisor, or their supervisor."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "2. Contact the Compliance Department if you do not feel comfortable raising the topic directly with your supervisor."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 21,
+          "section": "3.3 We Report Violations",
+          "quote": "3. Use Speak Up if you prefer to submit your concerns through the system or if you wish to remain completely anonymous."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 6,
+          "section": "Governance and Compliance",
+          "quote": "The Business Partners are required to conduct risk analysis related to potential violations of this Code of Conduct and provide written notification to the Company."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 6,
+          "section": "Governance and Compliance",
+          "quote": "The Business Partners must also take appropriate corrective actions when any breach of this Code of Conduct is identified."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 7,
+          "section": "Governance and Compliance",
+          "quote": "The Business Partner must inform its employees and Downstream Business Partner about the SpeakUp reporting channel"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-017",
+      "category": "follow_up",
+      "split": "dev",
+      "question": "What about cash and gift cards? Are employees allowed to accept them, and what should they consider before accepting any gift?",
+      "previous_question": "According to Asia Cement's Code of Business Conduct, what are the rules for employees accepting gifts or hospitality?",
+      "expected_behavior": "answer",
+      "reference_answer": "No. Employees must never accept money or gift cards as gifts. Before accepting any other gift or invitation, they must evaluate its value and whether it could appear to influence them.",
+      "required_facts": [
+        "Explicit cash/gift-card prohibition",
+        "Evaluate value",
+        "Assess appearance of influence"
+      ],
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Never accept money or gift cards as a gift."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Before you accept a gift, invitation, or other benefit, first evaluate its value and whether it might appear as an attempt to influence you."
+        }
+      ],
+      "notes": "Exact known failure, manual Test 002. Keep in development split, never held-out."
+    },
+    {
+      "id": "AC-019",
+      "category": "follow_up",
+      "split": "dev",
+      "question": "Do those standards also apply to the subcontractors they hire?",
+      "previous_question": "What standards does Asia Cement expect its business partners to follow?",
+      "expected_behavior": "answer",
+      "reference_answer": "Yes. Business partners must make reasonable efforts to implement the standards in their supply chains, are responsible for downstream partners’ compliance and should monitor that compliance.",
+      "required_facts": [
+        "Downstream business partners covered",
+        "Responsibility for compliance",
+        "Monitoring efforts"
+      ],
+      "expected_source_keys": [
+        "bpcc"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 2,
+          "section": "Scope and supply-chain obligations",
+          "quote": "The Business Partners are responsible for ensuring that their Downstream Business Partners comply with these principles and for making efforts to monitor compliance within their own supply chains."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 2,
+          "section": "Scope and supply-chain obligations",
+          "quote": "make reasonable efforts to implement these standards within their supply chain."
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": "AC-020",
+      "category": "out_of_scope",
+      "split": "dev",
+      "question": "What was Asia Cement’s consolidated revenue in Thai baht for the 2025 financial year?",
+      "previous_question": null,
+      "expected_behavior": "abstain",
+      "reference_answer": "Not stated in the four uploaded documents. The assistant should not invent financial results.",
+      "required_facts": [],
+      "expected_source_keys": [],
+      "evidence": [],
+      "notes": "Financial statements are not part of this four-PDF corpus. Reject any fabricated revenue figure."
+    },
+    {
+      "id": "AC-021",
+      "category": "absent_detail",
+      "split": "dev",
+      "question": "What exact fixed amount in Thai baht is the maximum allowed value of an occasional noncash gift?",
+      "previous_question": null,
+      "expected_behavior": "abstain",
+      "reference_answer": "No exact Thai-baht amount is stated. The policies instead use the approximate cost of an ordinary/appropriate business meal, with conditional exceptions.",
+      "required_facts": [],
+      "expected_source_keys": [],
+      "evidence": [],
+      "notes": "Must not hallucinate a THB threshold; an answer explicitly saying no fixed amount is specified is acceptable."
+    },
+    {
+      "id": "AC-022",
+      "category": "absent_detail",
+      "split": "dev",
+      "question": "Exactly how many hours after a SpeakUp report must the compliance team issue its first response?",
+      "previous_question": null,
+      "expected_behavior": "abstain",
+      "reference_answer": "No precise SpeakUp first-response deadline is specified in the four PDFs.",
+      "required_facts": [],
+      "expected_source_keys": [],
+      "evidence": [],
+      "notes": "These documents mention SpeakUp but do not promise an hours-based response SLA."
+    }
+  ],
+  "scoring_guidance": {
+    "retrieval": "Use expected evidence passages (source key + PDF page + quote), not merely document-level presence. Map exact passages to indexed chunk ids when integrating with local database. The chunk indices are not stable across changes to the parser or chunker.",
+    "answer": "Score correctness, required fact coverage, support for each claim, citations, and abstention independently. Accept semantic paraphrases; do not exact-string match answers.",
+    "abstention": "For absent-detail questions accept either explicit uncertainty/no specified figure or the product abstention; reject invented numeric details.",
+    "heldout": "Use dev cases for tuning, keep heldout untouched until final evaluation. Do not run exploratory experiments on heldout cases.",
+    "follow_up": "Each follow-up includes previous_question. Run with the indicated conversational context; do not test it as an isolated direct question.",
+    "conflicts": "Sources dated 2019, 2023, 2024 and 2025; do not silently assume the Supplier Code referenced in the 2019 purchasing terms is the same legal instrument as the October 2025 Business Partner Code."
+  }
+}

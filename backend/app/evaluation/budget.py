@@ -95,21 +95,27 @@ def reserve(
 
 
 def reserve_retry(
-    limiter: RateLimiter, settings: Settings, *, generations: int, now: datetime | None = None
+    limiter: RateLimiter,
+    settings: Settings,
+    *,
+    generations: int,
+    query_embeddings: int = 1,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """An additional retry reservation: one query embedding and `generations`, or none.
+    """An additional retry reservation: `query_embeddings` (one, or two for a follow-up
+    with diagnostics) and `generations`, or none.
 
     Raises RateLimitExceeded when today's budget can't cover them; nothing is then taken.
     """
     windows = _take(
         limiter,
         [
-            (query_embedding_rule(settings), INSTALLATION, 1),
+            (query_embedding_rule(settings), INSTALLATION, query_embeddings),
             (generation_rule(settings), INSTALLATION, generations),
         ],
         now,
     )
-    return {"query_embeddings": 1, "generations": generations, "windows": windows}
+    return {"query_embeddings": query_embeddings, "generations": generations, "windows": windows}
 
 
 def release_retry(limiter: RateLimiter, settings: Settings, reservation: dict[str, Any]) -> None:

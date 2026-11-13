@@ -1,0 +1,657 @@
+{
+  "name": "asia-cement-followups",
+  "version": "1.0.0",
+  "created_date": "2026-11-12",
+  "status": "FROZEN 2026-11-12: source-verified development extension. Final blind held-out duplicate check passed (0 duplicate questions, 0 duplicate quotations); every mandatory quotation maps on the paragraph-v1 and section-v1 corpora. Any edit requires a new version.",
+  "purpose": "Experiment 006: robustness of follow-up retrieval (joined, standalone and merged queries) across paragraph-v1 and section-v1 chunking.",
+  "compatibility": "Loaded by Knowbase's Asia Cement parser as dataset 'asia-cement-followups'. Same four PDFs as asia-cement-realworld 1.0.0. Only `evidence` is mapped and scored; `corroborating_evidence` is reviewer-only.",
+  "source_of_truth": "The same four SHA-256-pinned PDFs as asia-cement-realworld 1.0.0. Questions and answers were written from the PDF text only, without consulting chunk lists, chunk boundaries or retrieval results.",
+  "extends": {
+    "dataset": "asia-cement-realworld",
+    "version": "1.0.0",
+    "relationship": "separate development-only extension; the parent's 16 dev and 8 held-out questions are unchanged. AC-017 and AC-019 are verbatim copies, kept as known diagnostic cases and reported separately."
+  },
+  "documents": [
+    {
+      "key": "cobc",
+      "filename": "ACC_Code of Business Conduct 2024_0.pdf",
+      "title": "Code of Business Conduct",
+      "version_or_date": "January 2024",
+      "pdf_pages": 21,
+      "sha256": "2f943365e84ae79e4cba07bd766df832fc68f0633b36c23f0d64f1f8d08a9028",
+      "bytes": 511193
+    },
+    {
+      "key": "acp",
+      "filename": "Anti-Corruption Policy.pdf",
+      "title": "Anti-Corruption Policy",
+      "version_or_date": "21 September 2023",
+      "pdf_pages": 13,
+      "sha256": "69b68d1160eebc8e84a123b16f26396b83b7ca0cfb33b83fcd4f767c90501348",
+      "bytes": 252976
+    },
+    {
+      "key": "bpcc",
+      "filename": "Business Partner Code of Conduct_for publication.pdf",
+      "title": "Business Partner Code of Conduct",
+      "version_or_date": "October 2025",
+      "pdf_pages": 7,
+      "sha256": "81533b2eae25783fa1545755afc091afcb1cd3875c4d6b1683ddc693d2a1afd7",
+      "bytes": 336585
+    },
+    {
+      "key": "terms",
+      "filename": "general_purchasing_terms_and_conditions.pdf",
+      "title": "General Purchasing Terms and Conditions",
+      "version_or_date": "May 2019",
+      "pdf_pages": 3,
+      "sha256": "cc14e770a0227c30aff572d90f1e1eff39751d9b6767fb554e724a1513f8cf76",
+      "bytes": 501940
+    }
+  ],
+  "follow_up_types": {
+    "self_contained": "Understandable and answerable without the previous turn.",
+    "pronoun": "Refers back to an entity in the previous question with a pronoun or demonstrative (it, they, them, that).",
+    "context_dependent": "Elliptical: the topic, document or actor is only clear from the previous question (\"And if...?\", \"What about...?\").",
+    "topic_change": "Moves to an unrelated topic; the previous question is noise for retrieval."
+  },
+  "questions": [
+    {
+      "id": "AC-017",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "context_dependent",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "previous_question": "According to Asia Cement's Code of Business Conduct, what are the rules for employees accepting gifts or hospitality?",
+      "question": "What about cash and gift cards? Are employees allowed to accept them, and what should they consider before accepting any gift?",
+      "reference_answer": "No. Employees must never accept money or gift cards as gifts. Before accepting any other gift or invitation, they must evaluate its value and whether it could appear to influence them.",
+      "required_facts": [
+        "Explicit cash/gift-card prohibition",
+        "Evaluate value",
+        "Assess appearance of influence"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Never accept money or gift cards as a gift."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 9,
+          "section": "2.4 Gifts, Hospitality, and Benefits",
+          "quote": "Before you accept a gift, invitation, or other benefit, first evaluate its value and whether it might appear as an attempt to influence you."
+        }
+      ],
+      "notes": "Exact known failure, manual Test 002. Keep in development split, never held-out.",
+      "origin": "asia-cement-realworld@1.0.0 (verbatim copy)"
+    },
+    {
+      "id": "AC-019",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "bpcc"
+      ],
+      "previous_question": "What standards does Asia Cement expect its business partners to follow?",
+      "question": "Do those standards also apply to the subcontractors they hire?",
+      "reference_answer": "Yes. Business partners must make reasonable efforts to implement the standards in their supply chains, are responsible for downstream partners’ compliance and should monitor that compliance.",
+      "required_facts": [
+        "Downstream business partners covered",
+        "Responsibility for compliance",
+        "Monitoring efforts"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 2,
+          "section": "Scope and supply-chain obligations",
+          "quote": "The Business Partners are responsible for ensuring that their Downstream Business Partners comply with these principles and for making efforts to monitor compliance within their own supply chains."
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 2,
+          "section": "Scope and supply-chain obligations",
+          "quote": "make reasonable efforts to implement these standards within their supply chain."
+        }
+      ],
+      "notes": null,
+      "origin": "asia-cement-realworld@1.0.0 (verbatim copy)"
+    },
+    {
+      "id": "FU-001",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "acp"
+      ],
+      "previous_question": "What does the Anti-Corruption Policy say about employees accepting invitations to events such as concerts or sports matches?",
+      "question": "Can they bring their spouse, and can the host pay for their travel?",
+      "reference_answer": "Normally no to both. Travel or accommodation costs covered by the inviting company must normally be declined, as must invitations for spouses or companions. Exceptions require the supervisor's explicit prior approval.",
+      "required_facts": [
+        "Host-paid travel/accommodation normally declined",
+        "Spouse/companion invitation normally declined",
+        "Exception only with explicit prior supervisor approval"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 7,
+          "section": "3. Gifts from Suppliers..., 3.6",
+          "quote": "The coverage of travel or accommodation costs by the inviting company must normally be declined as well as the invitation of spouses/companions."
+        },
+        {
+          "source_key": "acp",
+          "pdf_page": 7,
+          "section": "3. Gifts from Suppliers..., 3.6",
+          "quote": "Exceptions require explicit prior approval by the employee’s supervisor"
+        }
+      ],
+      "notes": "Section 3.3 (p6) states a similar rule for supplier invitations in general (prior line-manager approval); an answer citing it is also supported but it is not required evidence."
+    },
+    {
+      "id": "FU-002",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "context_dependent",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "acp"
+      ],
+      "previous_question": "What should an employee do if a supplier offers a gift they are not allowed to accept?",
+      "question": "And if the gift has already been delivered?",
+      "reference_answer": "It must be returned. If returning it is impracticable, the employee must notify their line manager and seek guidance.",
+      "required_facts": [
+        "Return the gift",
+        "If return is impracticable, notify line manager and seek guidance"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 7,
+          "section": "3. Gifts from Suppliers..., 3.7",
+          "quote": "If a gift has already been delivered, it must be returned. If return is impracticable, the employee must notify their line manager and seek guidance."
+        }
+      ],
+      "notes": "Which policy and whose gift are only clear from the previous turn."
+    },
+    {
+      "id": "FU-003",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "acp"
+      ],
+      "previous_question": "Can Asia Cement employees give gifts to government officials?",
+      "question": "What about inviting them to a meal?",
+      "reference_answer": "Meal invitations for public officials require prior line-manager approval. Otherwise only light refreshments or coffee during meetings may be offered as a general courtesy, where lawful.",
+      "required_facts": [
+        "Prior line-manager approval for meals",
+        "Only light refreshments/coffee during meetings as courtesy, where lawful"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 8,
+          "section": "5. Gifts Offered to Public Officials, 5.1",
+          "quote": "Invitations to meals for public officials require prior line-manager approval; only light refreshments/coffee during meetings as general corporate courtesy may be provided where lawful."
+        }
+      ],
+      "notes": "Section 5.1 starts on p7 and this sentence is on p8."
+    },
+    {
+      "id": "FU-004",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "self_contained",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "acp"
+      ],
+      "previous_question": "Which employees does the Anti-Corruption Policy identify as working in elevated-risk areas?",
+      "question": "Does the Anti-Corruption Policy recommend rotating staff in purchasing roles?",
+      "reference_answer": "Yes, as one way to reduce corruption risk: regularly changing or rotating assignments that are particularly exposed to corruption, such as purchasing, reduces the risk that employees are exposed to gifts or become too close to business partners. It is framed as a risk-reduction measure, not a fixed rotation schedule.",
+      "required_facts": [
+        "Rotate assignments exposed to corruption, e.g. purchasing",
+        "Purpose: less exposure to gifts / closeness to partners",
+        "Framed as one way to reduce risk; no schedule given"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 12,
+          "section": "11. Job Rotation, Four-Eyes Principle, and Documentation, 11.2",
+          "quote": "One way to reduce the risk of corruption is to regularly change or rotate personnel assignments which are particularly exposed to corruption such as the purchasing function."
+        },
+        {
+          "source_key": "acp",
+          "pdf_page": 12,
+          "section": "11. Job Rotation, Four-Eyes Principle, and Documentation, 11.2",
+          "quote": "Such changes reduce the risk that an employee will be exposed to advantages or gifts, be it personal or for a third party, from business partners or become too close to business partners"
+        }
+      ],
+      "notes": "Reject an invented rotation interval."
+    },
+    {
+      "id": "FU-006",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "bpcc"
+      ],
+      "previous_question": "What does the Business Partner Code require of business partners on workplace health and safety?",
+      "question": "And if they use security guards to protect their sites?",
+      "reference_answer": "They must direct and control private or public security forces appropriately to avoid excessive force or unlawful suppression, including torture, cruel, inhuman or degrading treatment, harm to life or limb, and infringement of freedom of association.",
+      "required_facts": [
+        "Direct and control security forces appropriately",
+        "Avoid excessive force or unlawful suppression",
+        "Examples: torture/degrading treatment, harm to life or limb, infringing freedom of association"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 3,
+          "section": "Working/Labor Conditions, 8",
+          "quote": "In cases where The Business Partners use security forces, either private or public, to protect their organization or employees, the Business Partners must direct and control security forces appropriately to avoid the use of excessive force or unlawful suppression"
+        },
+        {
+          "source_key": "bpcc",
+          "pdf_page": 4,
+          "section": "Working/Labor Conditions, 8",
+          "quote": "torture, cruel, inhuman or degrading treatment, harm to life or limb, and infringement on the freedom of association."
+        }
+      ],
+      "notes": "Item 8 runs across the p3/p4 page break in the PDF; the two quotations are its two halves. 'Security guards' paraphrases 'security forces'."
+    },
+    {
+      "id": "FU-007",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "topic_change",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "terms"
+      ],
+      "previous_question": "What does the Code of Business Conduct say about protecting personal data?",
+      "question": "Separately: under the General Purchasing Terms, what can Asia Cement claim if a supplier delivers late?",
+      "reference_answer": "The supplier is liable as provided by law; alternatively Asia Cement is entitled to a contractual penalty for late delivery. (The supplier must also inform Asia Cement in writing as soon as it sees a delay coming.)",
+      "required_facts": [
+        "Liability as provided by law",
+        "Alternatively a contractual penalty for late delivery"
+      ],
+      "evidence": [
+        {
+          "source_key": "terms",
+          "pdf_page": 1,
+          "section": "III. Delivery time, 2",
+          "quote": "If the supplier does not comply with his delivery/service obligation within the agreed delivery time, he shall be liable as provided by law. Alternatively, we are entitled to a contractual penalty for late delivery."
+        }
+      ],
+      "notes": "Explicit topic change with a marker word. The written-notice duty (III.1) is optional."
+    },
+    {
+      "id": "FU-008",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "terms"
+      ],
+      "previous_question": "What does a supplier warrant about delivered goods under the General Purchasing Terms and Conditions?",
+      "question": "How long does that warranty last, and does it restart for a replaced part?",
+      "reference_answer": "The statutory warranty period applies. For a repaired or replaced part, a new warranty period of the same length as for the original part applies.",
+      "required_facts": [
+        "Warranty period as regulated by law",
+        "New period of equal length for repaired/replaced parts"
+      ],
+      "evidence": [
+        {
+          "source_key": "terms",
+          "pdf_page": 1,
+          "section": "IV. Warranty, 4",
+          "quote": "The warranty period, which is regulated by law, shall apply. For a repaired or replaced part, a new warranty period will apply for the same period of time as for the original part."
+        }
+      ],
+      "notes": "Reject an invented number of months or years."
+    },
+    {
+      "id": "FU-009",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "context_dependent",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "terms"
+      ],
+      "previous_question": "Under the General Purchasing Terms, how are goods inspected when they arrive?",
+      "question": "And what's the deadline for reporting quality defects?",
+      "reference_answer": "Asia Cement (the buyer) notifies quality defects without undue delay and at the latest within 15 days of discovery, and the supplier waives the defence of delayed notification.",
+      "required_facts": [
+        "Without undue delay",
+        "Latest within 15 days of discovery",
+        "Supplier waives the late-notification defence"
+      ],
+      "evidence": [
+        {
+          "source_key": "terms",
+          "pdf_page": 2,
+          "section": "IV. Warranty, 6",
+          "quote": "Buyer will notify defects in quality without undue delay and latest within 15 days upon discovery."
+        },
+        {
+          "source_key": "terms",
+          "pdf_page": 2,
+          "section": "IV. Warranty, 6",
+          "quote": "Insofar, supplier waives the defense of the delayed notification of defect."
+        }
+      ],
+      "notes": "Which document and which party report are only clear from the previous turn."
+    },
+    {
+      "id": "FU-010",
+      "split": "dev",
+      "category": "absent_detail",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "abstain",
+      "expected_source_keys": [],
+      "previous_question": "Under the General Purchasing Terms, what rights does Asia Cement have if delivered goods are defective?",
+      "question": "How many days does the supplier get to fix them?",
+      "reference_answer": "No repair deadline for the supplier is stated. The terms provide warranty claims under applicable law, damages, and supplementary performance at the supplier's cost; the 15-day period in IV.6 is the buyer's deadline for notifying defects, not a supplier repair deadline.",
+      "required_facts": [],
+      "evidence": [],
+      "notes": "Absent detail. Accept explicit 'not specified' or the product abstention. Reject '15 days' presented as the supplier's repair period, and any other invented number. Context (not scored): terms p1 IV.3; p2 IV.6."
+    },
+    {
+      "id": "FU-011",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "self_contained",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "bpcc"
+      ],
+      "previous_question": "What environmental standards does the Business Partner Code set for business partners?",
+      "question": "Are business partners allowed to make products that contain mercury?",
+      "reference_answer": "Not after the phase-out dates: they must ensure they do not produce products containing mercury, as defined in the Minamata Convention on Mercury, after the phase-out dates specified for those products.",
+      "required_facts": [
+        "Must not produce mercury-containing products",
+        "After the Minamata Convention phase-out dates"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 4,
+          "section": "Environmental Standards, 3",
+          "quote": "The Business Partners must ensure that they do not produce products containing mercury, as defined in Section 4 (1) and Section 1 of Annex A of the Minamata Convention on Mercury, after the specified phase-out dates for such products under the Convention."
+        }
+      ],
+      "notes": "Item 4 (mercury in manufacturing processes, p4-p5) is related but not required."
+    },
+    {
+      "id": "FU-013",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "self_contained",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "acp"
+      ],
+      "previous_question": "Who should employees contact with questions about the Anti-Corruption Policy?",
+      "question": "Can a business partner use SpeakUp to report an Asia Cement employee who acted improperly?",
+      "reference_answer": "Yes. The Anti-Corruption Policy says business partners may report concerns via SpeakUp if they believe Group employees have acted improperly. (The Business Partner Code also says partners may themselves use the SpeakUp channel; citing it is welcome but not required.)",
+      "required_facts": [
+        "Yes, business partners may report via SpeakUp",
+        "Covers concerns that Group employees acted improperly"
+      ],
+      "evidence": [
+        {
+          "source_key": "acp",
+          "pdf_page": 13,
+          "section": "12. Compliance, Speak Up Hotline, and Enquiries",
+          "quote": "Business partners may also report concerns via SpeakUp if they believe Group employees have acted improperly."
+        }
+      ],
+      "corroborating_evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 7,
+          "section": "Governance and Compliance",
+          "quote": "The Business Partners itself may also use this channel to raise concerns."
+        }
+      ],
+      "notes": "Mandatory evidence: ACP §12 only. The BPCC sentence is corroborating: not scored, and an answer that omits it is not penalised. Not counted as a multi-source question."
+    },
+    {
+      "id": "FU-014",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "topic_change",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "previous_question": "What does the Anti-Corruption Policy say about sponsorships and donations?",
+      "question": "What should I do if a competitor starts discussing prices at an industry association meeting?",
+      "reference_answer": "End the conversation or meeting immediately, make clear you will not take part in anticompetitive behaviour, and make sure it is properly recorded that you left the meeting or stopped the conversation.",
+      "required_facts": [
+        "End the conversation/meeting immediately",
+        "Make clear you won't participate",
+        "Ensure your leaving is properly recorded"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 6,
+          "section": "2.1 Compliance with Competition and Antitrust Law",
+          "quote": "End a conversation or meeting immediately if a competitor raises critical issues and make it clear that you will not participate in anticompetitive behavior."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 6,
+          "section": "2.1 Compliance with Competition and Antitrust Law",
+          "quote": "Ensure that it is properly recorded that you left the meeting or stopped the conversation."
+        }
+      ],
+      "notes": "Unmarked topic change across documents. The 2.1 body sentence on not discussing prices at industry meetings is optional supporting context."
+    },
+    {
+      "id": "FU-015",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "topic_change",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "bpcc",
+        "terms"
+      ],
+      "previous_question": "What does the Code of Business Conduct say about keeping accurate accounting records?",
+      "question": "What can Asia Cement do if a supplier refuses an audit or breaches the supplier code of conduct?",
+      "reference_answer": "The documents give two separate rules that should be kept apart. (1) The October 2025 Business Partner Code: if a Business Partner fails to implement corrective measures, the Company may suspend the relationship until remediation, or terminate without prior notice for substantive causes such as an unjustified refusal of an audit. (2) The May 2019 General Purchasing Terms: Asia Cement may terminate the purchasing agreement, if necessary after prior written notice, if the supplier breaches the 'Supplier Code of Conduct' those terms reference. The documents do not say that the 2019 Supplier Code of Conduct is the 2025 Business Partner Code, or which notice rule prevails.",
+      "required_facts": [
+        "BPCC (Oct 2025): suspend until remediation, or terminate without prior notice, e.g. unjustified audit refusal",
+        "Purchasing Terms (May 2019): terminate, if necessary after prior written notice, for breach of the referenced Supplier Code of Conduct",
+        "Attributes each rule to its own document and date",
+        "Does not state or imply that the 2019 Supplier Code and the 2025 Business Partner Code are the same instrument or legally equivalent, or that one notice rule overrides the other"
+      ],
+      "evidence": [
+        {
+          "source_key": "bpcc",
+          "pdf_page": 6,
+          "section": "Governance and Compliance",
+          "quote": "If the Business Partner fails to implement corrective measures to comply with this Code of Conduct, the Company may suspend the business relationship until proper remediation is achieved or terminate the contract without prior notice in cases of substance causes, such as unjustified refusal of an audit."
+        },
+        {
+          "source_key": "terms",
+          "pdf_page": 3,
+          "section": "X. Supplier Code of Conduct",
+          "quote": "We may terminate the purchasing agreement if necessary after giving prior written notice in the event the supplier is in breach of the principles and standards set forth in the Supplier Code of Con-duct."
+        }
+      ],
+      "notes": "'Con-duct' is printed with a hyphen in the PDF (sic). Answer scoring rejects: calling the BPCC 'the supplier code referenced in the purchasing terms'; merging the two notice rules into one; claiming one supersedes the other. Saying the relationship between the two codes is not stated is correct. Both evidence quotations are mandatory."
+    },
+    {
+      "id": "FU-016",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "topic_change",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "previous_question": "What does the Anti-Corruption Policy say about political contributions?",
+      "question": "Under the Code of Business Conduct, which transactions should I report to my manager as possibly suspicious?",
+      "reference_answer": "Any business transaction that seems unusual or suspicious, for example when the recipient bank account is in a different name from the supplier, or money is to be transferred to a country with no clear relevance to the business case.",
+      "required_facts": [
+        "Unusual or suspicious transactions, to the manager",
+        "Example: bank account in a different name from the supplier",
+        "Example: transfer to a country with no clear relevance"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 16,
+          "section": "2.11 Anti-Money Laundering and Trade Sanctions",
+          "quote": "Report to your manager any business transaction that seems unusual or suspicious, for example, if the recipient bank account is in a different name from our supplier, or if money is to be transferred to a country with no clear relevance to the business case in question."
+        }
+      ],
+      "notes": "Topic change that names the target document."
+    },
+    {
+      "id": "FU-017",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "previous_question": "What does the Code of Business Conduct require employees to do about conflicts of interest?",
+      "question": "Does that still apply if it's my wife, not me, who has the conflicting interest?",
+      "reference_answer": "Yes. The Code says a conflict of interest also exists if it affects a close family member, including a spouse, child or other immediate family member, rather than the employee.",
+      "required_facts": [
+        "Yes",
+        "Close family members including a spouse are covered"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 10,
+          "section": "2.5 Conflicts of Interest",
+          "quote": "Remember that a conflict of interest also exists if it affects not yourself, but a close family member (including a spouse, child, or other immediate family member)."
+        }
+      ],
+      "notes": "Same rules box as AC-011's evidence, but a different quotation. ACP 6.1/6.2 family-member rules are related; an answer citing them is supported but they are not required."
+    },
+    {
+      "id": "FU-018",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "context_dependent",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc"
+      ],
+      "previous_question": "What does the Code of Business Conduct expect from employees on health and safety?",
+      "question": "Is keeping the workplace safe management's responsibility or each employee's?",
+      "reference_answer": "Both. Management has the ultimate responsibility for a safe working environment, but every employee is individually responsible for informing themselves about health and safety measures, following the rules and work instructions, and wearing the prescribed protective equipment.",
+      "required_facts": [
+        "Management has ultimate responsibility",
+        "Each employee individually responsible",
+        "Inform yourself, follow rules, wear PPE"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 7,
+          "section": "2.2 Health and Safety",
+          "quote": "management have the ultimate responsibility to safeguard and maintain a safe working environment."
+        },
+        {
+          "source_key": "cobc",
+          "pdf_page": 7,
+          "section": "2.2 Health and Safety",
+          "quote": "However, we are all individually responsible for informing ourselves about our health and safety measures, observing all relevant rules, regulations, and work instructions, and wearing the prescribed personal protective equipment in each case."
+        }
+      ],
+      "notes": "Without the previous turn, the question could equally target the Business Partner Code's partner safety clause (bpcc p3, item 7)."
+    },
+    {
+      "id": "FU-019",
+      "split": "dev",
+      "category": "follow_up",
+      "follow_up_type": "context_dependent",
+      "expected_behavior": "answer",
+      "expected_source_keys": [
+        "cobc",
+        "acp"
+      ],
+      "previous_question": "Are Asia Cement employees allowed to accept gifts from suppliers?",
+      "question": "What about us giving gifts to a customer's purchasing staff?",
+      "reference_answer": "That is restricted too. The Code of Business Conduct says never to offer personal advantages to a customer's purchasing employee. The Anti-Corruption Policy allows anything beyond ordinary promotional items and routine business meals only if disclosed to and approved by the customer's line manager or authorised body, and strictly prohibits cash or cash equivalents.",
+      "required_facts": [
+        "Never offer personal advantages to a customer's purchasing employee",
+        "Beyond promotional items/routine meals only with customer-side disclosure and approval",
+        "Cash or cash equivalents strictly prohibited"
+      ],
+      "evidence": [
+        {
+          "source_key": "cobc",
+          "pdf_page": 8,
+          "section": "2.3 Anticorruption",
+          "quote": "Never offer personal advantages to a purchasing employee of a customer."
+        },
+        {
+          "source_key": "acp",
+          "pdf_page": 7,
+          "section": "4. Gifts Offered to Employees of Customers or Other Business Partners",
+          "quote": "Any benefit exceeding ordinary promotional items and routine business meals may be offered only if disclosed to and approved by the customer/partner’s line manager or authorized body."
+        },
+        {
+          "source_key": "acp",
+          "pdf_page": 7,
+          "section": "4. Gifts Offered to Employees of Customers or Other Business Partners",
+          "quote": "Cash or cash equivalents are strictly prohibited"
+        }
+      ],
+      "notes": "Direction of the gift (giving, not receiving) is reversed from the previous turn."
+    },
+    {
+      "id": "FU-020",
+      "split": "dev",
+      "category": "absent_detail",
+      "follow_up_type": "pronoun",
+      "expected_behavior": "abstain",
+      "expected_source_keys": [],
+      "previous_question": "What does the Business Partner Code say about the wages business partners must pay?",
+      "question": "What's the exact minimum amount in Thai baht they have to pay per day?",
+      "reference_answer": "No amount is stated. The code requires a living wage at least equal to the minimum wage required by applicable law in the area of employment; it gives no baht figure.",
+      "required_facts": [],
+      "evidence": [],
+      "notes": "Absent detail. Reject any invented baht figure. Context (not scored): bpcc p3, item 3 'Living Wages'."
+    }
+  ],
+  "scoring_guidance": {
+    "retrieval": "Use expected evidence passages (source key + PDF page + quote), not merely document-level presence. Map exact passages to indexed chunk ids when integrating with local database. The chunk indices are not stable across changes to the parser or chunker.",
+    "answer": "Score correctness, required fact coverage, support for each claim, citations, and abstention independently. Accept semantic paraphrases; do not exact-string match answers.",
+    "abstention": "For absent-detail questions accept either explicit uncertainty/no specified figure or the product abstention; reject invented numeric details.",
+    "heldout": "Use dev cases for tuning, keep heldout untouched until final evaluation. Do not run exploratory experiments on heldout cases.",
+    "follow_up": "Each follow-up includes previous_question. Run with the indicated conversational context; do not test it as an isolated direct question.",
+    "conflicts": "Sources dated 2019, 2023, 2024 and 2025; do not silently assume the Supplier Code referenced in the 2019 purchasing terms is the same legal instrument as the October 2025 Business Partner Code.",
+    "corroborating_evidence": "corroborating_evidence is mapped and reported, but never counted in HitRate, Recall, MRR or full-evidence-in-context, and an answer is never penalised for omitting it.",
+    "experiment_006_preregistered": "Population for A-C: the 16 newly written answerable follow-ups (FU- ids) only. AC-017 and AC-019 are known diagnostic cases: reported separately, never counted toward A-C. Results are reported for all 18 answerable, the 16 new, and the 2 inherited. Primary: production hybrid retrieval at K=5, mandatory evidence only; metric = full evidence in context (every mandatory quotation in the 12,000-character context). Merged = M1 (list-level RRF, k=60, equal weights, 10 candidates per list, ties by chunk id), compared with joined on the same corpus. A: net gain, merged minus joined, >= +3 questions on section-v1 and >= 0 on paragraph-v1. B: regressions (joined had full evidence in context, merged does not) = 0 on the new pronoun/context-dependent questions and <= 1 across all 16 new questions, on each corpus. C: on the 9 new pronoun/context-dependent answerable questions, merged's aggregate full-evidence-in-context count is at least as high as both joined's and standalone's, on each corpus; MRR is reported separately. D: non-follow-up retrieval is verified identical by regression tests on asia-cement-realworld (this extension contains only follow-ups). Note: under the production follow-up heuristic (app/retrieval/followup.py) 7 of the 16 new answerable questions (1 of them pronoun/context-dependent) have identical joined and standalone queries, so merged equals joined for them by construction. Gates: every mandatory quotation maps on both corpora (more than 2 new questions excluded voids the run; exclusions apply to every condition); the offline replay reproduces the stored production and standalone top 5 exactly. Reported, not gated: HitRate, Recall, MRR, K=7/10, per type and document, OR configurations, characters in context, gains at exactly rank 5. A pass justifies only a live retrieval-only merged experiment and an independently written sealed held-out follow-up set, never a production change.",
+    "exclusions": "Before freezing, 2 of the 20 newly written questions were removed: each had at least one mandatory quotation substantially identical (app/evaluation/blind_check.py: normalized equality or similarity >= 0.9) to evidence in the sealed held-out split of asia-cement-realworld 1.0.0. They were found by the blind check alone, not replaced, and their ids are not reused. No remaining question was edited. Final: 20 questions = 18 new (16 answerable, 2 unanswerable) + AC-017 and AC-019."
+  }
+}
