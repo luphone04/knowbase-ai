@@ -18,6 +18,9 @@ import type { AnswerMode, EvaluationOverview } from "@/lib/types";
 /** The dataset, whether this workspace holds its documents, and what each check costs. */
 export function DatasetPanel({ overview }: { overview: EvaluationOverview }) {
   const { dataset, corpus } = overview;
+  const fileName = (key: string) => dataset.source_files?.[key] ?? key;
+  const heldOut = dataset.held_out_questions ?? 0;
+  const mapping = dataset.evidence_mapping;
   return (
     <Card>
       <CardHeader>
@@ -29,18 +32,33 @@ export function DatasetPanel({ overview }: { overview: EvaluationOverview }) {
       <CardContent className="grid gap-4 text-sm">
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Fact label="Dataset" value={`${dataset.name} v${dataset.version}`} />
-          <Fact label="Questions" value={String(dataset.questions)} />
+          <Fact
+            label={dataset.split ? `Questions per run (${dataset.split} split)` : "Questions"}
+            value={String(dataset.questions)}
+          />
           <Fact label="Answerable" value={String(dataset.answerable)} />
           <Fact label="Unanswerable" value={String(dataset.unanswerable)} />
+          {heldOut ? <Fact label="Held out (never run automatically)" value={String(heldOut)} /> : null}
+          {dataset.relevance === "passage" ? <Fact label="Retrieval relevance" value="Evidence passage" /> : null}
         </dl>
+        {mapping ? (
+          <p className="text-xs text-muted-foreground" data-testid="evidence-mapping">
+            Evidence passages found in this workspace&apos;s chunks: {mapping.matched} of {mapping.quotations}
+            {mapping.matched_ignoring_spacing ? ` (${mapping.matched_ignoring_spacing} only when PDF spacing is ignored)` : ""}
+            .
+            {mapping.problems.length
+              ? ` Not mapped, and not scored: ${mapping.problems.map((p) => `${p.question} (${p.status})`).join(", ")}.`
+              : ""}
+          </p>
+        ) : null}
         <section className="grid gap-2" aria-labelledby="corpus-heading">
           <h3 id="corpus-heading" className="font-semibold">
-            Demo documents in this workspace
+            {dataset.source_files ? "Benchmark documents in this workspace" : "Demo documents in this workspace"}
           </h3>
           <ul className="divide-y rounded-lg border">
             {corpus.sources.map((source) => (
               <li key={source.key} className="flex items-center justify-between gap-3 px-3 py-2">
-                <span className="min-w-0 truncate font-mono text-xs">{source.key}</span>
+                <span className="min-w-0 truncate font-mono text-xs">{fileName(source.key)}</span>
                 <span className="flex items-center gap-3">
                   {source.status === "ready" ? (
                     <span className="text-xs text-muted-foreground">{source.chunks} chunks</span>
@@ -54,7 +72,9 @@ export function DatasetPanel({ overview }: { overview: EvaluationOverview }) {
             <p className="text-muted-foreground" data-testid="corpus-help">
               {corpus.indexing > 0
                 ? `${corpus.indexing} document(s) are still being indexed. Wait until every document is ready.`
-                : "Upload the five files from sample_data/demo_store, unchanged, on the "}
+                : dataset.source_files
+                  ? `Upload the ${corpus.sources.length} benchmark files above, unchanged, on the `
+                  : "Upload the five files from sample_data/demo_store, unchanged, on the "}
               {corpus.indexing > 0 ? null : (
                 <>
                   <Link href="/sources" className="font-medium text-foreground underline underline-offset-4">
@@ -69,7 +89,7 @@ export function DatasetPanel({ overview }: { overview: EvaluationOverview }) {
             <p className="text-xs text-muted-foreground">
               {corpus.other_sources.length} other document(s) in this workspace (
               {corpus.other_sources.map((o) => o.name).join(", ")}) are searched too and compete with
-              the demo documents. The run records them with its results.
+              the {dataset.source_files ? "benchmark" : "demo"} documents. The run records them with its results.
             </p>
           ) : null}
         </section>
@@ -109,7 +129,7 @@ export function StartRun({ overview, activeRunId }: { overview: EvaluationOvervi
   });
   const { limits, corpus } = overview;
   const modes = CHOICES[choice].modes;
-  const estimate = requestEstimate(overview.dataset.questions, modes);
+  const estimate = requestEstimate(limits, modes);
   const blocked = !corpus.ready || Boolean(activeRunId);
 
   return (

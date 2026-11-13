@@ -67,13 +67,20 @@ describe("run status and polling", () => {
 });
 
 describe("requestEstimate", () => {
-  it("counts one embedding per question and one generation per question and mode", () => {
-    expect(requestEstimate(26, [])).toEqual({ queryEmbeddings: 26, generations: 0 });
-    expect(requestEstimate(26, ["hybrid"])).toEqual({ queryEmbeddings: 26, generations: 26 });
-    expect(requestEstimate(26, ["vector", "hybrid"])).toEqual({
+  const northstar = { query_embeddings_per_run: 26, generations_per_answer_mode: 26 };
+  it("uses the API's reservation: embeddings per run, one generation per question and mode", () => {
+    expect(requestEstimate(northstar, [])).toEqual({ queryEmbeddings: 26, generations: 0 });
+    expect(requestEstimate(northstar, ["hybrid"])).toEqual({ queryEmbeddings: 26, generations: 26 });
+    expect(requestEstimate(northstar, ["vector", "hybrid"])).toEqual({
       queryEmbeddings: 26,
       generations: 52,
     });
+  });
+
+  it("includes diagnostic follow-up embeddings the API reserves (Asia Cement: 16 + 2)", () => {
+    const asia = { query_embeddings_per_run: 18, generations_per_answer_mode: 16 };
+    expect(requestEstimate(asia, [])).toEqual({ queryEmbeddings: 18, generations: 0 });
+    expect(requestEstimate(asia, ["hybrid"])).toEqual({ queryEmbeddings: 18, generations: 16 });
   });
 });
 

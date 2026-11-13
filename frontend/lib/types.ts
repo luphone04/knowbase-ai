@@ -222,9 +222,23 @@ export type EvaluationQuestion = {
   answerable: boolean;
   expected_source_keys: string[];
   expected_answer: string | null;
-  evidence: { source_key: string; quote: string }[];
+  /** page and section: passage datasets (Asia Cement) cite a PDF page. */
+  evidence: { source_key: string; quote: string; page?: number | null; section?: string | null }[];
   absent_terms: string[];
   notes: string | null;
+  /** "dev" or "heldout" (Asia Cement); absent for Northstar. */
+  split?: string | null;
+  required_facts?: string[];
+};
+
+/** Passage datasets: how the evidence quotations map to this workspace's chunks. */
+export type EvidenceMapping = {
+  quotations: number;
+  matched: number;
+  matched_ignoring_spacing: number;
+  questions: number;
+  questions_fully_mapped: number;
+  problems: { question: string; evidence: number; status: string; detail: string | null }[];
 };
 
 export type EvaluationOverview = {
@@ -237,6 +251,13 @@ export type EvaluationOverview = {
     answerable: number;
     unanswerable: number;
     source_keys: string[];
+    /** Absent from older APIs: Northstar, judged by source, every question run. */
+    id?: string;
+    source_files?: Record<string, string> | null;
+    relevance?: "source" | "passage";
+    split?: string | null;
+    held_out_questions?: number;
+    evidence_mapping?: EvidenceMapping | null;
   };
   corpus: {
     ready: boolean;
@@ -318,6 +339,13 @@ export type EvaluationSummary = {
   };
   /** Gemini tokens and estimated cost. Absent from summaries stored before it was measured. */
   usage?: EvaluationUsage;
+  /** "passage": `retrieval` scores chunks holding the evidence; documents are reported apart. */
+  relevance?: "source" | "passage";
+  document_retrieval?: Record<
+    string,
+    { questions: number; hit_rate_at_5: number | null; recall_at_5: number | null; mrr: number | null }
+  >;
+  evidence_mapping?: EvidenceMapping;
 };
 
 /**
@@ -413,6 +441,11 @@ export type EvaluationRun = {
   config: Record<string, unknown> & {
     variants?: string[];
     variant_details?: Record<string, VariantDetails>;
+    /** Recorded by runs since the Asia Cement benchmark; older runs evaluated every question. */
+    dataset_id?: string;
+    relevance?: "source" | "passage";
+    question_split?: string | null;
+    question_keys?: string[];
   };
   corpus: Record<string, unknown> & {
     sources?: { key: string; status: string; chunks: number }[];
@@ -436,6 +469,8 @@ export type RetrievedChunk = {
   vector_distance: number | null;
   lexical_rank: number | null;
   lexical_score: number | null;
+  /** Passage runs: this chunk holds one of the question's evidence quotations. */
+  evidence?: boolean;
 };
 
 export type RetrievedSource = {

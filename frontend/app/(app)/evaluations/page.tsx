@@ -24,7 +24,7 @@ export default function EvaluationsPage() {
     <>
       <PageHeader
         title="Evaluation"
-        description="Measures retrieval, citations, and abstention on a fixed set of questions about the Northstar demo documents."
+        description="Measures retrieval, citations, and abstention on a fixed set of questions about this workspace's evaluation documents."
       />
       <div className="grid gap-6 p-4 md:p-6">
         {overview.isPending ? (

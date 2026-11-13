@@ -103,7 +103,13 @@ function QuestionItem({
               </p>
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {results.map((result) => (
-                  <Retrieved key={result.variant} label={variantDetails(run, result.variant).label} result={result} />
+                  <Retrieved
+                    key={result.variant}
+                    label={variantDetails(run, result.variant).label}
+                    result={result}
+                    answerable={question.answerable}
+                    passage={run.config.relevance === "passage"}
+                  />
                 ))}
               </div>
             </section>
@@ -185,7 +191,8 @@ function Expected({ question }: { question: EvaluationQuestion }) {
           <ul className="grid gap-1 text-xs text-muted-foreground">
             {question.evidence.map((e, i) => (
               <li key={i}>
-                {e.source_key}: <q>{e.quote}</q>
+                {e.source_key}
+                {e.page ? ` p.${e.page}` : ""}: <q>{e.quote}</q>
               </li>
             ))}
           </ul>
@@ -201,7 +208,18 @@ function Expected({ question }: { question: EvaluationQuestion }) {
   );
 }
 
-function Retrieved({ label, result }: { label: string; result: EvaluationResult }) {
+function Retrieved({
+  label,
+  result,
+  answerable,
+  passage,
+}: {
+  label: string;
+  result: EvaluationResult;
+  answerable: boolean;
+  passage: boolean;
+}) {
+  const evidenceRanks = result.retrieved.filter((c) => c.evidence).map((c) => c.rank);
   return (
     <div className="grid content-start gap-1.5 rounded-md border p-2" data-testid={`retrieved-${result.variant}`}>
       <p className="text-xs font-medium">{label}</p>
@@ -222,9 +240,18 @@ function Retrieved({ label, result }: { label: string; result: EvaluationResult 
               </li>
             ))}
           </ol>
+          {passage && answerable ? (
+            <p className="text-xs" data-testid={`evidence-${result.variant}`}>
+              {evidenceRanks.length
+                ? `Evidence passage in chunk rank ${evidenceRanks.join(", ")}`
+                : result.hit_at_5 === null
+                  ? "Evidence not mapped to chunks: no passage score"
+                  : "No chunk holding the evidence in the top 5"}
+            </p>
+          ) : null}
           <p className="text-xs text-muted-foreground">
             {result.hit_at_5 === null ? (
-              "No relevant document (unanswerable)"
+              answerable ? "Not scored" : "No relevant document (unanswerable)"
             ) : (
               <>
                 Hit {result.hit_at_5 ? "yes" : "no"} · recall <Score value={result.recall_at_5} /> · RR{" "}

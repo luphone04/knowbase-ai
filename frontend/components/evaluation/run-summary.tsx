@@ -37,18 +37,30 @@ export function RetrievalComparison({ run, defaultOpen = true }: { run: Evaluati
   const chance = retrieval.vector?.chance_hit_rate_at_5 ?? retrieval.hybrid?.chance_hit_rate_at_5;
   const retrievalErrors = retrieval.vector?.errors ?? 0;
   const mrr = keys.map((key) => `${variantDetails(run, key).label} ${formatScore(retrieval[key]?.mrr) ?? "—"}`);
+  const passage = run.summary.relevance === "passage";
+  const documents = run.summary.document_retrieval;
+  const mapping = run.summary.evidence_mapping;
   return (
     <CollapsibleCard
       title="Retrieval comparison"
       defaultOpen={defaultOpen}
       data-testid="section-retrieval"
-      summary={`MRR: ${mrr.join(" · ")}`}
+      summary={`${passage ? "MRR (evidence passage)" : "MRR"}: ${mrr.join(" · ")}`}
       description={
-        <>
-          Source level: the top 5 chunks are collapsed to their documents, best rank first.
-          Averaged over answerable questions. Unanswerable questions have no relevant document
-          and are not in these averages.
-        </>
+        passage ? (
+          <>
+            Passage level: a retrieved chunk counts only if it holds one of the question&apos;s
+            evidence quotations; the right document with the wrong chunk is a miss. Averaged over
+            answerable questions whose evidence was found in the indexed chunks. Document-level
+            results are listed below the table.
+          </>
+        ) : (
+          <>
+            Source level: the top 5 chunks are collapsed to their documents, best rank first.
+            Averaged over answerable questions. Unanswerable questions have no relevant document
+            and are not in these averages.
+          </>
+        )
       }
       contentClassName="grid gap-3"
     >
@@ -118,6 +130,25 @@ export function RetrievalComparison({ run, defaultOpen = true }: { run: Evaluati
         </Table>
       </div>
       <ul className="grid gap-1 text-xs text-muted-foreground">
+        {passage && documents ? (
+          <li data-testid="document-retrieval">
+            Right document in the top 5 (document level, not evidence):{" "}
+            {keys
+              .map(
+                (key) =>
+                  `${variantDetails(run, key).label} HitRate@5 ${formatScore(documents[key]?.hit_rate_at_5) ?? "—"}, MRR ${formatScore(documents[key]?.mrr) ?? "—"}`,
+              )
+              .join(" · ")}
+            .
+          </li>
+        ) : null}
+        {passage && mapping ? (
+          <li data-testid="run-evidence-mapping">
+            Evidence passages mapped when the run started: {mapping.matched} of {mapping.quotations}{" "}
+            ({mapping.questions_fully_mapped} of {mapping.questions} answerable questions fully
+            mapped{mapping.problems.length ? "; the others have no passage score" : ""}).
+          </li>
+        ) : null}
         <li>
           A random ranking of this corpus would reach HitRate@5 ≈{" "}
           <span className="font-medium text-foreground">{formatScore(chance) ?? "—"}</span>: with

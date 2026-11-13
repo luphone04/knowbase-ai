@@ -7,6 +7,7 @@ import type {
   AnswerMode,
   CorpusSourceStatus,
   EvaluationOutcome,
+  EvaluationOverview,
   EvaluationResult,
   EvaluationRun,
   EvaluationRunStatus,
@@ -61,9 +62,19 @@ export function runsPollInterval(runs: Pick<EvaluationRun, "status">[] | undefin
   return runs?.some(isRunActive) ? RUN_POLL_INTERVAL_MS : false;
 }
 
-/** Gemini requests a run will reserve: one query embedding per question, one answer per mode. */
-export function requestEstimate(questions: number, modes: AnswerMode[]) {
-  return { queryEmbeddings: questions, generations: questions * modes.length };
+/**
+ * Gemini requests a run will reserve, as the API reports them: its query embeddings (one per
+ * question, plus a follow-up's standalone diagnostic embedding where recorded) and one
+ * answer per question and mode.
+ */
+export function requestEstimate(
+  limits: Pick<EvaluationOverview["limits"], "query_embeddings_per_run" | "generations_per_answer_mode">,
+  modes: AnswerMode[],
+) {
+  return {
+    queryEmbeddings: limits.query_embeddings_per_run,
+    generations: limits.generations_per_answer_mode * modes.length,
+  };
 }
 
 /** Provider failures across the run: failed query embeddings and failed answers. */
