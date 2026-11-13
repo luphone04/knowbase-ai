@@ -4,6 +4,7 @@ Every field maps to an upper-case variable in `.env.example`. A unit test keeps
 the two in sync.
 """
 
+import uuid
 from functools import lru_cache
 from typing import Literal, Self
 from urllib.parse import unquote, urlsplit
@@ -72,6 +73,11 @@ class Settings(BaseSettings):
     chunk_target_chars: int = Field(default=1800, ge=200)
     chunk_max_chars: int = Field(default=2400, ge=200)
     chunk_overlap_chars: int = Field(default=250, ge=0)
+    # Chunking strategy by workspace id (a JSON object, e.g. {"<workspace uuid>": "section-v1"}).
+    # Unlisted workspaces use paragraph-v1. section-v1 applies to PDFs only (chunker.py).
+    ingestion_workspace_chunkers: dict[uuid.UUID, Literal["paragraph-v1", "section-v1"]] = Field(
+        default_factory=dict
+    )
 
     # Retrieval (SPEC.md §9): candidates per list, RRF constant, chunks returned.
     retrieval_candidates: int = Field(default=10, ge=1, le=100)

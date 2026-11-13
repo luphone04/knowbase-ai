@@ -54,7 +54,12 @@ from app.ingestion.isolation import (
     ParseTimeout,
     parse_in_subprocess,
 )
-from app.ingestion.parsers import ParseLimits, UnsupportedDocument, parse_document
+from app.ingestion.parsers import (
+    ParseLimits,
+    UnsupportedDocument,
+    parse_document,
+    parse_document_sections,
+)
 from app.ingestion.storage import FileStorage, StoredFileMissing
 from app.providers.errors import (
     InvalidProviderResponse,
@@ -195,6 +200,7 @@ class IngestionWorker:
         embedding_provider_factory: Callable[[], EmbeddingProvider],
         worker_id: str,
         parse_target: ParseFunction = parse_document,
+        section_parse_target: ParseFunction = parse_document_sections,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
@@ -202,8 +208,10 @@ class IngestionWorker:
         self._storage = storage
         self._provider_factory = embedding_provider_factory
         self.worker_id = worker_id
-        # The parser run inside the isolated child process (tests substitute one).
+        # The parser run inside the isolated child process (tests substitute one), and the
+        # one for workspaces using section-v1 chunking (INGESTION_WORKSPACE_CHUNKERS).
         self._parse_target = parse_target
+        self._section_parse_target = section_parse_target
         self._run = _JobRun(settings.job_max_runtime_seconds)
         # One handler per source kind (app.db.models.SOURCE_KINDS).
         self._handlers: dict[str, Callable[[ClaimedJob], _Outcome]] = {
@@ -221,6 +229,22 @@ class IngestionWorker:
             maximum=settings.chunk_max_chars,
             overlap=settings.chunk_overlap_chars,
         )
+        self.section_chunker = ChunkerConfig(
+            target=settings.chunk_target_chars,
+            maximum=settings.chunk_max_chars,
+            overlap=settings.chunk_overlap_chars,
+            strategy="section-v1",
+        )
+
+    def chunking_for(
+        self, workspace_id: uuid.UUID, file_type: str
+    ) -> tuple[ChunkerConfig, ParseFunction]:
+        """The workspace's chunking strategy: paragraph-v1 unless INGESTION_WORKSPACE_CHUNKERS
+        assigns it section-v1, which applies to PDFs only (other files keep paragraph-v1)."""
+        strategy = self.settings.ingestion_workspace_chunkers.get(workspace_id, "paragraph-v1")
+        if strategy == "section-v1" and file_type == "pdf":
+            return self.section_chunker, self._section_parse_target
+        return self.chunker, self._parse_target
 
     # --- loop entry points ------------------------------------------------------------
 
@@ -343,6 +367,7 @@ class IngestionWorker:
             source.status = "processing"
             db.commit()
 
+        chunker, parse_target = self.chunking_for(job.workspace_id, file_type)
         data = self._storage.read(key)
         self._run.checkpoint()
         parsed = parse_in_subprocess(
@@ -351,7 +376,7 @@ class IngestionWorker:
             self.parse_limits,
             timeout=min(self.settings.parse_timeout_seconds, max(1.0, self._run.remaining())),
             memory_mb=self.settings.parse_memory_limit_mb or None,
-            target=self._parse_target,
+            target=parse_target,
         )
         self._run.checkpoint()
         clean = build_clean_document(
@@ -389,6 +414,7 @@ class IngestionWorker:
             canonical_url=None,
             extra_meta={"file_type": file_type},
             on_publish=finish,
+            chunker=chunker,
         )
         self._remove_superseded_files(job)
         return _Outcome(result)
@@ -401,6 +427,7 @@ class IngestionWorker:
         canonical_url: str | None,
         extra_meta: dict[str, Any],
         on_publish: PublishHook,
+        chunker: ChunkerConfig | None = None,
     ) -> "IndexedDocument":
         """Make `clean` the indexed version of one document of the job's source.
 
@@ -413,6 +440,7 @@ class IngestionWorker:
         """
         model = self.settings.gemini_embedding_model
         dimensions = self.settings.embedding_dimensions
+        chunker = chunker or self.chunker
 
         with self.session(job) as db:
             current = db.scalars(
@@ -430,7 +458,7 @@ class IngestionWorker:
                 and current_chunks
                 and current.content_hash == clean.content_hash
                 and current.title == clean.title
-                and current.meta.get("chunker") == self.chunker.fingerprint
+                and current.meta.get("chunker") == chunker.fingerprint
                 and current.meta.get("embedding_model") == model
                 and current.meta.get("embedding_dimensions") == dimensions
             )
@@ -442,7 +470,7 @@ class IngestionWorker:
                 db.commit()
             return indexed
 
-        drafts = chunk_document(clean, self.chunker)
+        drafts = chunk_document(clean, chunker)
         self._run.checkpoint()
         if len(drafts) > self.settings.max_document_chunks:
             raise PermanentJobError(
@@ -472,6 +500,7 @@ class IngestionWorker:
             canonical_url=canonical_url,
             extra_meta=extra_meta,
             on_publish=on_publish,
+            chunker=chunker,
         )
 
     @staticmethod
@@ -506,6 +535,7 @@ class IngestionWorker:
         canonical_url: str | None,
         extra_meta: dict[str, Any],
         on_publish: PublishHook,
+        chunker: ChunkerConfig,
     ) -> "IndexedDocument":
         """Swap in the new document and chunks atomically (all or nothing)."""
         model = self.settings.gemini_embedding_model
@@ -528,7 +558,7 @@ class IngestionWorker:
             document.meta = {
                 **clean.metadata,
                 **extra_meta,
-                "chunker": self.chunker.fingerprint,
+                "chunker": chunker.fingerprint,
                 "embedding_model": model,
                 "embedding_dimensions": self.settings.embedding_dimensions,
                 "chunk_count": len(drafts),

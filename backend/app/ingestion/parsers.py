@@ -9,6 +9,7 @@ image-only PDFs are reported as having no extractable text.
 
 import io
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -136,6 +137,17 @@ def parse_document(
     raise UnsupportedDocument(f"Unsupported file type: {file_type}.")
 
 
+def parse_document_sections(
+    file_type: str, data: bytes, limits: ParseLimits = DEFAULT_LIMITS
+) -> ParsedDocument:
+    """`parse_document` for the `section-v1` chunking strategy (ingestion picks it per
+    workspace). Only PDFs differ: their numbered and boxed section headings are found.
+    A module-level function, so the isolated parsing child process can run it."""
+    if file_type == "pdf":
+        return _parse_pdf(data, limits, _looks_like_section_heading)
+    return parse_document(file_type, data, limits)
+
+
 # --- PDF -------------------------------------------------------------------------------
 
 
@@ -157,7 +169,37 @@ def _looks_like_heading(line: str, next_line: str | None) -> bool:
     )
 
 
-def _pdf_page_blocks(text: str, page: int) -> list[Block]:
+_SECTION_NUMBER = re.compile(r"^\d+(?:\.\d+)*\.?\s+(\S.*)$")
+
+
+def _looks_like_section_heading(line: str, next_line: str | None) -> bool:
+    """`section-v1`: the conservative heuristic, plus two kinds of heading it misses.
+
+    - Numbered section titles ("2.4 Gifts, Hospitality, and Benefits"): the title
+      after the number must start with a capital letter.
+    - Box titles followed by a bullet list ("Our Expectations" then "• ...").
+
+    Every other safeguard is kept: at most 70 characters, no closing punctuation,
+    and no last word that usually continues a sentence.
+    """
+    if _looks_like_heading(line, next_line):
+        return True
+    if next_line is None or not 0 < len(line) <= 70 or line.endswith(_SENTENCE_END):
+        return False
+    if line.rsplit(" ", 1)[-1].lower() in _CONTINUATION_WORDS:
+        return False
+    numbered = _SECTION_NUMBER.match(line)
+    title = numbered.group(1) if numbered else line
+    starts_next = next_line[0].isupper() or next_line[0].isdigit() or next_line[0] == "•"
+    return title[0].isupper() and starts_next
+
+
+HeadingTest = Callable[[str, str | None], bool]
+
+
+def _pdf_page_blocks(
+    text: str, page: int, looks_like_heading: HeadingTest = _looks_like_heading
+) -> list[Block]:
     blocks: list[Block] = []
     paragraph: list[str] = []
 
@@ -173,7 +215,7 @@ def _pdf_page_blocks(text: str, page: int) -> list[Block]:
             flush()
             continue
         following = next((later for later in lines[index + 1 :] if later), None)
-        if not paragraph and _looks_like_heading(line, following):
+        if not paragraph and looks_like_heading(line, following):
             blocks.append(Block("heading", line, page))
         else:
             paragraph.append(line)
@@ -181,7 +223,9 @@ def _pdf_page_blocks(text: str, page: int) -> list[Block]:
     return blocks
 
 
-def _parse_pdf(data: bytes, limits: ParseLimits) -> ParsedDocument:
+def _parse_pdf(
+    data: bytes, limits: ParseLimits, looks_like_heading: HeadingTest = _looks_like_heading
+) -> ParsedDocument:
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted and not reader.decrypt(""):
@@ -210,7 +254,7 @@ def _parse_pdf(data: bytes, limits: ParseLimits) -> ParsedDocument:
         characters += len(text)
         if characters > limits.max_chars:  # checked per page: pages can share one huge stream
             raise _too_much_text(limits)
-        page_blocks = _pdf_page_blocks(text, number)
+        page_blocks = _pdf_page_blocks(text, number, looks_like_heading)
         if not page_blocks:
             empty_pages.append(number)
         blocks.extend(page_blocks)

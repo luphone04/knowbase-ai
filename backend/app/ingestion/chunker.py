@@ -14,10 +14,19 @@ positions, not estimates.
 4. Each new chunk repeats up to `overlap` characters of the previous chunk,
    starting at a sentence or word boundary, for continuity. There is no
    overlap across a section break (a chunk that starts with a heading).
+
+Strategies (`ChunkerConfig.strategy`), each with its own fingerprint:
+- `paragraph-v1` (the default, unchanged): a heading starts a new chunk once
+  the current one holds 40% of `target`.
+- `section-v1` (PDFs, chosen per workspace): the parser also finds numbered and
+  boxed section headings (parsers.parse_document_sections), and a heading starts
+  a new chunk once the current one holds 15% of `target`, so sections and their
+  rule boxes stay apart without making tiny fragments. Everything else is the same.
 """
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from app.ingestion.cleaner import CleanDocument, sha256_text
 
@@ -25,7 +34,11 @@ from app.ingestion.cleaner import CleanDocument, sha256_text
 # sentence), then whitespace (the gap). Group "gap" is the whitespace only.
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])[\"')\]]*(?P<gap>\s+)")
 _WORD_BREAK = re.compile(r"(?P<gap>\s+)")
-_MIN_FILL_BEFORE_HEADING = 0.4  # of target
+_MIN_FILL_BEFORE_HEADING = 0.4  # of target (paragraph-v1)
+SECTION_MIN_FILL = 0.15  # of target (section-v1)
+
+ChunkingStrategy = Literal["paragraph-v1", "section-v1"]
+CHUNKING_STRATEGIES: tuple[ChunkingStrategy, ...] = ("paragraph-v1", "section-v1")
 
 
 @dataclass(frozen=True)
@@ -33,15 +46,26 @@ class ChunkerConfig:
     target: int = 1800
     maximum: int = 2400
     overlap: int = 250
+    strategy: ChunkingStrategy = "paragraph-v1"
 
     def __post_init__(self) -> None:
         if not 0 <= self.overlap < self.target <= self.maximum:
             raise ValueError("chunker needs 0 <= overlap < target <= maximum")
+        if self.strategy not in CHUNKING_STRATEGIES:
+            raise ValueError(f"unknown chunking strategy {self.strategy!r}")
+
+    @property
+    def min_fill(self) -> float:
+        """How full a chunk must be before a heading starts the next one (of target)."""
+        return SECTION_MIN_FILL if self.strategy == "section-v1" else _MIN_FILL_BEFORE_HEADING
 
     @property
     def fingerprint(self) -> str:
         """Changes whenever chunk boundaries could change; stored with each document."""
-        return f"paragraph-v1:t{self.target}:m{self.maximum}:o{self.overlap}"
+        base = f"t{self.target}:m{self.maximum}:o{self.overlap}"
+        if self.strategy == "section-v1":
+            return f"section-v1:{base}:f{SECTION_MIN_FILL}"
+        return f"paragraph-v1:{base}"
 
 
 @dataclass(frozen=True)
@@ -118,7 +142,7 @@ def _overlap_start(text: str, previous_start: int, previous_end: int, overlap: i
 def chunk_document(document: CleanDocument, config: ChunkerConfig) -> list[ChunkDraft]:
     text = document.text
     units = _units(document, config)
-    min_fill = int(config.target * _MIN_FILL_BEFORE_HEADING)
+    min_fill = int(config.target * config.min_fill)
     chunks: list[ChunkDraft] = []
     previous: tuple[int, int] | None = None
     i = 0
