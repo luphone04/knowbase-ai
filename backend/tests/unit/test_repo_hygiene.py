@@ -49,7 +49,17 @@ def test_a_clean_index_passes(repo: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["alice.jar", "cookies.txt", ".env", "backend/.env.local", 'we"ird dir/.env']
+    "name",
+    [
+        "alice.jar",
+        "cookies.txt",
+        ".env",
+        "backend/.env.local",
+        'we"ird dir/.env',
+        # The private Asia Cement benchmark (held-out split) and its authoring folder.
+        "backend/app/evaluation/datasets/asia-cement-realworld-v1.json",
+        "asia-cement/README_review.md",
+    ],
 )
 def test_forbidden_files_fail_whatever_their_name(repo: Path, name: str) -> None:
     path = repo / name
@@ -59,6 +69,19 @@ def test_forbidden_files_fail_whatever_their_name(repo: Path, name: str) -> None
     result = check(repo)
     assert result.returncode == 1
     assert "forbidden files" in result.stdout
+
+
+def test_the_public_development_benchmark_is_allowed(repo: Path) -> None:
+    for name in (
+        "backend/app/evaluation/datasets/asia-cement-realworld-dev-v1.json",
+        "backend/app/evaluation/datasets/asia-cement-followups-v1.json",
+    ):
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        stage(repo, name)
+    result = check(repo)
+    assert result.returncode == 0, result.stdout
 
 
 def test_a_session_token_is_caught_and_never_printed(repo: Path) -> None:

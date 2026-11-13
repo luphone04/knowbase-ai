@@ -53,6 +53,13 @@ logs/
 .idea/
 *.swp
 
+# --- Private benchmark data (kept on disk, never tracked) ---
+# The full Asia Cement benchmark holds the sealed held-out split; only its development
+# split (asia-cement-realworld-dev-v1.json) is public. The authoring folder and the
+# source PDFs stay local too.
+/backend/app/evaluation/datasets/asia-cement-realworld-v1.json
+/asia-cement/
+
 # --- Local-only development and agent files (kept on disk, not tracked) ---
 /SPEC.md
 /PROJECT_STATUS.md

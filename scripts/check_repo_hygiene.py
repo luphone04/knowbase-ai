@@ -24,6 +24,10 @@ FORBIDDEN_PATH = re.compile(
     r"|(^|/)(node_modules|\.venv[^/]*|venv|uploads|postgres_data|\.next)/"
     r"|\.(pem|key|p12|sqlite3|dump|log|jar)$"  # .jar: curl/httpie session cookie jars
     r"|(^|/)cookies?[^/]*\.txt$"
+    # Private benchmark data: the full Asia Cement benchmark (sealed held-out split) and
+    # its authoring folder. Only the development split file is public.
+    r"|(^|/)asia-cement-realworld-v1\.json$"
+    r"|(^|/)asia-cement/"
 )
 ALLOWED_PATH = re.compile(r"(^|/)\.env\.example$")
 
