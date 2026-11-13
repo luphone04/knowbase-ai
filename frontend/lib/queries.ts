@@ -13,6 +13,12 @@ export const sourceKey = (id: string) => ["sources", id] as const;
 export const conversationsKey = ["conversations"] as const;
 export const conversationKey = (id: string) => ["conversations", id] as const;
 export const conversationUsageKey = (id: string) => ["conversations", id, "usage"] as const;
+export const dailyLimitsKey = ["limits"] as const;
+
+/** Today's allowances; refreshed after each question and periodically (they reset at UTC midnight). */
+export function useDailyLimits() {
+  return useQuery({ queryKey: dailyLimitsKey, queryFn: api.limits, refetchInterval: 5 * 60_000 });
+}
 
 /** Every source in the workspace, polled while the worker still has work for any of them. */
 export function useSources() {

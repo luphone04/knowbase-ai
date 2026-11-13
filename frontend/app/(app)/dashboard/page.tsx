@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FileText, MessageSquare } from "lucide-react";
 import Link from "next/link";
 
+import { DailyAllowance } from "@/components/daily-allowance";
 import { ErrorAlert } from "@/components/error-alert";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -46,9 +47,22 @@ export default function DashboardPage() {
       />
       <div className="grid gap-6 p-4 md:p-6">
         <DocumentSummary />
+        <DailyAllowances />
         <AIStatusCard />
       </div>
     </>
+  );
+}
+
+/** What's left of today's chat questions. */
+function DailyAllowances() {
+  return (
+    <section aria-labelledby="daily-allowances" className="grid gap-1">
+      <h2 id="daily-allowances" className="text-sm font-semibold">
+        Today&apos;s allowance
+      </h2>
+      <DailyAllowance />
+    </section>
   );
 }
 

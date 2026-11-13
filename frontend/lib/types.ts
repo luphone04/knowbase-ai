@@ -178,6 +178,13 @@ export type ChatTurn = {
 
 // --- AI status --------------------------------------------------------------------------
 
+/**
+ * The caller's daily chat allowance (GET /limits). The API also reports the workspace's
+ * search allowance; it only applies to the standalone search API, so the app doesn't use it.
+ */
+export type Allowance = { limit: number; remaining: number };
+export type DailyLimits = { chat: Allowance; resets_at: string };
+
 export type AIStatus = {
   provider: "gemini";
   status: "configured" | "missing_key" | "quota_error";

@@ -141,6 +141,11 @@ class RateLimiter:
             ).scalar_one_or_none()
         return max(0, rule.limit - (used or 0))
 
+    def window_end(self, rule: RateLimitRule, *, now: datetime | None = None) -> datetime:
+        """When the current window ends and its count starts again from zero (read-only)."""
+        now = now or datetime.now(UTC)
+        return self._window_start(rule, now) + timedelta(seconds=rule.window_seconds)
+
     def reset(self, rule: RateLimitRule, identifier: str) -> None:
         with self._engine.begin() as connection:
             connection.execute(

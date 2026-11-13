@@ -11,6 +11,7 @@ import type {
   Conversation,
   ConversationDetail,
   ConversationUsage,
+  DailyLimits,
   EvaluationOverview,
   EvaluationRun,
   EvaluationRunDetail,
@@ -115,6 +116,8 @@ export const api = {
   ai: {
     status: () => request<AIStatus>("/ai/status"),
   },
+  /** Today's chat and search allowances, from the counters the API enforces. */
+  limits: () => request<DailyLimits>("/limits"),
   evaluations: {
     /** The dataset, whether this workspace holds its documents, and today's budget. */
     overview: () => request<EvaluationOverview>("/evaluations/questions"),

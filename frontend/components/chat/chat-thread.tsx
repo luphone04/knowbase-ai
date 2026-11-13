@@ -10,12 +10,19 @@ import { CitationPanel } from "@/components/chat/citation-panel";
 import { ConversationList } from "@/components/chat/conversation-list";
 import { AssistantMessage, UserMessage } from "@/components/chat/message-item";
 import { ConversationMenu } from "@/components/chat/usage-details";
+import { DailyAllowance } from "@/components/daily-allowance";
 import { ErrorAlert } from "@/components/error-alert";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { conversationKey, conversationUsageKey, conversationsKey, useSources } from "@/lib/queries";
+import {
+  conversationKey,
+  conversationUsageKey,
+  conversationsKey,
+  dailyLimitsKey,
+  useSources,
+} from "@/lib/queries";
 import type { Citation, ConversationDetail, Message } from "@/lib/types";
 
 const MAX_QUESTION_CHARS = 1000; // MessageIn.content in the API
@@ -49,7 +56,9 @@ export function ChatThread({ conversation }: { conversation: ConversationDetail 
     },
     onError: (_error, content) => setDraft(content),
     onSettled: () => {
-      // A saved reply or a failed question both change the conversation's usage totals.
+      // A saved reply or a failed question can both change the usage totals and what's
+      // left of today's allowance (the API decides whether a slot was used).
+      void queryClient.invalidateQueries({ queryKey: dailyLimitsKey });
       if (conversationId.current) {
         void queryClient.invalidateQueries({ queryKey: conversationUsageKey(conversationId.current) });
       }
@@ -147,10 +156,13 @@ export function ChatThread({ conversation }: { conversation: ConversationDetail 
             <SendHorizontal />
           </Button>
         </div>
-        <p className="mt-1.5 text-xs text-muted-foreground">
-          Answers use only your indexed documents. Enter to send, Shift+Enter for a new line.
-          {draft.length > MAX_QUESTION_CHARS - 100 ? ` ${draft.length}/${MAX_QUESTION_CHARS}` : ""}
-        </p>
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-0.5">
+          <p className="text-xs text-muted-foreground">
+            Answers use only your indexed documents. Enter to send, Shift+Enter for a new line.
+            {draft.length > MAX_QUESTION_CHARS - 100 ? ` ${draft.length}/${MAX_QUESTION_CHARS}` : ""}
+          </p>
+          <DailyAllowance />
+        </div>
       </form>
 
       <CitationPanel citation={citation} onClose={() => setCitation(null)} />

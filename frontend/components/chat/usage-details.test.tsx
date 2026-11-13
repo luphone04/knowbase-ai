@@ -243,6 +243,15 @@ function conversation(): ConversationDetail {
 function renderThread(responses: { usage: ConversationUsage[] }) {
   const usageQueue = [...responses.usage];
   const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith("/limits")) {
+      return new Response(
+        JSON.stringify({
+          chat: { limit: 30, remaining: 24 },
+          retrieval: { limit: 100, remaining: 85 },
+          resets_at: "2026-11-12T00:00:00Z",
+        }),
+      );
+    }
     if (url.endsWith("/conversations/c1/usage")) {
       return new Response(JSON.stringify(usageQueue.shift() ?? responses.usage.at(-1)));
     }
